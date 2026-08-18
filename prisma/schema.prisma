@@ -1,0 +1,1254 @@
+// AI Property Intelligence Platform — core schema
+// Property -> Evidence -> Asset -> Condition -> Issue -> History -> Cost -> Decision
+//
+// Tenant isolation rule: every org-owned row carries organizationId directly,
+// OR is reachable only through a parent that carries organizationId. Server-side
+// code must always resolve organizationId from the authenticated session/membership,
+// never from client input. See src/lib/tenant.ts.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  PLATFORM_ADMIN
+  OWNER
+  PORTFOLIO_ADMIN
+  REGIONAL_MANAGER
+  FACILITIES_MANAGER
+  INSPECTOR
+  TECHNICIAN
+  VENDOR
+  VIEWER
+}
+
+enum AccessScopeType {
+  PORTFOLIO
+  REGION
+  PROPERTY
+}
+
+enum PropertyStatus {
+  ACTIVE
+  INACTIVE
+  UNDER_DEVELOPMENT
+  DIVESTED
+}
+
+enum AssetStatus {
+  ACTIVE
+  INACTIVE
+  REPLACED
+  DECOMMISSIONED
+}
+
+enum IssueSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IssueStatus {
+  OPEN
+  TRIAGED
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  VERIFIED
+  CLOSED
+}
+
+enum IssueSource {
+  MANUAL
+  ASSESSMENT
+  DRONE
+  MATTERPORT
+  AI_SUGGESTED
+  IMPORT
+}
+
+enum EvidenceType {
+  PHOTO
+  VIDEO
+  DOCUMENT
+  DRONE_IMAGE
+  MATTERPORT_REFERENCE
+  IMAGE_360
+  MAP_REFERENCE
+  POINT_CLOUD_REFERENCE
+}
+
+enum DocumentType {
+  PDF
+  CAD_REFERENCE
+  BIM_REFERENCE
+  WARRANTY
+  INSPECTION_REPORT
+  MANUAL
+  PERMIT
+  CONTRACT
+  ROOF_REPORT
+  FLOOR_PLAN
+  OTHER
+}
+
+enum AssessmentQuestionType {
+  YES_NO
+  TEXT
+  NUMBER
+  SELECT
+  MULTI_SELECT
+  CONDITION
+  PHOTO
+  VIDEO
+  MEASUREMENT
+  ASSET
+  SIGNATURE
+}
+
+enum AssessmentStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum ValidationStatus {
+  AUTO_CALCULATED
+  HUMAN_OBSERVED
+  CUSTOMER_VERIFIED
+  SPECIALIST_VERIFIED
+  AI_SUGGESTED
+  AI_HUMAN_VERIFIED
+}
+
+enum AIFindingStatus {
+  SUGGESTED
+  HUMAN_VERIFIED
+  REJECTED
+  SPECIALIST_VERIFIED
+}
+
+enum DroneCaptureStatus {
+  CREATED
+  UPLOADING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum DroneOutputType {
+  ORTHOMOSAIC
+  POINT_CLOUD
+  MESH_3D
+  DSM
+  DTM
+  PHOTO_SET
+}
+
+enum NotificationType {
+  ISSUE_CRITICAL
+  ISSUE_ASSIGNED
+  ASSESSMENT_DUE
+  ASSESSMENT_OVERDUE
+  PROCESSING_COMPLETED
+  PROCESSING_FAILED
+  REPORT_READY
+  USER_INVITED
+}
+
+enum DataRetentionStatus {
+  ACTIVE
+  ARCHIVED
+  SCHEDULED_FOR_DELETION
+  DELETED
+}
+
+enum SubscriptionComponentType {
+  BASE_PLATFORM
+  PROPERTY
+  STORAGE
+  AI
+  PREMIUM_INTEGRATION
+}
+
+enum UsageMetricType {
+  STORAGE_GB
+  BANDWIDTH_GB
+  PROCESSING_JOB
+  AI_REQUEST
+  AI_TOKENS
+  MATTERPORT_ALLOCATION
+  DB_USAGE
+}
+
+enum ImportEntityType {
+  PROPERTIES
+  ASSETS
+  ISSUES
+  CONDITIONS
+}
+
+enum ImportStatus {
+  UPLOADED
+  PREVIEWED
+  VALIDATED
+  IMPORTING
+  COMPLETED
+  FAILED
+}
+
+enum SavedViewEntity {
+  PROPERTIES
+  ASSETS
+  ISSUES
+}
+
+// ---------------------------------------------------------------------------
+// Identity / tenancy / RBAC
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  passwordHash    String
+  name            String
+  title           String?
+  phone           String?
+  isPlatformAdmin Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  memberships            Membership[]
+  auditLogs              AuditLog[]              @relation("AuditActor")
+  events                 Event[]                 @relation("EventActor")
+  notifications          Notification[]
+  savedViews             SavedView[]
+  assignedIssues         Issue[]                 @relation("IssueAssignee")
+  createdIssues          Issue[]                 @relation("IssueCreatedBy")
+  resolvedIssues         Issue[]                 @relation("IssueResolvedBy")
+  uploadedEvidence       Evidence[]              @relation("EvidenceUploadedBy")
+  uploadedDocs           DocumentVersion[]       @relation("DocumentUploadedBy")
+  conditionChanges       AssetConditionHistory[] @relation("ConditionChangedBy")
+  assessmentsAsInspector Assessment[]            @relation("AssessmentInspector")
+  aiQueryLogs            AIQueryLog[]
+  issueComments          IssueComment[]          @relation("IssueCommentAuthor")
+
+  @@index([email])
+}
+
+// One row per (user, organization): defines the user's role within that org.
+model Membership {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  role           Role
+  // Only meaningful when role = VENDOR: ties this membership to the vendor
+  // company record so vendor users only ever see work assigned to their company.
+  vendorId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor       Vendor?       @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  accessGrants AccessGrant[]
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+// Scoped access grants for roles that are not automatically org-wide
+// (REGIONAL_MANAGER, FACILITIES_MANAGER, INSPECTOR, TECHNICIAN, VENDOR).
+// Absence of any grant for a scoped role means zero property access (secure by default).
+model AccessGrant {
+  id           String          @id @default(cuid())
+  membershipId String
+  scopeType    AccessScopeType
+  portfolioId  String?
+  regionId     String?
+  propertyId   String?
+  createdAt    DateTime        @default(now())
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  portfolio  Portfolio? @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  region     Region?    @relation(fields: [regionId], references: [id], onDelete: Cascade)
+  property   Property?  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([membershipId])
+  @@index([portfolioId])
+  @@index([regionId])
+  @@index([propertyId])
+}
+
+model Organization {
+  id              String              @id @default(cuid())
+  name            String
+  slug            String              @unique
+  retentionStatus DataRetentionStatus @default(ACTIVE)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  memberships          Membership[]
+  portfolios           Portfolio[]
+  properties           Property[]
+  issues               Issue[]
+  assessmentTemplates  AssessmentTemplate[]
+  evidence             Evidence[]
+  documents            Document[]
+  events               Event[]
+  auditLogs            AuditLog[]
+  notifications        Notification[]
+  featureFlagOverrides FeatureFlagOverride[]
+  scoringWeights       ScoringCategoryWeight[]
+  matterportConnection MatterportConnection?
+  subscription         OrganizationSubscription?
+  usageRecords         UsageRecord[]
+  onboardingProgress   OnboardingProgress?
+  importJobs           ImportJob[]
+  savedViews           SavedView[]
+  aiQueryLogs          AIQueryLog[]
+
+  @@index([slug])
+}
+
+// ---------------------------------------------------------------------------
+// Property graph: Organization -> Portfolio -> Region -> Property -> Site ->
+// Building -> Floor -> Area -> System -> Asset
+// ---------------------------------------------------------------------------
+
+model Portfolio {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  regions      Region[]
+  properties   Property[]
+  accessGrants AccessGrant[]
+
+  @@index([organizationId])
+}
+
+model Region {
+  id          String   @id @default(cuid())
+  portfolioId String
+  name        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  portfolio    Portfolio     @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  properties   Property[]
+  accessGrants AccessGrant[]
+
+  @@index([portfolioId])
+}
+
+model Property {
+  id                 String              @id @default(cuid())
+  organizationId     String
+  portfolioId        String
+  regionId           String?
+  name               String
+  customerPropertyId String?
+  externalIds        Json                @default("[]")
+  addressLine1       String
+  addressLine2       String?
+  city               String
+  state              String
+  postalCode         String
+  country            String              @default("US")
+  latitude           Float?
+  longitude          Float?
+  propertyType       String              @default("Retail")
+  squareFootage      Int?
+  yearBuilt          Int?
+  status             PropertyStatus      @default(ACTIVE)
+  retentionStatus    DataRetentionStatus @default(ACTIVE)
+  isDemoData         Boolean             @default(false)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  updatedBy          String?
+  version            Int                 @default(1)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  portfolio    Portfolio    @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  region       Region?      @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  buildings       Building[]
+  assets          Asset[]
+  issues          Issue[]
+  assessments     Assessment[]
+  evidence        Evidence[]
+  documents       Document[]
+  events          Event[]
+  healthSnapshots PropertyHealthSnapshot[]
+  matterportLinks MatterportPropertyLink[]
+  droneCaptures   DroneCapture[]
+  accessGrants    AccessGrant[]
+
+  @@unique([organizationId, customerPropertyId])
+  @@index([organizationId])
+  @@index([portfolioId])
+  @@index([regionId])
+  @@index([status])
+}
+
+model Building {
+  id         String   @id @default(cuid())
+  propertyId String
+  name       String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floors   Floor[]
+  assets   Asset[]
+  issues   Issue[]
+
+  @@index([propertyId])
+}
+
+model Floor {
+  id         String   @id @default(cuid())
+  buildingId String
+  name       String
+  level      Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  building Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  areas    Area[]
+  assets   Asset[]
+
+  @@index([buildingId])
+}
+
+model Area {
+  id        String   @id @default(cuid())
+  floorId   String
+  name      String
+  areaType  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  floor  Floor   @relation(fields: [floorId], references: [id], onDelete: Cascade)
+  assets Asset[]
+  issues Issue[]
+
+  @@index([floorId])
+}
+
+model BuildingSystem {
+  id        String   @id @default(cuid())
+  name      String
+  category  String // e.g. Roof, HVAC, Electrical, Plumbing, Fire/Life Safety, Interior, Exterior, Parking
+  createdAt DateTime @default(now())
+
+  assets Asset[]
+}
+
+model Asset {
+  id             String  @id @default(cuid())
+  organizationId String
+  propertyId     String
+  buildingId     String?
+  floorId        String?
+  areaId         String?
+  systemId       String?
+
+  name            String
+  assetType       String
+  customerAssetId String?
+  externalIds     Json    @default("[]")
+  manufacturer    String?
+  model           String?
+  serialNumber    String?
+
+  installedAt             DateTime?
+  expectedUsefulLifeYears Int?
+
+  conditionScore   Float? // 0-100
+  criticalityScore Int    @default(3) // 1=Low ... 5=Business Critical
+  riskScore        Float?
+  healthScore      Float?
+
+  replacementCost    Int? // cents
+  repairCostLifetime Int  @default(0) // cents
+
+  status           AssetStatus      @default(ACTIVE)
+  validationStatus ValidationStatus @default(AUTO_CALCULATED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+  version   Int      @default(1)
+
+  property Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  building Building?       @relation(fields: [buildingId], references: [id], onDelete: SetNull)
+  floor    Floor?          @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  area     Area?           @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  system   BuildingSystem? @relation(fields: [systemId], references: [id], onDelete: SetNull)
+
+  conditionHistory     AssetConditionHistory[]
+  issues               Issue[]
+  evidence             Evidence[]
+  documents            Document[]
+  assessmentAnswers    AssessmentAnswer[]
+  matterportReferences MatterportReference[]
+
+  @@unique([organizationId, customerAssetId])
+  @@index([organizationId])
+  @@index([propertyId])
+  @@index([buildingId])
+  @@index([assetType])
+  @@index([criticalityScore])
+}
+
+// Append-only condition history. Never overwritten.
+model AssetConditionHistory {
+  id              String      @id @default(cuid())
+  assetId         String
+  previousScore   Float?
+  newScore        Float
+  changedAt       DateTime    @default(now())
+  changedByUserId String?
+  source          IssueSource @default(MANUAL)
+  reason          String?
+  evidenceId      String?
+
+  asset     Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  changedBy User?     @relation("ConditionChangedBy", fields: [changedByUserId], references: [id], onDelete: SetNull)
+  evidence  Evidence? @relation(fields: [evidenceId], references: [id], onDelete: SetNull)
+
+  @@index([assetId])
+  @@index([changedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Scoring engine
+// ---------------------------------------------------------------------------
+
+// organizationId null = platform default weight set.
+model ScoringCategoryWeight {
+  id             String   @id @default(cuid())
+  organizationId String?
+  category       String // Roof, HVAC, Electrical, Plumbing, FireLifeSafety, Interior, ExteriorParking, Issues
+  weightPercent  Float
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, category])
+}
+
+model PropertyHealthSnapshot {
+  id                        String   @id @default(cuid())
+  propertyId                String
+  healthScore               Float
+  riskScore                 Float
+  dataConfidenceScore       Float
+  interiorScore             Float?
+  exteriorScore             Float?
+  categoryBreakdown         Json // { category: { score, weightPercent, contribution } }
+  capitalExposure12mo       Int      @default(0) // cents
+  capitalExposure24mo       Int      @default(0)
+  capitalExposure36mo       Int      @default(0)
+  capitalExposureByCategory Json     @default("{}")
+  computedAt                DateTime @default(now())
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, computedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+model Issue {
+  id             String  @id @default(cuid())
+  organizationId String
+  propertyId     String
+  buildingId     String?
+  areaId         String?
+  assetId        String?
+
+  title       String
+  description String?
+  severity    IssueSeverity @default(MEDIUM)
+  status      IssueStatus   @default(OPEN)
+  source      IssueSource   @default(MANUAL)
+
+  assigneeId String?
+  vendorId   String?
+
+  estimatedCost Int? // cents
+  actualCost    Int? // cents
+  dueDate       DateTime?
+
+  createdById  String
+  resolvedById String?
+  resolvedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  version   Int      @default(1)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  building     Building?    @relation(fields: [buildingId], references: [id], onDelete: SetNull)
+  area         Area?        @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  asset        Asset?       @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  assignee     User?        @relation("IssueAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  vendor       Vendor?      @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  createdBy    User         @relation("IssueCreatedBy", fields: [createdById], references: [id])
+  resolvedBy   User?        @relation("IssueResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  comments  IssueComment[]
+  evidence  Evidence[]
+  documents Document[]
+
+  @@index([organizationId])
+  @@index([propertyId])
+  @@index([status])
+  @@index([severity])
+  @@index([assigneeId])
+  @@index([vendorId])
+}
+
+model IssueComment {
+  id        String   @id @default(cuid())
+  issueId   String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  issue  Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author User  @relation("IssueCommentAuthor", fields: [authorId], references: [id])
+
+  @@index([issueId])
+}
+
+model Vendor {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  trade          String?
+  contactEmail   String?
+  contactPhone   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  issues      Issue[]
+  memberships Membership[]
+
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Assessments
+// ---------------------------------------------------------------------------
+
+model AssessmentTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sections     AssessmentSection[]
+  assessments  Assessment[]
+
+  @@index([organizationId])
+}
+
+model AssessmentSection {
+  id         String @id @default(cuid())
+  templateId String
+  name       String
+  position   Int    @default(0)
+
+  template  AssessmentTemplate   @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  questions AssessmentQuestion[]
+
+  @@index([templateId])
+}
+
+model AssessmentQuestion {
+  id         String                 @id @default(cuid())
+  sectionId  String
+  prompt     String
+  type       AssessmentQuestionType
+  position   Int                    @default(0)
+  isRequired Boolean                @default(false)
+  options    Json                   @default("[]") // for SELECT / MULTI_SELECT
+  category   String? // maps to scoring category, e.g. "Roof"
+
+  section AssessmentSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  answers AssessmentAnswer[]
+
+  @@index([sectionId])
+}
+
+model Assessment {
+  id             String           @id @default(cuid())
+  organizationId String
+  templateId     String
+  propertyId     String
+  inspectorId    String
+  status         AssessmentStatus @default(DRAFT)
+  scheduledFor   DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  template  AssessmentTemplate @relation(fields: [templateId], references: [id])
+  property  Property           @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  inspector User               @relation("AssessmentInspector", fields: [inspectorId], references: [id])
+  answers   AssessmentAnswer[]
+  evidence  Evidence[]
+
+  @@index([organizationId])
+  @@index([propertyId])
+  @@index([status])
+  @@index([inspectorId])
+}
+
+model AssessmentAnswer {
+  id             String   @id @default(cuid())
+  assessmentId   String
+  questionId     String
+  assetId        String?
+  textValue      String?
+  numberValue    Float?
+  boolValue      Boolean?
+  conditionValue Float? // 0-100 for CONDITION type
+  selectValues   Json     @default("[]")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  assessment Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  question   AssessmentQuestion @relation(fields: [questionId], references: [id])
+  asset      Asset?             @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  evidence   Evidence[]
+
+  @@unique([assessmentId, questionId, assetId])
+  @@index([assessmentId])
+}
+
+// ---------------------------------------------------------------------------
+// Evidence (common capture model)
+// ---------------------------------------------------------------------------
+
+model Evidence {
+  id                 String  @id @default(cuid())
+  organizationId     String
+  propertyId         String?
+  assetId            String?
+  issueId            String?
+  assessmentId       String?
+  assessmentAnswerId String?
+
+  type         EvidenceType
+  source       IssueSource  @default(MANUAL)
+  captureDate  DateTime?
+  uploadedById String
+  latitude     Float?
+  longitude    Float?
+
+  storageKey   String
+  thumbnailKey String?
+  mimeType     String?
+  sizeBytes    Int?
+  metadata     Json    @default("{}")
+
+  createdAt DateTime @default(now())
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property         Property?         @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  asset            Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  issue            Issue?            @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  assessment       Assessment?       @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
+  assessmentAnswer AssessmentAnswer? @relation(fields: [assessmentAnswerId], references: [id], onDelete: SetNull)
+  uploadedBy       User              @relation("EvidenceUploadedBy", fields: [uploadedById], references: [id])
+
+  conditionHistoryRefs AssetConditionHistory[]
+  aiFindings           AIFinding[]
+
+  @@index([organizationId])
+  @@index([propertyId])
+  @@index([assetId])
+  @@index([issueId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Documents (versioned)
+// ---------------------------------------------------------------------------
+
+model Document {
+  id             String       @id @default(cuid())
+  organizationId String
+  propertyId     String?
+  assetId        String?
+  issueId        String?
+  title          String
+  documentType   DocumentType @default(OTHER)
+  tags           Json         @default("[]")
+  retentionClass String       @default("standard")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?         @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  asset        Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  issue        Issue?            @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  versions     DocumentVersion[]
+
+  @@index([organizationId])
+  @@index([propertyId])
+  @@index([assetId])
+  @@index([documentType])
+}
+
+model DocumentVersion {
+  id               String   @id @default(cuid())
+  documentId       String
+  versionNumber    Int
+  originalFilename String
+  mimeType         String
+  sizeBytes        Int
+  storageKey       String
+  thumbnailKey     String?
+  uploadedById     String
+  uploadedAt       DateTime @default(now())
+
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploadedBy User     @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId])
+}
+
+// ---------------------------------------------------------------------------
+// Matterport integration (provider #1 of InteriorCaptureProvider)
+// ---------------------------------------------------------------------------
+
+model MatterportConnection {
+  id              String    @id @default(cuid())
+  organizationId  String    @unique
+  accountLabel    String?
+  accessTokenEnc  String? // encrypted at rest by app layer
+  refreshTokenEnc String?
+  status          String    @default("DISCONNECTED") // DISCONNECTED | CONNECTED | ERROR
+  lastSyncedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  spaces       MatterportSpace[]
+
+  @@index([organizationId])
+}
+
+model MatterportSpace {
+  id              String    @id @default(cuid())
+  connectionId    String
+  externalSpaceId String
+  name            String?
+  status          String    @default("READY") // SYNCING | READY | ERROR
+  coverageNotes   String?
+  capturedAt      DateTime?
+  syncedAt        DateTime?
+  createdAt       DateTime  @default(now())
+
+  connection MatterportConnection     @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  links      MatterportPropertyLink[]
+
+  @@unique([connectionId, externalSpaceId])
+}
+
+model MatterportPropertyLink {
+  id         String   @id @default(cuid())
+  propertyId String
+  spaceId    String
+  linkedAt   DateTime @default(now())
+  operator   String?
+  notes      String?
+
+  property   Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  space      MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  references MatterportReference[]
+
+  @@unique([propertyId, spaceId])
+  @@index([propertyId])
+}
+
+// Associates a point/tag within a Matterport space to a graph entity.
+model MatterportReference {
+  id         String   @id @default(cuid())
+  linkId     String
+  buildingId String?
+  floorId    String?
+  areaId     String?
+  assetId    String?
+  issueId    String?
+  sweepId    String? // matterport internal position id
+  label      String?
+  createdAt  DateTime @default(now())
+
+  link  MatterportPropertyLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  asset Asset?                 @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@index([linkId])
+  @@index([assetId])
+}
+
+// ---------------------------------------------------------------------------
+// Drone / photogrammetry (provider #1 of PhotogrammetryProvider = PIX4D, future)
+// ---------------------------------------------------------------------------
+
+model DroneCapture {
+  id           String             @id @default(cuid())
+  propertyId   String
+  capturedAt   DateTime?
+  capturedById String?
+  droneModel   String?
+  status       DroneCaptureStatus @default(CREATED)
+  notes        String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  property Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  datasets DroneDataset[]
+
+  @@index([propertyId])
+  @@index([status])
+}
+
+model DroneDataset {
+  id            String   @id @default(cuid())
+  captureId     String
+  provider      String   @default("PIX4D")
+  externalJobId String?
+  createdAt     DateTime @default(now())
+
+  capture DroneCapture         @relation(fields: [captureId], references: [id], onDelete: Cascade)
+  images  DroneImage[]
+  jobs    DroneProcessingJob[]
+  outputs DroneOutput[]
+
+  @@index([captureId])
+}
+
+model DroneImage {
+  id           String    @id @default(cuid())
+  datasetId    String
+  storageKey   String
+  thumbnailKey String?
+  latitude     Float?
+  longitude    Float?
+  altitude     Float?
+  capturedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  dataset DroneDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  @@index([datasetId])
+}
+
+model DroneProcessingJob {
+  id           String             @id @default(cuid())
+  datasetId    String
+  status       DroneCaptureStatus @default(CREATED)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  dataset DroneDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  @@index([datasetId])
+  @@index([status])
+}
+
+model DroneOutput {
+  id         String          @id @default(cuid())
+  datasetId  String
+  outputType DroneOutputType
+  storageKey String
+  metadata   Json            @default("{}")
+  createdAt  DateTime        @default(now())
+
+  dataset DroneDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  @@index([datasetId])
+  @@index([outputType])
+}
+
+// ---------------------------------------------------------------------------
+// AI vision / findings (architecture only — no automatic defect detection yet)
+// ---------------------------------------------------------------------------
+
+model AIFinding {
+  id           String          @id @default(cuid())
+  evidenceId   String
+  label        String
+  description  String?
+  status       AIFindingStatus @default(SUGGESTED)
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime        @default(now())
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId])
+  @@index([status])
+}
+
+model AIQueryLog {
+  id                String   @id @default(cuid())
+  organizationId    String
+  userId            String
+  question          String
+  toolCalls         Json     @default("[]") // list of {tool, args, resultSummary}
+  answer            String?
+  sourceRefs        Json     @default("[]") // [{type, id}]
+  wasDataSufficient Boolean  @default(true)
+  latencyMs         Int?
+  costMicros        Int? // AI cost tracking, in millionths of a dollar
+  createdAt         DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([organizationId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Events / audit / notifications / feature flags
+// ---------------------------------------------------------------------------
+
+model Event {
+  id             String   @id @default(cuid())
+  organizationId String
+  propertyId     String?
+  type           String // canonical event name, e.g. "issue.created"
+  payload        Json     @default("{}")
+  actorUserId    String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  actor        User?        @relation("EventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([propertyId, createdAt])
+  @@index([type])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  actorUserId    String?
+  action         String // e.g. "login", "property.updated", "export.created"
+  entityType     String?
+  entityId       String?
+  metadata       Json     @default("{}")
+  ipAddress      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?         @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([action])
+  @@index([entityType, entityId])
+}
+
+model Notification {
+  id             String           @id @default(cuid())
+  organizationId String
+  userId         String
+  type           NotificationType
+  title          String
+  body           String?
+  link           String?
+  isRead         Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([organizationId])
+}
+
+model FeatureFlag {
+  key            String   @id
+  description    String
+  defaultEnabled Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  overrides FeatureFlagOverride[]
+}
+
+model FeatureFlagOverride {
+  id             String   @id @default(cuid())
+  flagKey        String
+  organizationId String
+  enabled        Boolean
+  updatedAt      DateTime @updatedAt
+
+  flag         FeatureFlag  @relation(fields: [flagKey], references: [key], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([flagKey, organizationId])
+}
+
+model SavedView {
+  id             String          @id @default(cuid())
+  organizationId String
+  userId         String
+  name           String
+  entity         SavedViewEntity
+  filters        Json            @default("{}")
+  createdAt      DateTime        @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId])
+}
+
+// ---------------------------------------------------------------------------
+// Billing (software subscription, separate from capture-service revenue)
+// ---------------------------------------------------------------------------
+
+model SubscriptionPlan {
+  id                 String   @id @default(cuid())
+  key                String   @unique // founding_partner | portfolio | enterprise
+  name               String
+  priceMonthlyCents  Int? // null = custom / contact us (Enterprise)
+  includedProperties Int
+  includedUsers      Int
+  includedStorageGB  Int
+  includedAIUsage    Int // arbitrary AI credit units per month
+  hasSSO             Boolean  @default(false)
+  hasAPI             Boolean  @default(false)
+  hasAdvancedReports Boolean  @default(false)
+  hasAdvancedAI      Boolean  @default(false)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+
+  subscriptions OrganizationSubscription[]
+}
+
+model OrganizationSubscription {
+  id                 String    @id @default(cuid())
+  organizationId     String    @unique
+  planId             String
+  status             String    @default("active") // active | trialing | past_due | canceled
+  currentPeriodStart DateTime  @default(now())
+  currentPeriodEnd   DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         SubscriptionPlan   @relation(fields: [planId], references: [id])
+  items        SubscriptionItem[]
+
+  @@index([planId])
+}
+
+model SubscriptionItem {
+  id             String                    @id @default(cuid())
+  subscriptionId String
+  componentType  SubscriptionComponentType
+  quantity       Int                       @default(1)
+  unitPriceCents Int                       @default(0)
+
+  subscription OrganizationSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+}
+
+model UsageRecord {
+  id             String          @id @default(cuid())
+  organizationId String
+  propertyId     String?
+  metricType     UsageMetricType
+  quantity       Float
+  recordedAt     DateTime        @default(now())
+  metadata       Json            @default("{}")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, metricType, recordedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding
+// ---------------------------------------------------------------------------
+
+model OnboardingProgress {
+  organizationId      String   @id
+  organizationSetup   Boolean  @default(true)
+  usersInvited        Boolean  @default(false)
+  propertiesImported  Boolean  @default(false)
+  assetsImported      Boolean  @default(false)
+  interiorConnected   Boolean  @default(false)
+  exteriorConnected   Boolean  @default(false)
+  firstAssessmentDone Boolean  @default(false)
+  aiReady             Boolean  @default(false)
+  updatedAt           DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Import / dedup
+// ---------------------------------------------------------------------------
+
+model ImportJob {
+  id               String           @id @default(cuid())
+  organizationId   String
+  entityType       ImportEntityType
+  status           ImportStatus     @default(UPLOADED)
+  originalFilename String
+  storageKey       String
+  columnMapping    Json             @default("{}")
+  rowCount         Int              @default(0)
+  successCount     Int              @default(0)
+  errorCount       Int              @default(0)
+  errorReportKey   String?
+  createdById      String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([status])
+}
