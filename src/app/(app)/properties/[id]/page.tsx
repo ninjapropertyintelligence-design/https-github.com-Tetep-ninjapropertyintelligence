@@ -1,16 +1,22 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getSessionContext, propertyScopeWhere } from "@/lib/session-context";
+import { getSessionContext, propertyScopeWhere, can, SessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
-import { getLatestHealthSnapshot, CategoryBreakdownEntry } from "@/lib/scoring";
+import { getLatestHealthSnapshot, getDataConfidenceWarnings, CategoryBreakdownEntry } from "@/lib/scoring";
 import { ScoringCategory } from "@/lib/scoring-categories";
+import { getPropertyInteriorStatus } from "@/lib/matterport-service";
+import { getPropertyExteriorData } from "@/lib/drone-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SeverityBadge, StatusBadge } from "@/components/ui/Badge";
 import { formatCents, formatDate, eventLabel, formatRelativeTime } from "@/lib/format";
 import { PropertyTabs } from "@/components/property/PropertyTabs";
+import { PropertyHeaderStats } from "@/components/property/PropertyHeaderStats";
 import { OverviewTab } from "@/components/property/OverviewTab";
+import { DocumentSearchBox } from "@/components/property/DocumentSearchBox";
 import { AskAiInline } from "@/components/ai/AskAiInline";
+import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
+import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -33,27 +39,40 @@ export default async function PropertyDetailPage({
   const property = await loadProperty(id, ctx);
   if (!property) notFound();
 
+  const health = await getLatestHealthSnapshot(property.id);
+
   return (
     <div className="space-y-4">
       <div>
-        <Link href="/properties" className="text-xs text-muted hover:text-brand">
-          ← Properties
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link href="/properties" className="text-xs text-muted hover:text-brand">
+            ← Properties
+          </Link>
+          {can(ctx, "canManageProperties") ? (
+            <Link href={`/properties/${property.id}/onboarding`} className="text-xs font-medium text-brand hover:underline">
+              Deep Property Setup →
+            </Link>
+          ) : null}
+        </div>
         <h1 className="mt-1 text-xl font-semibold text-foreground">{property.name}</h1>
         <p className="text-sm text-muted">
           {property.addressLine1}, {property.city}, {property.state}
           {property.customerPropertyId ? ` · ${property.customerPropertyId}` : ""}
         </p>
+        <div className="mt-2">
+          <PropertyHeaderStats health={health} />
+        </div>
       </div>
 
       <PropertyTabs propertyId={property.id} active={tab} />
 
-      <TabContent propertyId={property.id} tab={tab} propertyName={property.name} canViewAI={ctx.permissions.includes("canViewAI")} />
+      <TabContent propertyId={property.id} tab={tab} propertyName={property.name} ctx={ctx} />
     </div>
   );
 }
 
-async function TabContent({ propertyId, tab, propertyName, canViewAI }: { propertyId: string; tab: string; propertyName: string; canViewAI: boolean }) {
+async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: string; tab: string; propertyName: string; ctx: SessionContext }) {
+  const canViewAI = ctx.permissions.includes("canViewAI");
   switch (tab) {
     case "assets":
       return <AssetsTab propertyId={propertyId} />;
@@ -66,9 +85,9 @@ async function TabContent({ propertyId, tab, propertyName, canViewAI }: { proper
     case "history":
       return <HistoryTab propertyId={propertyId} />;
     case "interior":
-      return <InteriorTab propertyId={propertyId} />;
+      return <InteriorTab propertyId={propertyId} ctx={ctx} />;
     case "exterior":
-      return <ExteriorTab propertyId={propertyId} />;
+      return <ExteriorTab propertyId={propertyId} ctx={ctx} />;
     case "digital-twin":
       return <DigitalTwinTab propertyId={propertyId} />;
     case "projects":
@@ -92,7 +111,7 @@ async function TabContent({ propertyId, tab, propertyName, canViewAI }: { proper
 }
 
 async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
-  const [property, health, openIssueCount, criticalIssueCount, assetCount, criticalAssetCount, lastAssessment, matterportLink, droneCapture] =
+  const [property, health, openIssueCount, criticalIssueCount, assetCount, criticalAssetCount, lastAssessment, matterportLink, droneCapture, warnings] =
     await Promise.all([
       prisma.property.findUniqueOrThrow({ where: { id: propertyId } }),
       getLatestHealthSnapshot(propertyId),
@@ -103,6 +122,7 @@ async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
       prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
       prisma.matterportPropertyLink.findFirst({ where: { propertyId }, orderBy: { linkedAt: "desc" } }),
       prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" }, orderBy: { capturedAt: "desc" } }),
+      getDataConfidenceWarnings(propertyId),
     ]);
 
   return (
@@ -120,6 +140,7 @@ async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
       lastAssessment={lastAssessment?.completedAt ?? null}
       lastInteriorCapture={matterportLink?.linkedAt ?? null}
       lastExteriorCapture={droneCapture?.capturedAt ?? null}
+      warnings={warnings}
     />
   );
 }
@@ -235,25 +256,32 @@ async function AssessmentsTab({ propertyId }: { propertyId: string }) {
 
 async function DocumentsTab({ propertyId }: { propertyId: string }) {
   const documents = await prisma.document.findMany({ where: { propertyId }, orderBy: { updatedAt: "desc" }, include: { versions: { take: 1, orderBy: { versionNumber: "desc" } } } });
-  if (documents.length === 0) {
-    return <EmptyState title="No documents uploaded" description="Warranties, inspection reports, permits, and floor plans will appear here." />;
-  }
   return (
-    <Card>
-      <CardBody className="p-0">
-        <ul>
-          {documents.map((d) => (
-            <li key={d.id} className="flex items-center justify-between border-b border-border px-5 py-3 text-sm last:border-0">
-              <div>
-                <p className="font-medium text-foreground">{d.title}</p>
-                <p className="text-xs text-muted">{d.documentType.replace(/_/g, " ")}</p>
-              </div>
-              <span className="text-xs text-muted">{formatDate(d.updatedAt)}</span>
-            </li>
-          ))}
-        </ul>
-      </CardBody>
-    </Card>
+    <div>
+      <DocumentSearchBox propertyId={propertyId} />
+      {documents.length === 0 ? (
+        <EmptyState title="No documents uploaded" description="Warranties, inspection reports, permits, and floor plans will appear here." />
+      ) : (
+        <Card>
+          <CardBody className="p-0">
+            <ul>
+              {documents.map((d) => (
+                <li key={d.id} className="flex items-center justify-between border-b border-border px-5 py-3 text-sm last:border-0">
+                  <div>
+                    <p className="font-medium text-foreground">{d.title}</p>
+                    <p className="text-xs text-muted">
+                      {d.documentType.replace(/_/g, " ")}
+                      {d.indexStatus === "INDEXED" ? " · text indexed" : d.indexStatus === "UNSUPPORTED" ? " · not text-searchable" : d.indexStatus === "FAILED" ? " · indexing failed" : ""}
+                    </p>
+                  </div>
+                  <span className="text-xs text-muted">{formatDate(d.updatedAt)}</span>
+                </li>
+              ))}
+            </ul>
+          </CardBody>
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -281,49 +309,38 @@ async function HistoryTab({ propertyId }: { propertyId: string }) {
   );
 }
 
-async function InteriorTab({ propertyId }: { propertyId: string }) {
-  const link = await prisma.matterportPropertyLink.findFirst({ where: { propertyId }, orderBy: { linkedAt: "desc" }, include: { space: true } });
+async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const status = await getPropertyInteriorStatus(ctx, propertyId);
   return (
-    <Card>
-      <CardHeader title="Interior — Matterport" subtitle="Matterport is a capture provider, not core architecture; other providers can plug in behind the same InteriorCaptureProvider interface." />
-      <CardBody>
-        {!link ? (
-          <EmptyState title="No interior capture linked" description="Connect a Matterport space to this property from the Capture workflow to enable the embedded 3D walkthrough." />
-        ) : (
-          <div className="space-y-2 text-sm">
-            <p>
-              <span className="text-muted">Space status:</span> <StatusBadge status={link.space.status} />
-            </p>
-            <p className="text-muted">Linked {formatDate(link.linkedAt)}{link.operator ? ` by ${link.operator}` : ""}</p>
-            <div className="mt-3 flex h-64 items-center justify-center rounded-lg border border-dashed border-border bg-background text-sm text-muted">
-              Matterport viewer embeds here once a live Matterport connection is configured for this organization.
-            </div>
-          </div>
-        )}
-      </CardBody>
-    </Card>
+    <InteriorManager
+      propertyId={propertyId}
+      data={status as unknown as InteriorStatusData}
+      canManageIntegrations={can(ctx, "canManageIntegrations")}
+      canPerformCapture={can(ctx, "canPerformCapture")}
+    />
   );
 }
 
-async function ExteriorTab({ propertyId }: { propertyId: string }) {
-  const capture = await prisma.droneCapture.findFirst({ where: { propertyId }, orderBy: { createdAt: "desc" }, include: { datasets: { include: { outputs: true } } } });
+async function ExteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const [{ captures, markers }, assets, issues] = await Promise.all([
+    getPropertyExteriorData(ctx, propertyId),
+    prisma.asset.findMany({ where: { propertyId, status: "ACTIVE" }, select: { id: true, name: true }, take: 200 }),
+    prisma.issue.findMany({
+      where: { propertyId, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } },
+      select: { id: true, title: true, severity: true },
+      take: 200,
+    }),
+  ]);
   return (
-    <Card>
-      <CardHeader title="Exterior — Drone Capture" subtitle="PIX4D is planned as the first PhotogrammetryProvider implementation." />
-      <CardBody>
-        {!capture ? (
-          <EmptyState title="No drone capture yet" description="Once a drone capture is uploaded and processed, orthomosaic, aerial photos, and exterior asset markers appear here." />
-        ) : (
-          <div className="space-y-2 text-sm">
-            <p>
-              <span className="text-muted">Status:</span> <StatusBadge status={capture.status} />
-            </p>
-            <p className="text-muted">Captured {formatDate(capture.capturedAt)}</p>
-            <p className="text-muted">{capture.datasets.flatMap((d) => d.outputs).length} processed output(s)</p>
-          </div>
-        )}
-      </CardBody>
-    </Card>
+    <ExteriorManager
+      propertyId={propertyId}
+      captures={captures as unknown as DroneCaptureData[]}
+      markers={markers as unknown as MarkerData[]}
+      canPerformCapture={can(ctx, "canPerformCapture")}
+      canManageAssets={can(ctx, "canManageAssets")}
+      assets={assets}
+      issues={issues}
+    />
   );
 }
 
@@ -356,6 +373,12 @@ async function ReportsTab({ propertyId, propertyName }: { propertyId: string; pr
       <CardBody className="space-y-2 text-sm">
         <p className="text-muted">Generate a report for {propertyName}:</p>
         <div className="flex flex-wrap gap-2">
+          <a href={`/api/reports/property-condition?propertyId=${propertyId}&format=pdf`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+            Property Condition Report (PDF)
+          </a>
+          <a href={`/api/reports/executive-summary?propertyId=${propertyId}`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+            Executive Summary (PDF)
+          </a>
           <a href={`/api/reports/property-condition?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Property Condition Report (CSV)
           </a>

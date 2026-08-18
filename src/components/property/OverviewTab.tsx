@@ -13,6 +13,7 @@ export function OverviewTab({
   lastAssessment,
   lastInteriorCapture,
   lastExteriorCapture,
+  warnings,
 }: {
   property: { id: string; name: string; customerPropertyId: string | null; addressLine1: string; city: string; state: string; squareFootage: number | null; yearBuilt: number | null };
   health: {
@@ -28,9 +29,25 @@ export function OverviewTab({
   lastAssessment: Date | null;
   lastInteriorCapture: Date | null;
   lastExteriorCapture: Date | null;
+  warnings?: string[];
 }) {
   return (
     <div className="space-y-6">
+      {warnings && warnings.length > 0 ? (
+        <div className="rounded-lg border border-[var(--band-needs-attention)]/40 bg-[var(--band-needs-attention)]/5 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--band-needs-attention)]">
+            Data Confidence Warning{warnings.length > 1 ? "s" : ""}
+          </p>
+          <ul className="mt-1 space-y-1">
+            {warnings.map((w) => (
+              <li key={w} className="text-sm text-foreground">
+                {w}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatTile
           label="Health Score"

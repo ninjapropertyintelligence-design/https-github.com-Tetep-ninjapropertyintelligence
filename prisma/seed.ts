@@ -1,7 +1,18 @@
+import crypto from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
 import { recalculatePropertyHealth } from "../src/lib/scoring";
 import { DEFAULT_CATEGORY_WEIGHTS } from "../src/lib/scoring-categories";
+
+// A tiny (43-byte) but fully valid 1x1 JPEG — real bytes on real disk, not a
+// fake placeholder string, so verifyUpload()/checksum logic behaves exactly
+// as it would for a genuine drone photo upload.
+const MINIMAL_JPEG = Buffer.from(
+  "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
+  "base64",
+);
 
 /**
  * Seeds:
@@ -456,6 +467,50 @@ async function main() {
 
   console.log("Recalculating pilot property health snapshot...");
   await recalculatePropertyHealth(pilot.id);
+
+  console.log("Seeding a real drone exterior capture for the pilot property...");
+  const existingCapture = await prisma.droneCapture.findFirst({ where: { propertyId: pilot.id } });
+  if (!existingCapture) {
+    const capture = await prisma.droneCapture.create({
+      data: {
+        propertyId: pilot.id,
+        capturedAt: new Date(Date.now() - 14 * 86400000),
+        capturedById: technician.id,
+        droneModel: "DJI Mavic 3 Enterprise",
+        status: "READY",
+        notes: "Seeded demo exterior capture — roof + facade photo set.",
+      },
+    });
+    const dataset = await prisma.droneDataset.create({
+      data: { captureId: capture.id, provider: "MANUAL_UPLOAD" },
+    });
+
+    const localStorageRoot = path.join(process.cwd(), ".local-storage");
+    const checksum = crypto.createHash("sha256").update(MINIMAL_JPEG).digest("hex");
+    const photoSpecs = [
+      { label: "roof-east-wing-01.jpg", lat: 39.0999, lng: -94.5784 },
+      { label: "facade-front-01.jpg", lat: 39.0995, lng: -94.5788 },
+    ];
+    for (const spec of photoSpecs) {
+      const key = `${org.id}/${crypto.randomUUID()}-${spec.label}`;
+      const filePath = path.join(localStorageRoot, key);
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, MINIMAL_JPEG);
+      await prisma.droneImage.create({
+        data: {
+          datasetId: dataset.id,
+          storageKey: key,
+          mimeType: "image/jpeg",
+          sizeBytes: MINIMAL_JPEG.byteLength,
+          checksum,
+          latitude: spec.lat,
+          longitude: spec.lng,
+          capturedAt: capture.capturedAt,
+        },
+      });
+    }
+    console.log(`  Wrote ${photoSpecs.length} real JPEG file(s) under .local-storage/${org.id}/`);
+  }
 
   console.log("Seeding shallow properties (5)...");
   const shallow: Array<{

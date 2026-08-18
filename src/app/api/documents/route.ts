@@ -4,6 +4,7 @@ import { ApiError, withApiHandler } from "@/lib/api-utils";
 import { propertyScopeWhere } from "@/lib/session-context";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
+import { extractAndIndexDocument } from "@/lib/document-extraction";
 import { z } from "zod";
 
 const DOCUMENT_TYPES = [
@@ -106,6 +107,11 @@ export const POST = withApiHandler(async (ctx, req) => {
     entityType: "Document",
     entityId: document.id,
   });
+
+  // Extraction is small (PDF text only) so it runs inline rather than via a
+  // background job queue — a real job runner is the natural next step if
+  // large documents make this request latency noticeable.
+  await extractAndIndexDocument(document.id);
 
   return NextResponse.json(document, { status: 201 });
 });

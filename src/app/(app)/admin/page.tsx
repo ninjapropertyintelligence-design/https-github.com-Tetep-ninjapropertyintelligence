@@ -1,8 +1,10 @@
 import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
+import { getIntegrationsOverview } from "@/lib/admin-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
+import { IntegrationsPanel, IntegrationsOverview } from "@/components/admin/IntegrationsPanel";
 import { formatRelativeTime } from "@/lib/format";
 
 /**
@@ -15,7 +17,7 @@ export default async function AdminPage() {
   if (!ctx) redirect("/login");
   if (!ctx.isPlatformAdmin) redirect("/dashboard");
 
-  const [orgCount, userCount, propertyCount, activeUploadFailures, failedProcessingJobs, recentAuditLogs, orgs] = await Promise.all([
+  const [orgCount, userCount, propertyCount, activeUploadFailures, failedProcessingJobs, recentAuditLogs, orgs, integrations] = await Promise.all([
     prisma.organization.count(),
     prisma.user.count({ where: { isActive: true } }),
     prisma.property.count(),
@@ -26,6 +28,7 @@ export default async function AdminPage() {
       include: { _count: { select: { properties: true, memberships: true } }, subscription: { include: { plan: true } } },
       orderBy: { createdAt: "asc" },
     }),
+    getIntegrationsOverview(),
   ]);
 
   return (
@@ -88,6 +91,11 @@ export default async function AdminPage() {
             </ul>
           </CardBody>
         </Card>
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-semibold text-foreground">Integrations</h2>
+        <IntegrationsPanel data={integrations as unknown as IntegrationsOverview} />
       </div>
     </div>
   );

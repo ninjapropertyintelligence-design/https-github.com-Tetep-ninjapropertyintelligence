@@ -8,15 +8,9 @@ import {
   getSessionContext,
 } from "@/lib/session-context";
 import { Permission } from "@/lib/permissions";
+import { ApiError } from "@/lib/api-error";
 
-export class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+export { ApiError };
 
 export function jsonError(status: number, message: string) {
   return NextResponse.json({ error: message }, { status });
