@@ -2,12 +2,21 @@
 
 import { useRef, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
 import { formatDate } from "@/lib/format";
+import { isViewableIn3D } from "@/components/exterior/Object3DViewer";
+
+// WebGL/Canvas — never server-rendered, and only pulled into the bundle when
+// a user actually expands a 3D preview.
+const Object3DViewer = dynamic(() => import("@/components/exterior/Object3DViewer").then((m) => m.Object3DViewer), {
+  ssr: false,
+  loading: () => <p className="text-sm text-muted">Loading viewer…</p>,
+});
 
 export interface DroneImageData {
   id: string;
@@ -78,6 +87,7 @@ export function ExteriorManager({
   const [placingMarker, setPlacingMarker] = useState<{ imageId: string } | null>(null);
   const [pendingMarker, setPendingMarker] = useState<{ imageId: string; x: number; y: number } | null>(null);
   const [markerRef, setMarkerRef] = useState<{ kind: "asset" | "issue"; id: string } | null>(null);
+  const [expandedOutputId, setExpandedOutputId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeCapture = captures.find((c) => c.status !== "READY" && c.status !== "FAILED") ?? captures[0];
@@ -374,14 +384,28 @@ export function ExteriorManager({
         </Card>
         <Card>
           <CardHeader title={`Other Outputs (${(activeDataset?.outputs.length ?? 0) - (orthomosaic ? 1 : 0)})`} />
-          <CardBody className="space-y-1">
+          <CardBody className="space-y-3">
             {(activeDataset?.outputs ?? [])
               .filter((o) => o.outputType !== "ORTHOMOSAIC")
-              .map((o) => (
-                <a key={o.id} href={o.downloadUrl} className="block text-sm text-brand hover:underline">
-                  {o.outputType.replace(/_/g, " ")} →
-                </a>
-              ))}
+              .map((o) => {
+                const viewable = (o.outputType === "POINT_CLOUD" || o.outputType === "MESH_3D") && isViewableIn3D(o.storageKey);
+                const expanded = expandedOutputId === o.id;
+                return (
+                  <div key={o.id}>
+                    <div className="flex items-center gap-3">
+                      <a href={o.downloadUrl} className="text-sm text-brand hover:underline">
+                        {o.outputType.replace(/_/g, " ")} →
+                      </a>
+                      {viewable ? (
+                        <Button variant="ghost" onClick={() => setExpandedOutputId(expanded ? null : o.id)}>
+                          {expanded ? "Hide 3D preview" : "View in 3D"}
+                        </Button>
+                      ) : null}
+                    </div>
+                    {expanded ? <Object3DViewer downloadUrl={o.downloadUrl} storageKey={o.storageKey} /> : null}
+                  </div>
+                );
+              })}
             {(activeDataset?.outputs.length ?? 0) - (orthomosaic ? 1 : 0) === 0 ? <p className="text-sm text-muted">No mesh/point-cloud/DSM/DTM outputs yet.</p> : null}
           </CardBody>
         </Card>

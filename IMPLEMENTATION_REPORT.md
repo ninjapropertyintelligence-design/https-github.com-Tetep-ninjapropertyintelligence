@@ -560,9 +560,62 @@ INTEGRATION_ENCRYPTION_KEY=      # AES-256-GCM key for encrypting stored provide
    restricted toolset, against the real model.
 3. PIX4D (or equivalent) automation for the drone processing pipeline —
    `DroneProcessingJob` and the admin retry UI are ready to receive it.
-4. Point cloud / mesh 3D viewer for `POINT_CLOUD`/`MESH_3D` outputs.
+4. ~~Point cloud / mesh 3D viewer for `POINT_CLOUD`/`MESH_3D` outputs.~~ —
+   **done, see below.**
 5. Move PDF report generation off the request path for portfolio-wide batch
    generation once report volume justifies it.
 6. Carry forward Phase 1's remaining next-workstream list (assessment→asset
    picker UI, CSV/Excel bulk import UI, Stripe integration, PWA/native,
    load testing, staging/DR runbook) — none of it was touched this phase.
+
+---
+
+# Post-Phase-2 workstream — Point cloud / 3D mesh viewer
+
+Real in-browser preview for `POINT_CLOUD`/`MESH_3D` drone outputs
+(`src/components/exterior/Object3DViewer.tsx`), using `three` — no CDN, a
+real npm dependency bundled with the app, code-split via `next/dynamic`
+(`ssr: false`) so the WebGL/Canvas code never touches the server render and
+only loads when a user actually clicks "View in 3D" on the Exterior tab.
+
+**Supported formats** — only formats this can parse *correctly*, no
+hand-rolled binary parsers for anything risky:
+- Mesh: `.glb`/`.gltf` (`GLTFLoader`), `.obj` (`OBJLoader`), `.fbx`
+  (`FBXLoader`), `.ply` with face data (`PLYLoader`, rendered as a lit
+  `THREE.Mesh`).
+- Point cloud: `.ply` without face data (`PLYLoader`, rendered as
+  `THREE.Points`), `.xyz` (a genuinely trivial whitespace-delimited text
+  format — parsed here directly, safe to hand-roll).
+
+**Deliberately NOT supported, with an honest message instead of a guess**:
+`.las`/`.laz` (LiDAR binary formats — LAZ is compressed and needs a real
+decoder; LAS's binary header layout isn't something to hand-roll from
+memory without a spec reference in front of you) and DSM/DTM GeoTIFF
+elevation rasters (a fundamentally different data type — heightmap images,
+not 3D geometry — out of scope for a mesh/point-cloud viewer). Clicking
+"View in 3D" only appears for formats that are actually supported; for
+everything else, the existing download link is what's shown — never a
+button that leads to a guaranteed error.
+
+**Viewer behavior**: auto-fits the camera to the geometry's bounding box
+(so a 2-meter test mesh and a 200-meter real point cloud both frame
+correctly), orbit/zoom via `OrbitControls`, a `HemisphereLight` +
+`DirectionalLight` pair so glTF/OBJ/PLY materials render lit rather than
+flat black, and fixed-pixel (non-distance-attenuated) point size so a
+sparse point cloud stays visible regardless of world-space scale.
+
+**Verified live** (not just typechecked): started the actual dev server,
+seeded the pilot property with a real ASCII PLY tetrahedron mesh and a real
+XYZ point-cloud grid (`prisma/seed.ts`, idempotent per-artifact — safe to
+re-run), then drove a real Chromium browser via Playwright to click "View in
+3D" on both outputs, confirmed a `<canvas>` element rendered with zero
+console errors, screenshotted both (lit grey tetrahedron; a visible grid of
+blue points), and confirmed dragging the canvas actually changes the
+rendered pixels (real orbit-control interaction, not a static image).
+Full gate re-run after the change: `tsc --noEmit` clean, `eslint` clean,
+`vitest run` 46/46, `playwright test` 9/9, `next build` succeeds.
+
+**New dependency**: `three` (+ `@types/three` dev dependency) — MIT
+licensed, no runtime network calls, ~600KB but only loaded on-demand behind
+the dynamic import, never in the initial bundle for users who don't open a
+3D output.

@@ -469,9 +469,10 @@ async function main() {
   await recalculatePropertyHealth(pilot.id);
 
   console.log("Seeding a real drone exterior capture for the pilot property...");
-  const existingCapture = await prisma.droneCapture.findFirst({ where: { propertyId: pilot.id } });
-  if (!existingCapture) {
-    const capture = await prisma.droneCapture.create({
+  const localStorageRoot = path.join(process.cwd(), ".local-storage");
+  let capture = await prisma.droneCapture.findFirst({ where: { propertyId: pilot.id } });
+  if (!capture) {
+    capture = await prisma.droneCapture.create({
       data: {
         propertyId: pilot.id,
         capturedAt: new Date(Date.now() - 14 * 86400000),
@@ -481,11 +482,16 @@ async function main() {
         notes: "Seeded demo exterior capture — roof + facade photo set.",
       },
     });
-    const dataset = await prisma.droneDataset.create({
+  }
+  let dataset = await prisma.droneDataset.findFirst({ where: { captureId: capture.id } });
+  if (!dataset) {
+    dataset = await prisma.droneDataset.create({
       data: { captureId: capture.id, provider: "MANUAL_UPLOAD" },
     });
+  }
 
-    const localStorageRoot = path.join(process.cwd(), ".local-storage");
+  const existingImageCount = await prisma.droneImage.count({ where: { datasetId: dataset.id } });
+  if (existingImageCount === 0) {
     const checksum = crypto.createHash("sha256").update(MINIMAL_JPEG).digest("hex");
     const photoSpecs = [
       { label: "roof-east-wing-01.jpg", lat: 39.0999, lng: -94.5784 },
@@ -510,6 +516,77 @@ async function main() {
       });
     }
     console.log(`  Wrote ${photoSpecs.length} real JPEG file(s) under .local-storage/${org.id}/`);
+  }
+
+  // A real, valid ASCII PLY mesh (tetrahedron) and a real XYZ point cloud
+  // grid — genuine parseable 3D files, not placeholders, so the in-browser
+  // Object3DViewer has something real to render on the seeded pilot property.
+  const existingMesh = await prisma.droneOutput.findFirst({ where: { datasetId: dataset.id, outputType: "MESH_3D" } });
+  if (!existingMesh) {
+    const plyMesh = [
+      "ply",
+      "format ascii 1.0",
+      "element vertex 4",
+      "property float x",
+      "property float y",
+      "property float z",
+      "element face 4",
+      "property list uchar int vertex_indices",
+      "end_header",
+      "0 0 0",
+      "1 0 0",
+      "0 1 0",
+      "0 0 1",
+      "3 0 1 2",
+      "3 0 1 3",
+      "3 0 2 3",
+      "3 1 2 3",
+      "",
+    ].join("\n");
+    const plyBuffer = Buffer.from(plyMesh, "utf-8");
+    const plyKey = `${org.id}/${crypto.randomUUID()}-roof-mesh.ply`;
+    await mkdir(path.dirname(path.join(localStorageRoot, plyKey)), { recursive: true });
+    await writeFile(path.join(localStorageRoot, plyKey), plyBuffer);
+    await prisma.droneOutput.create({
+      data: {
+        datasetId: dataset.id,
+        outputType: "MESH_3D",
+        storageKey: plyKey,
+        mimeType: "application/octet-stream",
+        sizeBytes: plyBuffer.byteLength,
+        checksum: crypto.createHash("sha256").update(plyBuffer).digest("hex"),
+        metadata: { source: "seed", format: "ply" },
+      },
+    });
+    console.log(`  Wrote 1 real PLY mesh under .local-storage/${org.id}/`);
+  }
+
+  const existingPointCloud = await prisma.droneOutput.findFirst({ where: { datasetId: dataset.id, outputType: "POINT_CLOUD" } });
+  if (!existingPointCloud) {
+    const xyzLines: string[] = [];
+    for (let x = 0; x <= 4; x++) {
+      for (let y = 0; y <= 4; y++) {
+        for (const z of [0, 2]) {
+          xyzLines.push(`${x} ${y} ${z}`);
+        }
+      }
+    }
+    const xyzBuffer = Buffer.from(xyzLines.join("\n") + "\n", "utf-8");
+    const xyzKey = `${org.id}/${crypto.randomUUID()}-roof-point-cloud.xyz`;
+    await mkdir(path.dirname(path.join(localStorageRoot, xyzKey)), { recursive: true });
+    await writeFile(path.join(localStorageRoot, xyzKey), xyzBuffer);
+    await prisma.droneOutput.create({
+      data: {
+        datasetId: dataset.id,
+        outputType: "POINT_CLOUD",
+        storageKey: xyzKey,
+        mimeType: "text/plain",
+        sizeBytes: xyzBuffer.byteLength,
+        checksum: crypto.createHash("sha256").update(xyzBuffer).digest("hex"),
+        metadata: { source: "seed", format: "xyz", pointCount: xyzLines.length },
+      },
+    });
+    console.log(`  Wrote 1 real XYZ point cloud under .local-storage/${org.id}/`);
   }
 
   console.log("Seeding shallow properties (5)...");
