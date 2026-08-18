@@ -249,3 +249,320 @@ All additive/non-breaking; no destructive migrations were run.
 8. Load testing at 1,000/10,000-property scale; add caching/materialized
    views to `getLatestHealthSnapshots` if needed at that scale.
 9. Staging/pilot environment + secrets + backup/DR runbook.
+
+---
+
+# Phase 2 — Real Property Data Integration & One Complete Deep-Property Workflow
+
+Phase 2 builds on the Phase-1 foundation above (not rebuilt) to make one real
+pilot property — the seeded "Store #1052" — genuinely work end-to-end: real
+Matterport interior integration, a real (manually-imported) drone exterior
+pipeline, a provider-agnostic AI gateway, document text extraction/search,
+PDF/CSV reporting, event-driven score recalculation, and platform-admin
+integration recovery tooling. Nothing described as "done" below is mocked in
+production code; every honest-degradation path (no Matterport credentials, no
+AI provider key) is real code hitting a real `NOT_CONFIGURED` state, not a
+canned response.
+
+## Phase 2 — Completed
+
+**AI provider abstraction** (`src/lib/ai/provider.ts`, `provider-factory.ts`,
+`providers/{anthropic,openai,null}-provider.ts`) — `AIProvider` interface
+(`generateResponse`, `runToolLoop`, `supportsVision`, `supportsStructuredOutput`);
+`AnthropicProvider` (manual tool loop over `messages.create`) and
+`OpenAIProvider` (Chat Completions API) both drive the **same** tool
+gateway (`src/lib/ai/tools.ts`) — no duplicated tool logic. Selected via
+`AI_PROVIDER` env var; falls back to `NullProvider` (throws
+`AIProviderNotConfiguredError`, caught and surfaced as an honest "AI is not
+configured" message) when no matching API key is present.
+
+**Real Matterport integration** (`src/lib/integrations/matterport-provider.ts`,
+`src/lib/matterport-service.ts`) — `InteriorCaptureProvider` interface fully
+implemented against Matterport's Model API (GraphQL, Basic-auth token/secret)
+for `listSpaces`/`getSpace`/`syncSpace`, plus the Showcase embed URL scheme
+for `getViewerConfig`. Relationship is `Property → MatterportPropertyLink →
+MatterportSpace`, never a duplicate business object. Every mutating action
+(`connect`, `disconnect`, `link`, `sync`) is tenant-scoped and permission-gated
+(`canManageIntegrations` for org connect/disconnect, `canPerformCapture` for
+property-level link/sync/disconnect). Disconnecting removes the connection/link
+only — the Property is never touched. Credentials are encrypted at rest
+(AES-256-GCM, `src/lib/integrations/crypto.ts`).
+
+**Interior tab** (`src/components/interior/InteriorManager.tsx`,
+`/properties/[id]?tab=interior`) — header shows Provider / Status / Last Sync
+/ Capture Date / Space ID; renders the live Matterport iframe when connected
+and linked; renders the honest "Matterport is not configured" empty state
+otherwise (verified live — no credentials exist in this environment); side
+panel lists Areas/Assets/Issues/Evidence for the linked space, and clicking an
+asset opens its canonical `/assets/[id]` record.
+
+**Real drone exterior pipeline** (`src/lib/drone-service.ts`,
+`src/components/exterior/ExteriorManager.tsx`) — full manual-import workflow:
+Create Capture → signed direct-upload URL → client computes SHA-256
+(Web Crypto) → register Image/Output → server **re-reads the actual bytes
+from storage** (`StorageProvider.verifyUpload`) and rejects a mismatched
+size/checksum, rather than trusting the client's claim. Large files never
+pass through the Next.js server. Extension allowlists per
+`DroneOutputType` (`PHOTO_SET`/`ORTHOMOSAIC`/`POINT_CLOUD`/`MESH_3D`/`DSM`/`DTM`).
+Exterior tab renders Capture Summary → Photos → Orthomosaic → other outputs,
+in that priority order, with an honest empty state when no capture exists.
+`ExteriorMarker` lets a user pin a photo/orthomosaic location to an existing
+Asset/Issue/Evidence record — never a new duplicate object (schema-enforced:
+exactly one of `droneImageId`/`droneOutputId`, exactly one of
+`assetId`/`issueId`/`evidenceId`, via a Zod `.refine()`).
+
+**Deep Property Onboarding** (`src/lib/property-onboarding-status.ts`,
+`/properties/[id]/onboarding`) — 9-step checklist (details, interior,
+exterior, assets, assessment, issues, documents, health-calculable, AI-ready)
+with a live completion percentage and deep-links into each tab.
+
+**Data Confidence warnings** (`src/lib/scoring.ts` →
+`getDataConfidenceWarnings`) — flags stale/missing interior capture, exterior
+capture, and assessments (by months-since) plus zero-asset properties;
+rendered as an explicit amber banner on the Overview tab rather than being
+silently folded into the confidence number.
+
+**Shared property header** (`src/components/property/PropertyHeaderStats.tsx`)
+— Health / Risk / Confidence / Exposure shown identically across every tab,
+reading the same `PropertyHealthSnapshot` so numbers never drift tab-to-tab.
+
+**Event-driven recalculation** — `assessment.completed` (already wired in
+Phase 1's PATCH `/api/assessments/[id]`), plus newly wired: Matterport
+link/sync/disconnect and drone `markCaptureReady` each call
+`recalculatePropertyHealth()` synchronously in the same request, so the
+property header reflects a linked/synced capture or a ready exterior dataset
+immediately — verified in the new e2e test (assessment completion produces a
+new `PropertyHealthSnapshot` with a fresh `computedAt`).
+
+**Document intelligence foundation** (`src/lib/document-extraction.ts`) —
+`Document → text extraction (pdf-parse) → DocumentChunk → keyword search`.
+No vector infra is configured in this environment, so search is **real
+Postgres full-text search** (`to_tsvector`/`plainto_tsquery`/`ts_rank`), not a
+faked semantic search. Every chunk retains `organizationId`/`propertyId`/
+`assetId`/`documentId`/`pageNumber`. `searchDocumentChunks()` is scope-filtered
+before any row reaches the caller (verified in
+`tests/integration/phase2-ai-documents-reports.test.ts`).
+
+**Reporting v1** — Property Condition Report (PDF + CSV), Executive Summary
+(PDF), Capital Exposure (CSV) — all render from one shared query
+(`getPropertyReportData`) so the PDF and CSV of the "same" report can never
+disagree. PDF rendering uses `pdfkit`'s **standalone** build
+(`pdfkit/js/pdfkit.standalone.js`) — see Known Risks below for why the
+default entrypoint doesn't work under Next.js/Turbopack.
+
+**AI property-scoping** (`src/lib/ai/gateway.ts`) — when a question is asked
+from `/properties/{id}/ai`, the tool surface offered to the model is
+literally reduced to property-scoped tools with `propertyId` forced
+server-side (`scopeToolsToProperty`) — the model cannot retrieve another
+property even if asked, verified by an integration test that a scoped
+toolset's `getProperty` ignores/overrides an attacker-supplied `propertyId`.
+Evidence references come back as structured `{type, id}` pairs
+(`AskAiInline`'s `REF_HREF` map turns them into `[Open Asset →]`-style links)
+— never a URL embedded in model-generated text.
+
+**Platform Admin integration operations**
+(`src/lib/admin-service.ts`, `/admin` Integrations panel) — inspect Matterport
+connections (all orgs), failed drone captures, failed drone processing jobs,
+failed document indexing jobs, recent AI query logs, and current AI provider
+configuration; retry buttons for Matterport reconnect, drone capture retry,
+and document reindex — all audit-logged, all gated on `isPlatformAdmin`
+rather than any org-scoped permission. No direct DB manipulation needed.
+
+**Observability** (`src/lib/observability.ts`) — structured
+newline-delimited-JSON logging (a real, working sink — stdout, exactly what a
+log shipper tails in production) wired into: Matterport API calls
+(`matterport.api_call`) and sync duration (`matterport.sync`); drone upload
+verification, success/failure + size (`drone.upload`); AI tool calls and the
+top-level provider call, success/failure + latency (`ai.tool_call` /
+`ai.provider_call`); document indexing jobs, success/failure + duration
+(`document.index_job`); PDF report generation, success/failure
+(`report.generate`) — this is exactly the log line that caught the pdfkit
+bundler bug described below, during the e2e test that generates a real
+report.
+
+**Deep-property e2e test** (`tests/e2e/deep-property.spec.ts`) — the full
+spec §21 flow against the seeded pilot property: login as Owner → Overview
+(header stats) → Interior (confirm honest `NOT_CONFIGURED`) → Exterior (view
+2 real seeded drone photos) → Asset (RTU-04 → Condition History) → Issue
+(RTU-04 compressor vibration) → create + complete a fresh Assessment via the
+real UI → confirm a new health snapshot was computed → Ask AI (confirm honest
+degradation, no key configured) → generate a real PDF Property Condition
+Report and verify the response is a well-formed PDF. All 9 e2e tests
+(8 Phase-1 + this one) pass against a live dev server.
+
+**Seed data** (`prisma/seed.ts`) — the pilot property now has a **real** drone
+capture: two genuine on-disk JPEG files (written to `.local-storage/`,
+checksummed the same way a real upload would be) registered as `DroneImage`
+rows, so `npm run db:seed` produces an Exterior tab with actual photos to
+view, not an empty state. Idempotent (guarded by `findFirst`), matching the
+rest of the seed script's pattern.
+
+## Phase 2 — Partially completed
+
+- **Drone processing pipeline is manual-only.** `DroneProcessingJob` exists
+  in the schema and the admin panel can inspect/retry failed jobs, but there
+  is no PIX4D (or equivalent) automation that turns raw photos into an
+  orthomosaic/point cloud/mesh — per spec, this was explicitly out of scope
+  for Phase 2 ("manual drone output import first, before PIX4D automation").
+  Orthomosaic/point-cloud/mesh outputs can be registered and displayed if a
+  user uploads them directly, but nothing generates them.
+- **Point cloud / mesh viewer.** Files register and download correctly; there
+  is no in-browser 3D viewer for `POINT_CLOUD`/`MESH_3D` outputs (photos and
+  orthomosaic images render directly; other outputs are listed with a
+  download link only) — explicitly de-scoped by spec §6 ("don't block Phase 2
+  on point-cloud rendering difficulty").
+- **Assessment→asset cascade UI gap carries over from Phase 1** — see Phase 1
+  §2 above; unchanged this session.
+
+## Phase 2 — Deferred (not started)
+
+- Automated DJI flight control.
+- Full custom photogrammetry engine.
+- Advanced CV defect detection (schema hooks — `AIFinding`,
+  `ValidationStatus` — exist from Phase 1; no model runs).
+- Perfect unified Matterport/drone 3D fusion (single coordinate space across
+  both capture types).
+- Full CMMS integrations, full payment processing, full SOC 2 program.
+- Excel report export (CSV covers structured lists per spec; Excel explicitly
+  deferrable).
+
+All of the above are explicitly out of scope per this task's own instructions
+(§26) — flagged here for completeness, not silently dropped.
+
+## External credentials required to fully verify
+
+Everything below is **built and testable** (mocked-fetch integration tests
+cover the real request/response contracts) but has never made a live round
+trip in this environment, because no credentials exist here:
+
+- `MATTERPORT_API_TOKEN` / `MATTERPORT_API_SECRET` (+ optional
+  `MATTERPORT_SDK_KEY`) — without these, `MatterportProvider.isConfigured()`
+  is `false` and every org sees the honest "Matterport is not configured"
+  state. The GraphQL query field names follow Matterport's documented Model
+  API shape as of authoring; confirm against
+  `https://matterport.github.io/showcase-sdk/` before pointing at a
+  production account, since a partner-only API can move under you.
+- `AI_PROVIDER` + `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` — without a key,
+  `getAIProvider()` returns `NullProvider` and every AI answer states plainly
+  that it isn't configured, per spec §28 ("never fake an AI response").
+- A real PIX4D (or equivalent) API key would be required to automate the
+  currently-manual drone processing step — not attempted this phase.
+
+## Migrations
+
+One migration this phase, applied to both the dev and test databases:
+
+- `20260818032156_phase2_matterport_drone_metadata_exterior_markers_document_chunks`
+  — adds `MatterportConnection.errorMessage`; adds `mimeType`/`sizeBytes`/
+  `checksum` to `DroneImage`/`DroneOutput`; adds the `ExteriorMarker` model
+  (Asset/Issue/Evidence pin, schema-enforced single-target); adds
+  `Document.indexStatus`/`indexError`/`indexedAt` and the `DocumentChunk`
+  model. All additive/non-breaking — no destructive changes.
+
+## New environment variables
+
+```
+AI_PROVIDER=anthropic            # "anthropic" | "openai" | "none" (default: anthropic)
+OPENAI_API_KEY=
+MATTERPORT_API_TOKEN=
+MATTERPORT_API_SECRET=
+MATTERPORT_SDK_KEY=              # optional — enables the private/SDK embed instead of public share embed
+MATTERPORT_API_BASE_URL=         # optional override, defaults to Matterport's Model API GraphQL endpoint
+INTEGRATION_ENCRYPTION_KEY=      # AES-256-GCM key for encrypting stored provider credentials; falls back to NEXTAUTH_SECRET if unset
+```
+
+## Tests
+
+- **Unit**: 2 new permission-boundary tests (`canPerformCapture`,
+  `canManageIntegrations` role mappings) appended to
+  `tests/unit/permissions.test.ts`.
+- **Integration** (Vitest against real Postgres, 3 new files, all passing):
+  - `tests/integration/phase2-matterport.test.ts` — Org A cannot see/link/
+    sync/disconnect Org B's Matterport spaces or links; `MatterportProvider`
+    degrades cleanly on missing config and on an unreachable endpoint (no
+    live credentials touched).
+  - `tests/integration/phase2-drone.test.ts` — cross-tenant capture/dataset/
+    image/output access denied; integrity check rejects registering an image
+    with no file actually at the storage key; disallowed file extensions
+    rejected per output type.
+  - `tests/integration/phase2-ai-documents-reports.test.ts` — property-scoped
+    AI toolset cannot be redirected to another property by a forged
+    `propertyId` argument; org-wide toolset properly reflects portfolio
+    scope; document search never returns another org's chunks; report data
+    generation throws for an out-of-scope property.
+- **E2E** (Playwright, 1 new file): `tests/e2e/deep-property.spec.ts` — see
+  above. All 9 e2e specs (8 Phase-1 + 1 Phase-2) pass.
+- Full suite as of this session's final commit: `npx tsc --noEmit` clean,
+  `npm run lint` clean (0 errors), `npx vitest run` — **46/46 passing across
+  7 files**, `npx playwright test` — **9/9 passing**, `npm run build`
+  (production, Turbopack) succeeds.
+
+## Known risks
+
+- **`next-auth`/`next/headers` import-chain fragility for Vitest.** Several
+  new Phase 2 service files initially imported `SessionContext`/
+  `propertyScopeWhere`/`ApiError` from the "heavy" Phase-1 modules
+  (`session-context.ts`, `api-utils.ts`), which transitively import
+  `next/headers` → breaks under Vitest's Node module resolution (`Cannot
+  find module '.../next/server'`). Fixed by routing all new service files
+  (and two touched Phase-1 files, `ai/tools.ts`/`ai/gateway.ts`/
+  `dashboard.ts`) through the pre-existing lightweight `tenant-scope.ts` and
+  a newly-added zero-dependency `api-error.ts`. **Risk**: this is an easy
+  mistake to reintroduce — any new `src/lib/*.ts` file that needs
+  `SessionContext` or `ApiError` and might be imported by a Vitest
+  integration test must import from `tenant-scope.ts`/`api-error.ts`, not
+  `session-context.ts`/`api-utils.ts`.
+- **`pdfkit`'s default entrypoint is broken under Next.js/Turbopack server
+  bundling.** `new PDFDocument()` from the standard `"pdfkit"` import throws
+  `ENOENT` trying to read `Helvetica.afm` from a path built off `__dirname`,
+  because Turbopack rewrites `__dirname` to a virtual build path that doesn't
+  contain pdfkit's font data files. This was caught **live**, by the new
+  deep-property e2e test actually generating a report against the running
+  dev server — not by a unit test with a mocked renderer. Fixed by importing
+  `pdfkit/js/pdfkit.standalone.js` instead, which embeds font metrics inline
+  rather than reading them from disk (with a small ambient `.d.ts` since
+  `@types/pdfkit` only covers the default entrypoint path). Any future PDF
+  work in this codebase must use the standalone import.
+- **Matterport Model API contract is unverified against a live account** —
+  see External Credentials above; field names could have moved since this
+  was authored.
+- **Local disk storage does not scale past one server instance** — unchanged
+  from Phase 1; still the right abstraction (`StorageProvider`) for an S3/R2
+  swap later, just not exercised at that scale here.
+- **Full-text search has no relevance tuning** — `ts_rank` on a single
+  `english`-config `to_tsvector` is a reasonable default, not tuned (stemming
+  edge cases, stop words, multi-language documents are all unaddressed).
+
+## Performance notes
+
+- Drone/document uploads are verified with a **real** disk read + SHA-256
+  hash of the actual uploaded bytes (`StorageProvider.verifyUpload`) rather
+  than trusting client-reported size/checksum — this is a real integrity
+  check, not free, but it's O(file size) once per upload and never proxies
+  the file through the app server's request/response cycle.
+- PDF generation is synchronous within the request (`drawDocument` awaited
+  inline) — fine at pilot-property scale (single-digit seconds for a report
+  with ~10 assets), but a portfolio-wide "generate reports for all
+  properties" batch job would want to move this off the request path.
+- No caching layer was added for `getPropertyReportData`/
+  `getPropertyOnboardingStatus`/`getPropertyInteriorStatus` — each recomputes
+  from Postgres on every request. Fine at current scale; worth revisiting
+  together with the Phase-1 `getLatestHealthSnapshots` load-testing
+  workstream if/when portfolio sizes grow.
+
+## Next recommended workstream
+
+1. Obtain real Matterport partner credentials and verify the Model API
+   GraphQL contract live (field names, pagination, capture-date exposure);
+   adjust `matterport-provider.ts` if the schema has moved.
+2. Obtain an `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) and verify a live
+   tool-calling round trip end-to-end, including the property-scoped
+   restricted toolset, against the real model.
+3. PIX4D (or equivalent) automation for the drone processing pipeline —
+   `DroneProcessingJob` and the admin retry UI are ready to receive it.
+4. Point cloud / mesh 3D viewer for `POINT_CLOUD`/`MESH_3D` outputs.
+5. Move PDF report generation off the request path for portfolio-wide batch
+   generation once report volume justifies it.
+6. Carry forward Phase 1's remaining next-workstream list (assessment→asset
+   picker UI, CSV/Excel bulk import UI, Stripe integration, PWA/native,
+   load testing, staging/DR runbook) — none of it was touched this phase.

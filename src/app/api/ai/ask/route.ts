@@ -16,11 +16,10 @@ export const POST = withApiHandler(async (ctx, req) => {
   const body = await req.json();
   const input = schema.parse(body);
 
-  const result = await askPropertyAI(
-    ctx,
-    input.question,
-    input.propertyId ? `${input.propertyName ?? input.propertyId} (propertyId: ${input.propertyId})` : undefined,
-  );
+  const result = await askPropertyAI(ctx, input.question, {
+    propertyId: input.propertyId,
+    propertyName: input.propertyName,
+  });
 
   return NextResponse.json(result);
 });

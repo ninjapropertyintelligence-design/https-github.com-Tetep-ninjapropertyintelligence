@@ -243,6 +243,7 @@ model User {
   assessmentsAsInspector Assessment[]            @relation("AssessmentInspector")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
+  exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
 
   @@index([email])
 }
@@ -318,6 +319,8 @@ model Organization {
   importJobs           ImportJob[]
   savedViews           SavedView[]
   aiQueryLogs          AIQueryLog[]
+  exteriorMarkers      ExteriorMarker[]
+  documentChunks       DocumentChunk[]
 
   @@index([slug])
 }
@@ -399,6 +402,8 @@ model Property {
   matterportLinks MatterportPropertyLink[]
   droneCaptures   DroneCapture[]
   accessGrants    AccessGrant[]
+  exteriorMarkers ExteriorMarker[]
+  documentChunks  DocumentChunk[]
 
   @@unique([organizationId, customerPropertyId])
   @@index([organizationId])
@@ -509,6 +514,8 @@ model Asset {
   documents            Document[]
   assessmentAnswers    AssessmentAnswer[]
   matterportReferences MatterportReference[]
+  exteriorMarkers      ExteriorMarker[]
+  documentChunks       DocumentChunk[]
 
   @@unique([organizationId, customerAssetId])
   @@index([organizationId])
@@ -619,9 +626,10 @@ model Issue {
   createdBy    User         @relation("IssueCreatedBy", fields: [createdById], references: [id])
   resolvedBy   User?        @relation("IssueResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
 
-  comments  IssueComment[]
-  evidence  Evidence[]
-  documents Document[]
+  comments        IssueComment[]
+  evidence        Evidence[]
+  documents       Document[]
+  exteriorMarkers ExteriorMarker[]
 
   @@index([organizationId])
   @@index([propertyId])
@@ -793,6 +801,7 @@ model Evidence {
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
+  exteriorMarkers      ExteriorMarker[]
 
   @@index([organizationId])
   @@index([propertyId])
@@ -815,6 +824,12 @@ model Document {
   documentType   DocumentType @default(OTHER)
   tags           Json         @default("[]")
   retentionClass String       @default("standard")
+  // Text extraction/indexing state (spec §15 document intelligence foundation).
+  // PENDING until a version is extracted; UNSUPPORTED for MIME types we don't
+  // extract text from yet (e.g. images) rather than silently doing nothing.
+  indexStatus    String       @default("PENDING") // PENDING | INDEXED | UNSUPPORTED | FAILED
+  indexError     String?
+  indexedAt      DateTime?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
@@ -823,6 +838,7 @@ model Document {
   asset        Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
   issue        Issue?            @relation(fields: [issueId], references: [id], onDelete: SetNull)
   versions     DocumentVersion[]
+  chunks       DocumentChunk[]
 
   @@index([organizationId])
   @@index([propertyId])
@@ -849,6 +865,32 @@ model DocumentVersion {
   @@index([documentId])
 }
 
+// Document text-extraction chunk (spec §15 document intelligence
+// foundation). Keyword/full-text search only in this phase — no vector
+// infrastructure is configured, so we don't fake semantic search.
+// propertyId/assetId are denormalized from Document at extraction time so
+// search results can be scoped without an extra join.
+model DocumentChunk {
+  id             String   @id @default(cuid())
+  organizationId String
+  documentId     String
+  propertyId     String?
+  assetId        String?
+  chunkIndex     Int
+  pageNumber     Int?
+  content        String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  property     Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  asset        Asset?       @relation(fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@index([documentId])
+  @@index([organizationId])
+  @@index([propertyId])
+}
+
 // ---------------------------------------------------------------------------
 // Matterport integration (provider #1 of InteriorCaptureProvider)
 // ---------------------------------------------------------------------------
@@ -860,6 +902,7 @@ model MatterportConnection {
   accessTokenEnc  String? // encrypted at rest by app layer
   refreshTokenEnc String?
   status          String    @default("DISCONNECTED") // DISCONNECTED | CONNECTED | ERROR
+  errorMessage    String?
   lastSyncedAt    DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -965,13 +1008,17 @@ model DroneImage {
   datasetId    String
   storageKey   String
   thumbnailKey String?
+  mimeType     String?
+  sizeBytes    Int?
+  checksum     String? // sha256 of the uploaded bytes, verified against client-reported value
   latitude     Float?
   longitude    Float?
   altitude     Float?
   capturedAt   DateTime?
   createdAt    DateTime  @default(now())
 
-  dataset DroneDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  dataset DroneDataset     @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  markers ExteriorMarker[]
 
   @@index([datasetId])
 }
@@ -997,13 +1044,49 @@ model DroneOutput {
   datasetId  String
   outputType DroneOutputType
   storageKey String
+  mimeType   String?
+  sizeBytes  Int?
+  checksum   String?
   metadata   Json            @default("{}")
   createdAt  DateTime        @default(now())
 
-  dataset DroneDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  dataset DroneDataset     @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  markers ExteriorMarker[]
 
   @@index([datasetId])
   @@index([outputType])
+}
+
+// A user-placed pin on an exterior photo or orthomosaic, referencing the
+// canonical Asset/Issue/Evidence record it points at — never a duplicate
+// business object (spec: "No Duplicate Data Rule").
+model ExteriorMarker {
+  id             String   @id @default(cuid())
+  organizationId String
+  propertyId     String
+  droneImageId   String?
+  droneOutputId  String?
+  assetId        String?
+  issueId        String?
+  evidenceId     String?
+  label          String?
+  xNormalized    Float // 0-1 position on the referenced image/orthomosaic
+  yNormalized    Float
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  droneImage   DroneImage?  @relation(fields: [droneImageId], references: [id], onDelete: SetNull)
+  droneOutput  DroneOutput? @relation(fields: [droneOutputId], references: [id], onDelete: SetNull)
+  asset        Asset?       @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  issue        Issue?       @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  evidence     Evidence?    @relation(fields: [evidenceId], references: [id], onDelete: SetNull)
+  createdBy    User         @relation("ExteriorMarkerCreatedBy", fields: [createdById], references: [id])
+
+  @@index([propertyId])
+  @@index([droneImageId])
+  @@index([droneOutputId])
 }
 
 // ---------------------------------------------------------------------------

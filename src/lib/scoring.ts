@@ -338,3 +338,37 @@ export async function getLatestHealthSnapshots(propertyIds: string[]) {
     ORDER BY "propertyId", "computedAt" DESC
   `);
 }
+
+/**
+ * Data Confidence explanations (spec Phase 2 §9): never hide a low
+ * confidence score behind a bare number — say plainly what's missing or
+ * stale. Reuses the same recency signals `computePropertyHealth` scores
+ * on, just surfaced as readable warnings instead of a percentage.
+ */
+export async function getDataConfidenceWarnings(propertyId: string): Promise<string[]> {
+  const [latestAssessment, matterportLink, droneCapture, assetCounts] = await Promise.all([
+    prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
+    prisma.matterportPropertyLink.findFirst({ where: { propertyId }, orderBy: { linkedAt: "desc" }, include: { space: true } }),
+    prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" }, orderBy: { capturedAt: "desc" } }),
+    prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
+  ]);
+
+  const warnings: string[] = [];
+  const monthsSince = (d: Date | null | undefined) => (d ? (Date.now() - new Date(d).getTime()) / (30 * 86400000) : null);
+
+  const assessmentAge = monthsSince(latestAssessment?.completedAt);
+  if (assessmentAge === null) warnings.push("This property has never had a completed assessment.");
+  else if (assessmentAge > 12) warnings.push(`This property's last assessment was ${Math.round(assessmentAge)} months ago.`);
+
+  const interiorAge = monthsSince(matterportLink?.space?.syncedAt ?? matterportLink?.linkedAt);
+  if (interiorAge === null) warnings.push("No interior (Matterport) capture is connected for this property.");
+  else if (interiorAge > 12) warnings.push(`This property has not had an interior capture refresh in ${Math.round(interiorAge)} months.`);
+
+  const exteriorAge = monthsSince(droneCapture?.capturedAt);
+  if (exteriorAge === null) warnings.push("No exterior (drone) capture has been uploaded for this property.");
+  else if (exteriorAge > 12) warnings.push(`This property has not had an exterior capture in ${Math.round(exteriorAge)} months.`);
+
+  if (assetCounts === 0) warnings.push("No assets have been recorded for this property yet — health score is not meaningful.");
+
+  return warnings;
+}

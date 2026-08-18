@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, propertyScopeWhere } from "@/lib/session-context";
+import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
 import { getLatestHealthSnapshots } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
 

@@ -36,3 +36,22 @@ describe("permission engine", () => {
     expect(hasPermission(Role.PLATFORM_ADMIN, "canAccessPlatformAdmin")).toBe(true);
   });
 });
+
+describe("Phase 2 integration permissions", () => {
+  it("canPerformCapture is granted to Inspector, Technician, Owner, Portfolio Admin, but not Vendor/Viewer", () => {
+    expect(hasPermission(Role.INSPECTOR, "canPerformCapture")).toBe(true);
+    expect(hasPermission(Role.TECHNICIAN, "canPerformCapture")).toBe(true);
+    expect(hasPermission(Role.OWNER, "canPerformCapture")).toBe(true);
+    expect(hasPermission(Role.PORTFOLIO_ADMIN, "canPerformCapture")).toBe(true);
+    expect(hasPermission(Role.VENDOR, "canPerformCapture")).toBe(false);
+    expect(hasPermission(Role.VIEWER, "canPerformCapture")).toBe(false);
+  });
+
+  it("canManageIntegrations (org-level Matterport connect/disconnect) is Owner/Portfolio Admin only", () => {
+    expect(hasPermission(Role.OWNER, "canManageIntegrations")).toBe(true);
+    expect(hasPermission(Role.PORTFOLIO_ADMIN, "canManageIntegrations")).toBe(true);
+    expect(hasPermission(Role.FACILITIES_MANAGER, "canManageIntegrations")).toBe(false);
+    expect(hasPermission(Role.TECHNICIAN, "canManageIntegrations")).toBe(false);
+    expect(hasPermission(Role.VENDOR, "canManageIntegrations")).toBe(false);
+  });
+});

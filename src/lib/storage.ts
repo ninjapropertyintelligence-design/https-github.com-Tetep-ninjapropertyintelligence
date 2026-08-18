@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import { stat, readFile } from "node:fs/promises";
+import path from "node:path";
 
 /**
  * FILE STORAGE (spec §18-19). Large files must never be proxied through the
@@ -19,6 +21,12 @@ export interface SignedUploadUrl {
   expiresAt: string;
 }
 
+export interface UploadVerification {
+  exists: boolean;
+  actualSizeBytes: number | null;
+  actualChecksumSha256: string | null;
+}
+
 export interface StorageProvider {
   createUploadUrl(params: {
     organizationId: string;
@@ -27,10 +35,26 @@ export interface StorageProvider {
   }): Promise<SignedUploadUrl>;
   getDownloadUrl(key: string): Promise<string>;
   delete(key: string): Promise<void>;
+  /**
+   * Reads back what was actually written for a key — used to verify large
+   * direct-uploaded files (drone images/outputs) after the client PUTs
+   * them, without the app server ever holding the bytes in a request body.
+   * For a real S3 backend this would be a HeadObject / checksum call
+   * instead of a local read.
+   */
+  verifyUpload(key: string): Promise<UploadVerification>;
+  /**
+   * Reads the full object back into memory — used only for small,
+   * server-side processing jobs (document text extraction) where holding
+   * the bytes briefly is appropriate, unlike the large drone/evidence
+   * files that must never round-trip through the app server.
+   */
+  readBytes(key: string): Promise<Buffer | null>;
 }
 
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
 const DOWNLOAD_TTL_MS = 60 * 60 * 1000;
+const LOCAL_STORAGE_ROOT = path.join(process.cwd(), ".local-storage");
 
 function sign(key: string, expiresAt: number): string {
   const secret = process.env.NEXTAUTH_SECRET ?? "dev-secret";
@@ -70,6 +94,31 @@ class LocalStorageProvider implements StorageProvider {
   async delete(): Promise<void> {
     // Local dev provider: deletion of the underlying file is intentionally
     // not implemented (evidence/documents are soft-referenced, not purged).
+  }
+
+  async verifyUpload(key: string): Promise<UploadVerification> {
+    const filePath = path.join(LOCAL_STORAGE_ROOT, key);
+    if (!filePath.startsWith(LOCAL_STORAGE_ROOT + path.sep)) {
+      return { exists: false, actualSizeBytes: null, actualChecksumSha256: null };
+    }
+    try {
+      const stats = await stat(filePath);
+      const bytes = await readFile(filePath);
+      const checksum = crypto.createHash("sha256").update(bytes).digest("hex");
+      return { exists: true, actualSizeBytes: stats.size, actualChecksumSha256: checksum };
+    } catch {
+      return { exists: false, actualSizeBytes: null, actualChecksumSha256: null };
+    }
+  }
+
+  async readBytes(key: string): Promise<Buffer | null> {
+    const filePath = path.join(LOCAL_STORAGE_ROOT, key);
+    if (!filePath.startsWith(LOCAL_STORAGE_ROOT + path.sep)) return null;
+    try {
+      return await readFile(filePath);
+    } catch {
+      return null;
+    }
   }
 }
 

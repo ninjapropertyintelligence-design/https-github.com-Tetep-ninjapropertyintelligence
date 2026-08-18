@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, issueScopeWhere, propertyScopeWhere } from "@/lib/session-context";
+import { SessionContext, issueScopeWhere, propertyScopeWhere } from "@/lib/tenant-scope";
 import { getPortfolioDashboard } from "@/lib/dashboard";
 import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
+import { searchDocumentChunks } from "@/lib/document-extraction";
 
 /**
  * AI TOOL GATEWAY — approved backend functions (spec §24-§27).
@@ -71,11 +72,43 @@ export function makeAiTools(ctx: SessionContext) {
       });
       if (!property) return { found: false };
       trackRef("Property", property.id);
-      const snap = await getLatestHealthSnapshot(property.id);
+      const [snap, matterportLink, droneCapture] = await Promise.all([
+        getLatestHealthSnapshot(property.id),
+        prisma.matterportPropertyLink.findFirst({
+          where: { propertyId: property.id },
+          orderBy: { linkedAt: "desc" },
+          include: { space: true },
+        }),
+        prisma.droneCapture.findFirst({
+          where: { propertyId: property.id, status: "READY" },
+          orderBy: { capturedAt: "desc" },
+        }),
+      ]);
       return {
         found: true,
         property,
         health: snap ? { ...snap, band: healthBandFor(snap.healthScore) } : null,
+        lastInteriorCapture: matterportLink?.space?.syncedAt ?? matterportLink?.linkedAt ?? null,
+        lastExteriorCapture: droneCapture?.capturedAt ?? null,
+      };
+    },
+
+    async getHistory(args: { propertyId: string; sinceDays?: number }) {
+      const property = await prisma.property.findFirst({
+        where: { AND: [{ id: args.propertyId }, propertyScopeWhere(ctx)] },
+      });
+      if (!property) return { found: false };
+      const since = args.sinceDays ? new Date(Date.now() - args.sinceDays * 86400000) : undefined;
+      const events = await prisma.event.findMany({
+        where: { propertyId: args.propertyId, ...(since ? { createdAt: { gte: since } } : {}) },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        include: { actor: { select: { name: true } } },
+      });
+      trackRef("Property", property.id);
+      return {
+        found: true,
+        events: events.map((e) => ({ type: e.type, createdAt: e.createdAt, actor: e.actor?.name ?? null, payload: e.payload })),
       };
     },
 
@@ -116,7 +149,7 @@ export function makeAiTools(ctx: SessionContext) {
         take: 50,
       });
       trackRef("Asset", asset.id);
-      return { found: true, history };
+      return { found: true, assetPropertyId: asset.propertyId, history };
     },
 
     async getIssues(args: { propertyId?: string; severity?: string; status?: string }) {
@@ -194,16 +227,29 @@ export function makeAiTools(ctx: SessionContext) {
     },
 
     async searchDocuments(args: { query: string }) {
-      // Basic title/tag search — full text extraction/chunking/vector search
-      // (spec §29) is architected (Document/DocumentVersion models support
-      // it) but not implemented in this phase. This is real search, just
-      // keyword-only, not a stub.
-      const documents = await prisma.document.findMany({
-        where: { organizationId: ctx.organizationId, title: { contains: args.query, mode: "insensitive" } },
-        take: 25,
-      });
-      documents.forEach((d) => trackRef("Document", d.id));
-      return { count: documents.length, documents };
+      // Real Postgres full-text search over extracted document text (spec
+      // §15) — falls back to a title match for documents that aren't
+      // text-extractable (e.g. non-PDF) so they're still discoverable.
+      const [chunkHits, titleHits] = await Promise.all([
+        searchDocumentChunks({ organizationId: ctx.organizationId, query: args.query }),
+        prisma.document.findMany({
+          where: { organizationId: ctx.organizationId, title: { contains: args.query, mode: "insensitive" } },
+          take: 10,
+        }),
+      ]);
+
+      const accessibleProperties = await prisma.property.findMany({ where: propertyScopeWhere(ctx), select: { id: true } });
+      const accessibleSet = new Set(accessibleProperties.map((p) => p.id));
+      const scopedChunkHits = chunkHits.filter((h) => !h.propertyId || accessibleSet.has(h.propertyId));
+
+      scopedChunkHits.forEach((h) => trackRef("Document", h.documentId));
+      const scopedTitleHits = titleHits.filter((d) => !d.propertyId || accessibleSet.has(d.propertyId));
+      scopedTitleHits.forEach((d) => trackRef("Document", d.id));
+
+      return {
+        textMatches: scopedChunkHits,
+        titleMatches: scopedTitleHits,
+      };
     },
 
     async getEvidence(args: { propertyId?: string; assetId?: string; issueId?: string }) {
@@ -262,5 +308,51 @@ export function makeAiTools(ctx: SessionContext) {
           : `/reports?type=${encodeURIComponent(args.reportType)}`,
       };
     },
+  };
+}
+
+export type AiToolset = ReturnType<typeof makeAiTools>;
+
+/**
+ * Property-scoped AI (spec §13): when a user opens AI from
+ * `/properties/{propertyId}/ai`, tool calls must not be able to read another
+ * property. This wraps the full toolset into a reduced one where every
+ * property-filtering argument is force-set to `propertyId` server-side
+ * (never trusting whatever the model passes), and portfolio-wide tools
+ * (getPortfolioSummary, unfiltered getProperties, compareProperties,
+ * org-wide getChanges/searchDocuments) are omitted entirely rather than
+ * merely discouraged by prompt text. `getAsset`/`getAssetHistory` are kept
+ * (useful once the user has an assetId in context) but redact the result if
+ * the asset turns out to belong to a different property.
+ *
+ * Broader-scope override ("... unless the user explicitly requests it") is
+ * intentionally not implemented as NLU-based intent detection in this
+ * phase — see IMPLEMENTATION_REPORT.md. A user who wants portfolio-wide
+ * answers uses the org-wide /ai page instead.
+ */
+export function scopeToolsToProperty(toolset: AiToolset, propertyId: string) {
+  return {
+    refs: toolset.refs,
+    getProperty: () => toolset.getProperty({ propertyId }),
+    getPropertyHealth: () => toolset.getPropertyHealth({ propertyId }),
+    getHistory: (args: { sinceDays?: number }) => toolset.getHistory({ ...args, propertyId }),
+    getAssets: (args: { assetType?: string; minCriticality?: number; status?: string }) =>
+      toolset.getAssets({ ...args, propertyId }),
+    getAsset: async (args: { assetId: string }) => {
+      const result = await toolset.getAsset(args);
+      if (result.found && result.asset?.propertyId !== propertyId) return { found: false as const };
+      return result;
+    },
+    getAssetHistory: async (args: { assetId: string }) => {
+      const result = await toolset.getAssetHistory(args);
+      if (result.found && result.assetPropertyId !== propertyId) return { found: false as const };
+      return result;
+    },
+    getIssues: (args: { severity?: string; status?: string }) => toolset.getIssues({ ...args, propertyId }),
+    getAssessments: (args: { status?: string }) => toolset.getAssessments({ ...args, propertyId }),
+    getCapitalExposure: () => toolset.getCapitalExposure({ propertyId }),
+    getDocuments: (args: { assetId?: string; documentType?: string }) => toolset.getDocuments({ ...args, propertyId }),
+    getEvidence: (args: { assetId?: string; issueId?: string }) => toolset.getEvidence({ ...args, propertyId }),
+    generateReport: (args: { reportType: string }) => toolset.generateReport({ ...args, propertyId }),
   };
 }
