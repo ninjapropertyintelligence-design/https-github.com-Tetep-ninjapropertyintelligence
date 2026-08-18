@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
 import { formatDate } from "@/lib/format";
 import { isViewableIn3D } from "@/components/exterior/Object3DViewer";
+import { apiFetch } from "@/lib/api-client";
 
 // WebGL/Canvas — never server-rendered, and only pulled into the bundle when
 // a user actually expands a 3D preview.
@@ -100,15 +101,12 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      const captureRes = await fetch(`/api/properties/${propertyId}/drone/captures`, {
+      const capture = await apiFetch<{ id: string }>(`/api/properties/${propertyId}/drone/captures`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ droneModel: captureModel || undefined }),
       });
-      if (!captureRes.ok) throw new Error((await captureRes.json().catch(() => ({}))).error ?? "Failed to create capture");
-      const capture = await captureRes.json();
-      const datasetRes = await fetch(`/api/drone/captures/${capture.id}/datasets`, { method: "POST" });
-      if (!datasetRes.ok) throw new Error((await datasetRes.json().catch(() => ({}))).error ?? "Failed to create dataset");
+      await apiFetch(`/api/drone/captures/${capture.id}/datasets`, { method: "POST" });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -122,13 +120,11 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      const uploadUrlRes = await fetch("/api/drone/upload-url", {
+      const { url, key } = await apiFetch<{ url: string; key: string }>("/api/drone/upload-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, contentType: file.type || "application/octet-stream" }),
       });
-      if (!uploadUrlRes.ok) throw new Error("Failed to get upload URL");
-      const { url, key } = await uploadUrlRes.json();
 
       const putRes = await fetch(url, { method: "PUT", body: file });
       if (!putRes.ok) throw new Error("Upload failed");
@@ -141,12 +137,11 @@ export function ExteriorManager({
           ? { storageKey: key, mimeType: file.type, sizeBytes: file.size, checksum }
           : { outputType: kind, storageKey: key, mimeType: file.type, sizeBytes: file.size, checksum };
 
-      const registerRes = await fetch(registerPath, {
+      await apiFetch(registerPath, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(registerBody),
       });
-      if (!registerRes.ok) throw new Error((await registerRes.json().catch(() => ({}))).error ?? "Failed to register upload");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -161,8 +156,7 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/drone/captures/${activeCapture.id}/ready`, { method: "POST" });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Failed to mark ready");
+      await apiFetch(`/api/drone/captures/${activeCapture.id}/ready`, { method: "POST" });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -185,7 +179,7 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/properties/${propertyId}/exterior/markers`, {
+      await apiFetch(`/api/properties/${propertyId}/exterior/markers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -196,7 +190,6 @@ export function ExteriorManager({
           [markerRef.kind === "asset" ? "assetId" : "issueId"]: markerRef.id,
         }),
       });
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Failed to save marker");
       setPendingMarker(null);
       setMarkerRef(null);
       router.refresh();

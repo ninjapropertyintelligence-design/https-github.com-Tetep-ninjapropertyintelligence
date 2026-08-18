@@ -4,6 +4,13 @@ import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { apiFetch } from "@/lib/api-client";
+
+interface AskAiResponse {
+  answer: string;
+  sourceRefs: SourceRef[];
+  configured: boolean;
+}
 
 interface SourceRef {
   type: string;
@@ -44,16 +51,11 @@ export function AskAiInline({
     setError(null);
     setAnswer(null);
     try {
-      const res = await fetch("/api/ai/ask", {
+      const data = await apiFetch<AskAiResponse>("/api/ai/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, propertyId, propertyName }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? "AI request failed");
-      }
-      const data = await res.json();
       setAnswer(data.answer);
       setRefs(data.sourceRefs ?? []);
       setConfigured(data.configured);

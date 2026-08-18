@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { SessionContext } from "@/lib/tenant-scope";
-import { createDroneCapture, createDroneDataset, registerDroneImage, registerDroneOutput, getPropertyExteriorData } from "@/lib/drone-service";
+import { createDroneCapture, createDroneDataset, markCaptureReady, registerDroneImage, registerDroneOutput, getPropertyExteriorData } from "@/lib/drone-service";
 import { ApiError } from "@/lib/api-error";
+import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogrammetry-provider";
 
 /**
  * Drone dataset pipeline permission boundaries (spec Phase 2 §20):
@@ -88,5 +89,23 @@ describe("Drone pipeline tenant isolation", () => {
     await expect(
       registerDroneOutput(ctxFor(orgA.id, userA.id), dataset.id, { outputType: "POINT_CLOUD", storageKey: "fake/cloud.exe" }),
     ).rejects.toThrow(ApiError);
+  });
+
+  it("creating a dataset registers a PhotogrammetryProvider job, and marking a capture ready completes it (spec §17)", async () => {
+    const capture = await createDroneCapture(ctxFor(orgA.id, userA.id), propertyA.id, {});
+    const dataset = await createDroneDataset(ctxFor(orgA.id, userA.id), capture.id);
+
+    const jobAfterCreate = await prisma.droneProcessingJob.findFirst({ where: { datasetId: dataset.id } });
+    expect(jobAfterCreate).not.toBeNull();
+    expect(jobAfterCreate!.status).toBe("CREATED");
+
+    await markCaptureReady(ctxFor(orgA.id, userA.id), capture.id);
+
+    const jobAfterReady = await prisma.droneProcessingJob.findUniqueOrThrow({ where: { id: jobAfterCreate!.id } });
+    expect(jobAfterReady.status).toBe("READY");
+    expect(jobAfterReady.completedAt).not.toBeNull();
+
+    const status = await getPhotogrammetryProvider().getStatus({ providerJobId: jobAfterCreate!.id });
+    expect(status.status).toBe("READY");
   });
 });

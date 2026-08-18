@@ -619,3 +619,135 @@ Full gate re-run after the change: `tsc --noEmit` clean, `eslint` clean,
 licensed, no runtime network calls, ~600KB but only loaded on-demand behind
 the dynamic import, never in the initial bundle for users who don't open a
 3D output.
+
+---
+
+# Post-Phase-2 workstream — Top 3 audit gaps closed
+
+Follows a full spec-compliance audit (see the "Blueprint Audit" artifact
+from this session) against all 120 sections of the master spec. Closed the
+three highest-impact gaps ranked against the spec's own Day-45 acceptance
+bar.
+
+## 1. AI evaluation suite (spec §29, §97 "AI" criterion)
+
+`tests/ai-eval/benchmark.ts` — the permanent fixture set the spec asks
+for: 8 cases, each with a question, expected result, allowed sources, and
+a `mustNot` list, covering all six spec test categories (numerical
+accuracy, retrieval accuracy, permission compliance, hallucination rate,
+missing-data behavior, citation correctness). `tests/integration/
+ai-evaluation-suite.test.ts` implements every case 1:1 against fresh,
+deterministic fixture data (never the shared demo seed, so expected counts
+never drift) — a structural test asserts the two files stay in sync.
+
+Two kinds of case, both real:
+- **Deterministic cases** (7 of 8) run on every `vitest` invocation, no AI
+  provider required — they call the actual tool functions
+  (`src/lib/ai/tools.ts`) the model would call, against known fixture
+  data. These enforce the non-negotiable guarantees today: a forged
+  cross-org ID returns `found: false`, a nonexistent asset type returns a
+  plain zero, every `{type, id}` source ref resolves to a real in-scope
+  row, and — provable without any API key — asking a question with no
+  provider configured returns the honest "not configured" message with
+  **zero** tool calls and **zero** source refs (a direct, automated check
+  of hallucination avoidance).
+- **Live-model case** (1 of 8) is `describe.skipIf(getAIProvider()
+  instanceof NullProvider)` — it asks the real natural-language question
+  through `askPropertyAI()` and checks the answer's stated number against
+  the same fixture ground truth. It is skipped, not faked, in this
+  environment (no API key exists); the moment real credentials are added,
+  this suite starts scoring live answer quality automatically, with no
+  further code changes.
+
+Result: 8/8 benchmark-covering tests pass (7 run, 1 correctly skipped) —
+verified live against Postgres, not just typechecked.
+
+## 2. PhotogrammetryProvider adapter (spec §17)
+
+The audit's most structural finding: drone processing had no provider
+abstraction at all — `drone-service.ts` talked directly to Prisma with
+zero indirection, meaning a future PIX4D integration would mean
+redesigning the service, not swapping an implementation.
+
+Added `src/lib/integrations/photogrammetry-provider.ts` — the
+`PhotogrammetryProvider` interface (`createJob`/`uploadImages`/
+`startProcessing`/`getStatus`/`getOutputs`/`cancelJob`), mirroring the
+spec's exact method list and the same pattern already used for
+`InteriorCaptureProvider`/Matterport. `src/lib/integrations/
+manual-photogrammetry-provider.ts` implements it for the workflow that
+actually exists today (spec §5: manual upload before PIX4D automation) —
+`createJob`/`startProcessing` drive a real `DroneProcessingJob` row
+through the existing schema; "processing" completes immediately because
+the human has already uploaded outputs out-of-band via
+`registerDroneOutput()`, not because anything is faked. `drone-service.ts`
+now calls `getPhotogrammetryProvider().createJob()` when a dataset is
+created and `.startProcessing()` when a capture is marked ready — real
+wiring, not a decorative interface nobody calls.
+
+A future PIX4D provider is now a new class implementing the same
+interface, selected via `PHOTOGRAMMETRY_PROVIDER` env var — no changes to
+`drone-service.ts` or any caller.
+
+One pragmatic scope cut, stated plainly: `DroneCaptureStatus`
+(CREATED/UPLOADING/PROCESSING/READY/FAILED) is reused as the job-status
+vocabulary rather than adding the spec's separate QUEUED/COMPLETED/
+CANCELLED states, to avoid a schema migration for this pass — READY
+stands in for "completed," cancellation is FAILED with an explanatory
+message. A future provider needing genuinely distinct states is a real
+reason to revisit that enum.
+
+Verified with a new integration test asserting a dataset creation
+registers a real `DroneProcessingJob` (status CREATED) and marking a
+capture ready transitions it to READY with a `completedAt` timestamp, read
+back through the provider's own `getStatus()` — not just checked in the
+database.
+
+## 3. API response envelope (spec §63)
+
+Every JSON response from this app's ~50 API routes now follows
+`{data, error, meta}`, matching spec §63 exactly. This was the widest
+blast-radius fix of the three — implemented centrally in
+`withApiHandler` (`src/lib/api-utils.ts`) rather than touching each route
+file: a route handler still returns a plain value or its own
+`NextResponse.json(x, {status})` exactly as before, and the wrapper reads
+the body back out and re-wraps it in the envelope, preserving the original
+status code. This meant zero changes to any of the ~50 individual route
+files.
+
+Client-side, added `src/lib/api-client.ts` (`apiFetch<T>()`) — unwraps
+`.data`, throws with the server's `.error` message on failure — and
+migrated every component that reads a JSON response body from this app's
+own API (`AskAiInline`, `ExteriorManager`, `InteriorManager`,
+`CreateIssueForm`, `Header`, `DocumentSearchBox`) to use it instead of raw
+`fetch().then(r => r.json())`. Components that only ever read `res.ok` or
+an error body's `.error` field (`ConditionUpdateForm`, `IssueStatusForm`,
+`AssessmentRunner`, `CommentForm`, `IntegrationsPanel`) needed no change —
+the error shape kept `.error` at the same top-level key deliberately, to
+minimize the diff.
+
+Explicitly exempt, by design: `/api/auth/[...nextauth]` (NextAuth's own
+contract), `/api/uploads/[...key]` (binary file bytes), and the three PDF/
+CSV report routes — the envelope is for JSON responses, not file
+downloads, and none of these five routes went through `withApiHandler` to
+begin with.
+
+Verified live against a running dev server (not just typechecked): logged
+in via a real credentials POST, confirmed a successful response returns
+`{"data": {...}, "error": null, "meta": {}}` and a 404 returns
+`{"data": null, "error": "Property not found", "meta": {}}` with the
+status code intact. Full gate re-run: `tsc --noEmit` clean, `eslint`
+clean, `vitest run` 55/55 (1 skipped), `playwright test` 9/9 (confirmed
+stable at `--workers=1`; two runs hit unrelated cold-Turbopack-compile
+timeouts under 2-worker parallelism that don't reproduce standalone or at
+`--workers=1` — pre-existing test-infra sensitivity, not a functional
+regression), `next build` succeeds.
+
+## Remaining audit gaps
+
+Everything else from the Blueprint Audit is unchanged — still open:
+missing portfolio map (§11), unversioned API (§64), no CI/CD (§58), no
+bulk import/fuzzy dedup (§68/§69), no MFA or real admin impersonation
+(§43/§45), no data retention/secure deletion/backup-DR (§52/§54/§55), no
+webhooks (§66), no performance/load-testing evidence (§98/§103), and the
+rest of the audit's full findings list. Only the top 3 were in scope for
+this pass.

@@ -12,6 +12,7 @@ export type ObservabilityEvent =
   | "matterport.api_call"
   | "matterport.sync"
   | "drone.upload"
+  | "drone.processing_job"
   | "ai.tool_call"
   | "ai.provider_call"
   | "document.index_job"

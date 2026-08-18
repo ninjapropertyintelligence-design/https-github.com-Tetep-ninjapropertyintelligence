@@ -54,10 +54,11 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   await expect(page.getByRole("heading", { name: "RTU-04 compressor vibration" })).toBeVisible();
 
   // Complete a fresh assessment via the real UI and confirm health recalculates.
-  const { snapshot: healthBefore } = await page.request.get(`/api/properties/${propertyId}/health`).then((r) => r.json());
+  // Every JSON API response is {data, error, meta} (spec §63) — unwrap .data.
+  const { snapshot: healthBefore } = (await page.request.get(`/api/properties/${propertyId}/health`).then((r) => r.json())).data;
 
   const templatesRes = await page.request.get("/api/assessments/templates");
-  const { items: templates } = await templatesRes.json();
+  const { items: templates } = (await templatesRes.json()).data;
   const template = templates.find((t: { name: string }) => t.name === "Annual Property Assessment");
   expect(template).toBeTruthy();
 
@@ -65,14 +66,14 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
     data: { propertyId, templateId: template.id },
   });
   expect(createRes.ok()).toBeTruthy();
-  const assessment = await createRes.json();
+  const assessment = (await createRes.json()).data;
 
   await page.goto(`/assessments/${assessment.id}`);
   await expect(page.getByRole("button", { name: "Complete Assessment" })).toBeVisible();
   await page.getByRole("button", { name: "Complete Assessment" }).click();
   await expect(page.getByText(/completed and its answers are locked/i)).toBeVisible({ timeout: 15000 });
 
-  const { snapshot: healthAfter } = await page.request.get(`/api/properties/${propertyId}/health`).then((r) => r.json());
+  const { snapshot: healthAfter } = (await page.request.get(`/api/properties/${propertyId}/health`).then((r) => r.json())).data;
   expect(healthAfter.computedAt).not.toBe(healthBefore.computedAt);
 
   // Ask AI, scoped to this property — no provider key is configured here,

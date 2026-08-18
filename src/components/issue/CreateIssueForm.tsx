@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
+import { apiFetch, ApiClientError } from "@/lib/api-client";
 
 export function CreateIssueForm({ properties }: { properties: Array<{ id: string; name: string }> }) {
   const router = useRouter();
@@ -18,25 +19,24 @@ export function CreateIssueForm({ properties }: { properties: Array<{ id: string
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const res = await fetch("/api/issues", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        propertyId,
-        title,
-        description: description || undefined,
-        severity,
-        estimatedCost: estimatedCost ? Math.round(Number(estimatedCost) * 100) : undefined,
-      }),
-    });
-    setLoading(false);
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setError(body.error ?? "Failed to create issue");
-      return;
+    try {
+      const issue = await apiFetch<{ id: string }>("/api/issues", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyId,
+          title,
+          description: description || undefined,
+          severity,
+          estimatedCost: estimatedCost ? Math.round(Number(estimatedCost) * 100) : undefined,
+        }),
+      });
+      router.push(`/issues/${issue.id}`);
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : "Failed to create issue");
+    } finally {
+      setLoading(false);
     }
-    const issue = await res.json();
-    router.push(`/issues/${issue.id}`);
   }
 
   if (properties.length === 0) {

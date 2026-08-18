@@ -7,6 +7,7 @@ import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 import { DroneOutputType } from "@/generated/prisma/client";
 import { logEvent } from "@/lib/observability";
+import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogrammetry-provider";
 
 /**
  * Manual drone dataset import pipeline (spec Phase 2 §4-§6). No PIX4D
@@ -92,7 +93,13 @@ export async function createDroneCapture(
 export async function createDroneDataset(ctx: SessionContext, captureId: string) {
   const capture = await loadScopedCapture(ctx, captureId);
   await prisma.droneCapture.update({ where: { id: capture.id }, data: { status: "UPLOADING" } });
-  return prisma.droneDataset.create({ data: { captureId: capture.id, provider: "MANUAL" } });
+  const dataset = await prisma.droneDataset.create({ data: { captureId: capture.id, provider: "MANUAL" } });
+  // Registers a processing job through the PhotogrammetryProvider
+  // abstraction (spec §17) even though today's only provider is manual —
+  // this is what lets a real PIX4D provider slot in later without
+  // redesigning this service.
+  await getPhotogrammetryProvider().createJob({ datasetId: dataset.id, captureId: capture.id });
+  return dataset;
 }
 
 async function verifyUploadedFile(ctx: SessionContext, params: {
@@ -215,6 +222,11 @@ export async function registerDroneOutput(
 /** Marks a capture READY once review is complete (spec §4: "Review Dataset -> Display Exterior"). */
 export async function markCaptureReady(ctx: SessionContext, captureId: string) {
   const capture = await loadScopedCapture(ctx, captureId);
+
+  const provider = getPhotogrammetryProvider();
+  const jobs = await prisma.droneProcessingJob.findMany({ where: { dataset: { captureId: capture.id } } });
+  await Promise.all(jobs.map((job) => provider.startProcessing({ providerJobId: job.id })));
+
   const updated = await prisma.droneCapture.update({ where: { id: capture.id }, data: { status: "READY" } });
 
   await Promise.all([
