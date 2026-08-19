@@ -81,6 +81,11 @@ jobs:
       - name: Check schema matches migrations
         run: npx prisma migrate diff --from-config-datasource --to-schema ./prisma/schema.prisma --exit-code
 
+      # `npm run typecheck` runs `next typegen` first: app-router global
+      # types (LayoutProps, PageProps) are generated into .next/types, so a
+      # bare `tsc --noEmit` on a clean checkout fails on them. Baked into
+      # the script rather than added as a CI-only step, so a fresh clone
+      # typechecks correctly for contributors too.
       - name: Typecheck
         run: npm run typecheck
 
