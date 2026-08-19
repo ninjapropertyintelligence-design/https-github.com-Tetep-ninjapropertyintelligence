@@ -20,7 +20,7 @@ export function CreateIssueForm({ properties }: { properties: Array<{ id: string
     setLoading(true);
     setError(null);
     try {
-      const issue = await apiFetch<{ id: string }>("/api/issues", {
+      const issue = await apiFetch<{ id: string }>("/api/v1/issues", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

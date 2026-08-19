@@ -13,7 +13,7 @@ export function CommentForm({ issueId }: { issueId: string }) {
     e.preventDefault();
     if (!body.trim()) return;
     setLoading(true);
-    await fetch(`/api/issues/${issueId}/comments`, {
+    await fetch(`/api/v1/issues/${issueId}/comments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ body }),

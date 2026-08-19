@@ -101,12 +101,12 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      const capture = await apiFetch<{ id: string }>(`/api/properties/${propertyId}/drone/captures`, {
+      const capture = await apiFetch<{ id: string }>(`/api/v1/properties/${propertyId}/drone/captures`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ droneModel: captureModel || undefined }),
       });
-      await apiFetch(`/api/drone/captures/${capture.id}/datasets`, { method: "POST" });
+      await apiFetch(`/api/v1/drone/captures/${capture.id}/datasets`, { method: "POST" });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -120,7 +120,7 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      const { url, key } = await apiFetch<{ url: string; key: string }>("/api/drone/upload-url", {
+      const { url, key } = await apiFetch<{ url: string; key: string }>("/api/v1/drone/upload-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, contentType: file.type || "application/octet-stream" }),
@@ -131,7 +131,7 @@ export function ExteriorManager({
 
       const checksum = await sha256Hex(file);
       const registerPath =
-        kind === "PHOTO" ? `/api/drone/datasets/${activeDataset.id}/images` : `/api/drone/datasets/${activeDataset.id}/outputs`;
+        kind === "PHOTO" ? `/api/v1/drone/datasets/${activeDataset.id}/images` : `/api/v1/drone/datasets/${activeDataset.id}/outputs`;
       const registerBody =
         kind === "PHOTO"
           ? { storageKey: key, mimeType: file.type, sizeBytes: file.size, checksum }
@@ -156,7 +156,7 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      await apiFetch(`/api/drone/captures/${activeCapture.id}/ready`, { method: "POST" });
+      await apiFetch(`/api/v1/drone/captures/${activeCapture.id}/ready`, { method: "POST" });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -179,7 +179,7 @@ export function ExteriorManager({
     setBusy(true);
     setError(null);
     try {
-      await apiFetch(`/api/properties/${propertyId}/exterior/markers`, {
+      await apiFetch(`/api/v1/properties/${propertyId}/exterior/markers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

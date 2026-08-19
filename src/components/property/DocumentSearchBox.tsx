@@ -23,7 +23,7 @@ export function DocumentSearchBox({ propertyId }: { propertyId: string }) {
     if (q.trim().length < 2) return;
     setLoading(true);
     try {
-      const body = await apiFetch<{ results: Hit[] }>(`/api/documents/search?propertyId=${propertyId}&q=${encodeURIComponent(q)}`);
+      const body = await apiFetch<{ results: Hit[] }>(`/api/v1/documents/search?propertyId=${propertyId}&q=${encodeURIComponent(q)}`);
       setResults(body.results ?? []);
     } catch {
       setResults([]);

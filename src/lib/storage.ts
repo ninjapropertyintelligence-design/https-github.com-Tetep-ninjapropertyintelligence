@@ -78,7 +78,7 @@ class LocalStorageProvider implements StorageProvider {
     const expiresAt = Date.now() + UPLOAD_TTL_MS;
     const token = sign(key, expiresAt);
     return {
-      url: `/api/uploads/${encodeURIComponent(key)}?exp=${expiresAt}&token=${token}`,
+      url: `/api/v1/uploads/${encodeURIComponent(key)}?exp=${expiresAt}&token=${token}`,
       method: "PUT",
       key,
       expiresAt: new Date(expiresAt).toISOString(),
@@ -88,7 +88,7 @@ class LocalStorageProvider implements StorageProvider {
   async getDownloadUrl(key: string): Promise<string> {
     const expiresAt = Date.now() + DOWNLOAD_TTL_MS;
     const token = sign(key, expiresAt);
-    return `/api/uploads/${encodeURIComponent(key)}?exp=${expiresAt}&token=${token}`;
+    return `/api/v1/uploads/${encodeURIComponent(key)}?exp=${expiresAt}&token=${token}`;
   }
 
   async delete(): Promise<void> {

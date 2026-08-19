@@ -8,8 +8,8 @@ export default async function ReportsPage() {
   if (!can(ctx, "canViewFinancialExposure")) redirect("/dashboard");
 
   const reports = [
-    { title: "Portfolio Capital Exposure Report", description: "Health, risk, and CapEx by property, org-wide (or filtered to your scope).", href: "/api/reports/capital-exposure?format=csv" },
-    { title: "Portfolio Property Condition Report", description: "Every asset's condition, criticality, and replacement cost across your scope.", href: "/api/reports/property-condition?format=csv" },
+    { title: "Portfolio Capital Exposure Report", description: "Health, risk, and CapEx by property, org-wide (or filtered to your scope).", href: "/api/v1/reports/capital-exposure?format=csv" },
+    { title: "Portfolio Property Condition Report", description: "Every asset's condition, criticality, and replacement cost across your scope.", href: "/api/v1/reports/property-condition?format=csv" },
   ];
 
   return (

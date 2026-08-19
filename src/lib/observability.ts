@@ -13,6 +13,7 @@ export type ObservabilityEvent =
   | "matterport.sync"
   | "drone.upload"
   | "drone.processing_job"
+  | "geocoding.request"
   | "ai.tool_call"
   | "ai.provider_call"
   | "document.index_job"

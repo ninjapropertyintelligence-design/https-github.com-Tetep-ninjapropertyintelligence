@@ -296,7 +296,7 @@ export function makeAiTools(ctx: SessionContext) {
     },
 
     async generateReport(args: { reportType: string; propertyId?: string }) {
-      // Report generation itself (PDF/CSV) is exposed via /api/reports (spec
+      // Report generation itself (PDF/CSV) is exposed via /api/v1/reports (spec
       // §33); the AI tool points the user there with the resolved context
       // rather than duplicating report rendering inside the AI path.
       if (args.propertyId) trackRef("Property", args.propertyId);

@@ -51,7 +51,7 @@ export function AskAiInline({
     setError(null);
     setAnswer(null);
     try {
-      const data = await apiFetch<AskAiResponse>("/api/ai/ask", {
+      const data = await apiFetch<AskAiResponse>("/api/v1/ai/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, propertyId, propertyName }),

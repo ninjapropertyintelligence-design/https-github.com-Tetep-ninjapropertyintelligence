@@ -78,7 +78,7 @@ export function InteriorManager({
     setLoading("list-spaces");
     setError(null);
     try {
-      const body = await apiFetch<{ items: AvailableSpace[] }>("/api/integrations/matterport/spaces");
+      const body = await apiFetch<{ items: AvailableSpace[] }>("/api/v1/integrations/matterport/spaces");
       setAvailableSpaces(body.items);
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : "Something went wrong");
@@ -130,7 +130,7 @@ export function InteriorManager({
             />
           ) : data.connectionStatus !== "CONNECTED" ? (
             canManageIntegrations ? (
-              <Button onClick={() => call("connect", "/api/integrations/matterport/connect")} disabled={loading === "connect"}>
+              <Button onClick={() => call("connect", "/api/v1/integrations/matterport/connect")} disabled={loading === "connect"}>
                 {loading === "connect" ? "Connecting..." : data.connectionStatus === "ERROR" ? "Retry Connection" : "Connect Matterport"}
               </Button>
             ) : (
@@ -152,7 +152,7 @@ export function InteriorManager({
                           <span>{s.name ?? s.externalSpaceId}</span>
                           <Button
                             variant="secondary"
-                            onClick={() => call("link", `/api/properties/${propertyId}/interior/link`, { externalSpaceId: s.externalSpaceId })}
+                            onClick={() => call("link", `/api/v1/properties/${propertyId}/interior/link`, { externalSpaceId: s.externalSpaceId })}
                             disabled={loading === "link"}
                           >
                             Link to this property
@@ -177,10 +177,10 @@ export function InteriorManager({
               )}
               {canPerformCapture ? (
                 <div className="flex gap-2">
-                  <Button variant="secondary" onClick={() => call("sync", `/api/properties/${propertyId}/interior/sync`)} disabled={loading === "sync"}>
+                  <Button variant="secondary" onClick={() => call("sync", `/api/v1/properties/${propertyId}/interior/sync`)} disabled={loading === "sync"}>
                     {loading === "sync" ? "Syncing..." : "Sync"}
                   </Button>
-                  <Button variant="ghost" onClick={() => call("disconnect", `/api/properties/${propertyId}/interior/disconnect`)} disabled={loading === "disconnect"}>
+                  <Button variant="ghost" onClick={() => call("disconnect", `/api/v1/properties/${propertyId}/interior/disconnect`)} disabled={loading === "disconnect"}>
                     {loading === "disconnect" ? "Disconnecting..." : "Disconnect (keeps property)"}
                   </Button>
                 </div>

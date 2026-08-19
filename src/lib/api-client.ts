@@ -2,7 +2,7 @@
 
 /**
  * Client-side counterpart to `withApiHandler`'s `{data, error, meta}`
- * envelope (spec §63) — every fetch against this app's own `/api/*`
+ * envelope (spec §63) — every fetch against this app's own `/api/v1/*`
  * routes should go through this instead of raw `fetch().then(r =>
  * r.json())`, so the envelope only needs to be unwrapped in one place.
  *
