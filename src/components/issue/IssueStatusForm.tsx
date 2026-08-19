@@ -16,7 +16,7 @@ export function IssueStatusForm({ issueId, currentStatus, version }: { issueId: 
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const res = await fetch(`/api/issues/${issueId}`, {
+    const res = await fetch(`/api/v1/issues/${issueId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status, version }),

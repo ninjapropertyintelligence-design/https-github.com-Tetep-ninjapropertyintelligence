@@ -373,16 +373,16 @@ async function ReportsTab({ propertyId, propertyName }: { propertyId: string; pr
       <CardBody className="space-y-2 text-sm">
         <p className="text-muted">Generate a report for {propertyName}:</p>
         <div className="flex flex-wrap gap-2">
-          <a href={`/api/reports/property-condition?propertyId=${propertyId}&format=pdf`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+          <a href={`/api/v1/reports/property-condition?propertyId=${propertyId}&format=pdf`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Property Condition Report (PDF)
           </a>
-          <a href={`/api/reports/executive-summary?propertyId=${propertyId}`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+          <a href={`/api/v1/reports/executive-summary?propertyId=${propertyId}`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Executive Summary (PDF)
           </a>
-          <a href={`/api/reports/property-condition?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+          <a href={`/api/v1/reports/property-condition?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Property Condition Report (CSV)
           </a>
-          <a href={`/api/reports/capital-exposure?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+          <a href={`/api/v1/reports/capital-exposure?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Capital Exposure Report (CSV)
           </a>
         </div>

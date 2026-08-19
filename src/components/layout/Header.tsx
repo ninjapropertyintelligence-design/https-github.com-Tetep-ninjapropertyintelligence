@@ -34,7 +34,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    apiFetch<{ items: NotificationItem[]; unreadCount: number }>("/api/notifications")
+    apiFetch<{ items: NotificationItem[]; unreadCount: number }>("/api/v1/notifications")
       .then((data) => {
         setNotifications(data.items ?? []);
         setUnreadCount(data.unreadCount ?? 0);
@@ -52,7 +52,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        const data = await apiFetch<{ results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(value)}`);
+        const data = await apiFetch<{ results: SearchResult[] }>(`/api/v1/search?q=${encodeURIComponent(value)}`);
         setResults(data.results ?? []);
         setSearchOpen(true);
       } catch {
@@ -64,7 +64,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
   async function markAllRead() {
     const ids = notifications.filter((n) => !n.isRead).map((n) => n.id);
     if (!ids.length) return;
-    await fetch("/api/notifications", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    await fetch("/api/v1/notifications", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
     setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
     setUnreadCount(0);
   }

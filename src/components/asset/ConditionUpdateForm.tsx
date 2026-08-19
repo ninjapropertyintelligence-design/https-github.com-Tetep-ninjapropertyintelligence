@@ -15,7 +15,7 @@ export function ConditionUpdateForm({ assetId, currentScore, version }: { assetI
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const res = await fetch(`/api/assets/${assetId}/condition`, {
+    const res = await fetch(`/api/v1/assets/${assetId}/condition`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ newScore: score, reason: reason || undefined }),

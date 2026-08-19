@@ -24,10 +24,21 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   // Open Property -> Overview: shared header shows Health/Risk/Confidence/Exposure.
   await page.goto("/properties");
   await page.getByRole("link", { name: /Store #1052/ }).click();
-  await expect(page.getByText("Health", { exact: true })).toBeVisible();
-  await expect(page.getByText("Risk", { exact: true })).toBeVisible();
-  await expect(page.getByText("Confidence", { exact: true })).toBeVisible();
-  await expect(page.getByText("Exposure", { exact: true })).toBeVisible();
+
+  // Wait for the navigation to actually land before asserting. Without
+  // this the first (cold-compile) run can still be on /properties when the
+  // assertions below run — and "Health"/"Risk" also exist there as table
+  // column headers, so the test would silently assert against the wrong
+  // page instead of failing at the click.
+  await page.waitForURL(/\/properties\/[^/?]+$/);
+  await expect(page.getByRole("heading", { name: "Store #1052" })).toBeVisible();
+
+  // Scope the stat labels to the property header specifically, so a
+  // same-named column header elsewhere on the page can never satisfy them.
+  const headerStats = page.locator("main").getByText(/^(Health|Risk|Confidence|Exposure)$/);
+  for (const label of ["Health", "Risk", "Confidence", "Exposure"]) {
+    await expect(headerStats.filter({ hasText: new RegExp(`^${label}$`) }).first()).toBeVisible();
+  }
 
   const propertyUrl = page.url();
   const propertyId = new URL(propertyUrl).pathname.split("/").pop()!;
@@ -55,14 +66,14 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
 
   // Complete a fresh assessment via the real UI and confirm health recalculates.
   // Every JSON API response is {data, error, meta} (spec §63) — unwrap .data.
-  const { snapshot: healthBefore } = (await page.request.get(`/api/properties/${propertyId}/health`).then((r) => r.json())).data;
+  const { snapshot: healthBefore } = (await page.request.get(`/api/v1/properties/${propertyId}/health`).then((r) => r.json())).data;
 
-  const templatesRes = await page.request.get("/api/assessments/templates");
+  const templatesRes = await page.request.get("/api/v1/assessments/templates");
   const { items: templates } = (await templatesRes.json()).data;
   const template = templates.find((t: { name: string }) => t.name === "Annual Property Assessment");
   expect(template).toBeTruthy();
 
-  const createRes = await page.request.post("/api/assessments", {
+  const createRes = await page.request.post("/api/v1/assessments", {
     data: { propertyId, templateId: template.id },
   });
   expect(createRes.ok()).toBeTruthy();
@@ -73,7 +84,7 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   await page.getByRole("button", { name: "Complete Assessment" }).click();
   await expect(page.getByText(/completed and its answers are locked/i)).toBeVisible({ timeout: 15000 });
 
-  const { snapshot: healthAfter } = (await page.request.get(`/api/properties/${propertyId}/health`).then((r) => r.json())).data;
+  const { snapshot: healthAfter } = (await page.request.get(`/api/v1/properties/${propertyId}/health`).then((r) => r.json())).data;
   expect(healthAfter.computedAt).not.toBe(healthBefore.computedAt);
 
   // Ask AI, scoped to this property — no provider key is configured here,
@@ -84,7 +95,7 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   await expect(page.getByText("AI is not configured in this environment", { exact: false }).first()).toBeVisible({ timeout: 15000 });
 
   // Generate Property Report (PDF) — confirm a real PDF is produced from real data.
-  const reportRes = await page.request.get(`/api/reports/property-condition?propertyId=${propertyId}&format=pdf`);
+  const reportRes = await page.request.get(`/api/v1/reports/property-condition?propertyId=${propertyId}&format=pdf`);
   expect(reportRes.ok()).toBeTruthy();
   expect(reportRes.headers()["content-type"]).toContain("application/pdf");
   const pdfBytes = await reportRes.body();

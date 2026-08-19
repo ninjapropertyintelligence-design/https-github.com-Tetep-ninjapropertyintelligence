@@ -751,3 +751,138 @@ bulk import/fuzzy dedup (§68/§69), no MFA or real admin impersonation
 webhooks (§66), no performance/load-testing evidence (§98/§103), and the
 rest of the audit's full findings list. Only the top 3 were in scope for
 this pass.
+
+---
+
+# Post-Phase-2 workstream — API versioning, CI/CD, geocoding
+
+## Correction to the previous audit: the Portfolio Map already existed
+
+The Blueprint Audit reported §11 (Portfolio Map) as MISSING. **That was
+wrong.** `src/app/(app)/map/page.tsx` and `src/components/map/PortfolioMap.tsx`
+were already fully built: Mapbox GL with tenant-scoped queries,
+health-band-coloured markers, click-through popups linking to each
+property, and an honest "Mapbox is not configured" fallback that renders a
+plain coordinate list instead of a broken map. The audit's search missed
+them and the finding was passed on without verification. §11 is
+IMPLEMENTED; only PostGIS (spatial indexing/radius queries) is genuinely
+absent, and nothing in the app needs it yet.
+
+**No Google API is required.** Mapbox is the vendor the spec names (§11,
+§83) and is already integrated; adding Google Maps would mean a second
+vendor for a capability the project already has.
+
+## 1. API versioning (spec §64)
+
+Every route moved from `/api/*` to `/api/v1/*` via `git mv` (history
+preserved), with two deliberate exceptions:
+
+- `/api/auth/[...nextauth]` stays unversioned — it is NextAuth's own
+  contract, not this project's public API.
+- Callers were rewritten mechanically, then audited: the rewrite initially
+  also caught Matterport's **external** endpoint
+  (`https://api.matterport.com/api/models/graph` → `.../api/v1/models/graph`),
+  which was found and reverted. A grep for `https?://…/api/v1` is now the
+  check that no external vendor URL was rewritten.
+
+`StorageProvider`'s signed upload/download URLs were updated to the
+versioned upload route. Signed URLs are generated per-request with an
+expiry and never persisted, so no stored data referenced the old path.
+
+## 2. CI/CD (spec §58)
+
+`.github/workflows/ci.yml` — three jobs on every PR and push to `main`:
+
+- **quality**: Postgres 16 service container, `prisma generate`, migrations
+  applied to both dev and test databases, schema-drift check, typecheck,
+  lint, unit + integration tests, production build.
+- **e2e**: seeds the demo org and runs Playwright against a real browser,
+  uploading the report as an artifact on failure.
+- **security**: dependency audit.
+
+Three details that were verified rather than assumed:
+
+1. **The schema-drift check actually catches drift.** `prisma migrate diff
+   --from-config-datasource --to-schema ./prisma/schema.prisma --exit-code`
+   was tested by planting a field in `schema.prisma` with no matching
+   migration: it exited 2 and named the added column. (The flag names in
+   the first draft — `--to-schema-datamodel`, `--shadow-database-url` —
+   don't exist in Prisma 7 and would have failed on the first run.)
+2. **The seed step needed a `.env`.** `npm run db:seed` runs
+   `node --env-file=.env`, which hard-fails when the file is absent; CI now
+   writes one from the job environment rather than forking the seed script.
+3. **The audit gate is set at `critical`, not `high`, for a stated reason.**
+   The repo carries 3 high-severity advisories (`deepmerge-ts` via
+   `@prisma/config` → `prisma`) whose only offered remedy is downgrading to
+   prisma 6.12.0 — undoing the Prisma 7 driver-adapter architecture. Gating
+   at `high` would mean a permanently red pipeline everyone learns to
+   ignore. A second, non-blocking step still reports high/moderate
+   advisories every run so a *new* one is visible. Tighten to `high` once
+   Prisma ships a patched `@prisma/config`.
+
+## 3. Address geocoding — the real gap behind the map
+
+The map was built, but nothing populated the coordinates it needs.
+`POST /api/v1/properties` did `latitude: input.latitude ?? null`, and the
+map filters on `latitude: { not: null }` — so **a property created through
+the UI with only a street address silently never appeared on the map**, with
+no error anywhere.
+
+- `src/lib/integrations/geocoding-provider.ts` — `GeocodingProvider`
+  interface, matching the `InteriorCaptureProvider` /
+  `PhotogrammetryProvider` pattern.
+- `src/lib/integrations/mapbox-geocoding-provider.ts` — Mapbox Geocoding v6
+  `forward`, plus a `NullGeocodingProvider` that never guesses. Reads
+  `MAPBOX_TOKEN` (server-only) falling back to `NEXT_PUBLIC_MAPBOX_TOKEN`.
+  Parsing is deliberately defensive: a drifted response shape, a malformed
+  coordinate pair, or an out-of-range value yields `null` rather than
+  writing a wrong location onto a property.
+- `src/lib/geocoding-service.ts` — two rules: explicit caller-supplied
+  coordinates are never overwritten by a guess, and geocoding failure is
+  never fatal (spec §84 — the property record must still work). A failure
+  logs and saves the property without coordinates.
+- Confidence is recorded in the property-creation audit log
+  (`coordinateSource`: geocoded | explicit | none, plus
+  `geocodeConfidence`), so a low-confidence guess is never mistaken for a
+  surveyed position — consistent with the project's "never hide low
+  confidence" rule.
+
+Like Matterport, this is real request code that has never made a live round
+trip (no Mapbox token in this environment); 9 unit tests cover the parsing
+contract, including a specific assertion that GeoJSON `[lng, lat]` order is
+read correctly — a swapped pair would place this project's pilot property in
+the Indian Ocean rather than Missouri.
+
+## E2E stability — a real test bug found and fixed
+
+The versioning change surfaced a genuine defect in an assertion written in
+an earlier session. The deep-property spec asserted
+`getByText("Health", { exact: true })` immediately after clicking through to
+a property — but "Health" and "Risk" also exist as **column headers on the
+properties list page**, so on a cold run where the click hadn't finished
+navigating, the test asserted against the wrong page and only failed later,
+at "Confidence", with a misleading error.
+
+Fixed properly rather than retried: the spec now waits for the URL to land,
+asserts the property heading, and scopes the stat labels so a same-named
+column header elsewhere can't satisfy them. Separately, `workers: 1` is now
+set in `playwright.config.ts` — the suite shares one dev server and one
+seeded database, so serial execution is the truthful setting (the config
+already declared `fullyParallel: false`); this removes the intermittent
+30s timeouts and makes a bare `npx playwright test` pass, with no flag
+needed and local behaviour identical to CI.
+
+## Gate
+
+`tsc --noEmit` clean · `eslint` clean (1 pre-existing warning) ·
+`vitest run` 64 passed / 1 skipped · `playwright test` 9/9 from a cold
+`.next`, with no flags · `next build` succeeds.
+
+## Remaining audit gaps
+
+Unchanged and still open: bulk import + fuzzy dedup (§68/§69), MFA and real
+admin impersonation (§43/§45), data retention / secure deletion / backup-DR
+(§52/§54/§55), outbound webhooks (§66), idempotency keys (§65), cost
+metering and property-level COGS (§49/§50), storage lifecycle tiering
+(§51), product analytics (§105), and performance/load-testing evidence
+(§98/§103). PostGIS (§11) is the one remaining piece of the map story.

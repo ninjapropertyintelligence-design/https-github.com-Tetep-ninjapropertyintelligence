@@ -53,7 +53,7 @@ export function AssessmentRunner({
   async function saveAnswer(question: Question, patch: Partial<Answer>) {
     setValues((prev) => ({ ...prev, [question.id]: { ...prev[question.id], ...patch } }));
     setSaving(question.id);
-    await fetch(`/api/assessments/${assessmentId}/answers`, {
+    await fetch(`/api/v1/assessments/${assessmentId}/answers`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ questionId: question.id, ...patch }),
@@ -63,7 +63,7 @@ export function AssessmentRunner({
 
   async function completeAssessment() {
     setCompleting(true);
-    const res = await fetch(`/api/assessments/${assessmentId}`, {
+    const res = await fetch(`/api/v1/assessments/${assessmentId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: "COMPLETED" }),

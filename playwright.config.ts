@@ -13,6 +13,13 @@ export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
   fullyParallel: false, // shared seeded DB — avoid cross-test interference
+  // One worker, not just one test-at-a-time-per-file: the whole suite
+  // shares a single dev server and a single seeded database, so parallel
+  // workers contend on both and race Turbopack's first compile of each
+  // route. That contention (not any assertion) is what pushed the deep
+  // property spec past its 30s budget intermittently. Serial is the
+  // truthful setting for this suite, and keeps local runs identical to CI.
+  workers: 1,
   reporter: [["list"]],
   use: {
     baseURL: "http://localhost:3000",

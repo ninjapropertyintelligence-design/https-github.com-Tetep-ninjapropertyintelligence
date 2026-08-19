@@ -63,7 +63,7 @@ export function IntegrationsPanel({ data }: { data: IntegrationsOverview }) {
                     </p>
                   </div>
                   {c.status === "ERROR" ? (
-                    <Button variant="secondary" onClick={() => retry(c.id, `/api/admin/matterport/${c.id}/retry`)} disabled={busy === c.id}>
+                    <Button variant="secondary" onClick={() => retry(c.id, `/api/v1/admin/matterport/${c.id}/retry`)} disabled={busy === c.id}>
                       {busy === c.id ? "Retrying..." : "Retry"}
                     </Button>
                   ) : null}
@@ -89,7 +89,7 @@ export function IntegrationsPanel({ data }: { data: IntegrationsOverview }) {
                     <p className="font-medium text-foreground">{c.property.name}</p>
                     <p className="text-xs text-muted">{c.notes ?? "No error detail"}</p>
                   </div>
-                  <Button variant="secondary" onClick={() => retry(c.id, `/api/admin/drone-captures/${c.id}/retry`)} disabled={busy === c.id}>
+                  <Button variant="secondary" onClick={() => retry(c.id, `/api/v1/admin/drone-captures/${c.id}/retry`)} disabled={busy === c.id}>
                     {busy === c.id ? "Retrying..." : "Retry"}
                   </Button>
                 </li>
@@ -116,7 +116,7 @@ export function IntegrationsPanel({ data }: { data: IntegrationsOverview }) {
                       {d.property?.name ?? "—"} · {d.indexError ?? "Unknown error"}
                     </p>
                   </div>
-                  <Button variant="secondary" onClick={() => retry(d.id, `/api/admin/documents/${d.id}/reindex`)} disabled={busy === d.id}>
+                  <Button variant="secondary" onClick={() => retry(d.id, `/api/v1/admin/documents/${d.id}/reindex`)} disabled={busy === d.id}>
                     {busy === d.id ? "Reindexing..." : "Reindex"}
                   </Button>
                 </li>
