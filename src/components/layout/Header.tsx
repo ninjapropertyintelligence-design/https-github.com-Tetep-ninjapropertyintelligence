@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { signOut } from "next-auth/react";
+import { apiFetch } from "@/lib/api-client";
 
 interface SearchResult {
   kind: string;
@@ -33,8 +34,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    fetch("/api/notifications")
-      .then((r) => (r.ok ? r.json() : { items: [], unreadCount: 0 }))
+    apiFetch<{ items: NotificationItem[]; unreadCount: number }>("/api/notifications")
       .then((data) => {
         setNotifications(data.items ?? []);
         setUnreadCount(data.unreadCount ?? 0);
@@ -51,11 +51,12 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
       return;
     }
     debounceRef.current = setTimeout(async () => {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(value)}`);
-      if (res.ok) {
-        const data = await res.json();
+      try {
+        const data = await apiFetch<{ results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(value)}`);
         setResults(data.results ?? []);
         setSearchOpen(true);
+      } catch {
+        // Search is best-effort from the header — leave prior results in place.
       }
     }, 250);
   }

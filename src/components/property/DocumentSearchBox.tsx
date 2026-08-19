@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import Link from "next/link";
+import { apiFetch } from "@/lib/api-client";
 
 interface Hit {
   documentId: string;
@@ -21,10 +22,14 @@ export function DocumentSearchBox({ propertyId }: { propertyId: string }) {
     e.preventDefault();
     if (q.trim().length < 2) return;
     setLoading(true);
-    const res = await fetch(`/api/documents/search?propertyId=${propertyId}&q=${encodeURIComponent(q)}`);
-    const body = await res.json();
-    setResults(body.results ?? []);
-    setLoading(false);
+    try {
+      const body = await apiFetch<{ results: Hit[] }>(`/api/documents/search?propertyId=${propertyId}&q=${encodeURIComponent(q)}`);
+      setResults(body.results ?? []);
+    } catch {
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (

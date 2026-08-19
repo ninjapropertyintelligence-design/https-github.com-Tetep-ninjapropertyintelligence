@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import { SeverityBadge } from "@/components/ui/Badge";
 import { formatDate } from "@/lib/format";
+import { apiFetch, ApiClientError } from "@/lib/api-client";
 
 interface AvailableSpace {
   externalSpaceId: string;
@@ -64,14 +65,10 @@ export function InteriorManager({
     setLoading(action);
     setError(null);
     try {
-      const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        throw new Error(b.error ?? "Request failed");
-      }
+      await apiFetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      setError(err instanceof ApiClientError ? err.message : "Something went wrong");
     } finally {
       setLoading(null);
     }
@@ -81,15 +78,10 @@ export function InteriorManager({
     setLoading("list-spaces");
     setError(null);
     try {
-      const res = await fetch("/api/integrations/matterport/spaces");
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        throw new Error(b.error ?? "Failed to list spaces");
-      }
-      const body = await res.json();
+      const body = await apiFetch<{ items: AvailableSpace[] }>("/api/integrations/matterport/spaces");
       setAvailableSpaces(body.items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
+      setError(err instanceof ApiClientError ? err.message : "Something went wrong");
     } finally {
       setLoading(null);
     }
