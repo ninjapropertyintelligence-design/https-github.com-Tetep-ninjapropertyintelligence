@@ -1146,3 +1146,92 @@ Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
 ## Still open in this batch
 
 Data retention + secure deletion (§52/§54), backup/DR (§55).
+
+---
+
+# Enterprise security batch, part 3 — Retention and secure deletion (§52/§54)
+
+Before this the schema had a `DataRetentionStatus` enum and two unused
+columns. There was no policy, no legal hold, no deletion path, and no answer
+to "what happens when a customer asks us to delete a property."
+
+## Retention policy (§52)
+
+`RetentionPolicy` has one field per category the spec names — active
+property, deleted property, deleted organization, archived capture, customer
+termination, backup expiration — so "define policies for X" has a literal
+answer in the schema rather than a value buried in code. All are durations
+in days, because every one of them is a duration question. Reading a policy
+that was never set returns the defaults *without creating a row*: a policy
+appearing as a side effect of opening a settings page would make "was a
+policy ever set?" unanswerable.
+
+The seventh category, legal hold, is its own model. A hold blocks deletion
+of anything in scope, and is re-checked at *execution* time, not only when a
+deletion is requested — a hold placed during the grace window is exactly the
+situation holds exist for, and a request-time-only check would miss it.
+
+## Secure deletion (§54)
+
+The spec's line is "Delete does not mean hiding a row", and it names six
+surfaces. Every execution records an outcome per surface, so the answer to
+"was this really deleted?" is a breakdown rather than a boolean:
+
+| Surface | What happens |
+| --- | --- |
+| Database | Cascading delete of the property/organization |
+| Object storage | Every key from Evidence, DocumentVersion, DroneImage, DroneOutput — collected *before* the cascade, because a key you can no longer look up is an object that lives forever |
+| Search index | `DocumentChunk` rows, deleted and counted explicitly |
+| Derived files | Processing outputs and thumbnails, counted separately as §54 lists them |
+| Cache | `NOT_APPLICABLE`, with the reason |
+| Backup retention | `SCHEDULED`, with the date the last backup containing the data expires |
+
+The last two are the point. This deployment has no external cache holding
+customer data, and backups cannot be selectively purged on request —
+reporting either as `COMPLETED` would be claiming work that never happened,
+which is the failure §54 is about. The customer sees both states, with the
+explanation, in the UI.
+
+## A no-op that would have made the whole feature a lie
+
+`LocalStorageProvider.delete()` was an empty method with a comment saying
+deletion "is intentionally not implemented" — harmless while nothing called
+it, and fatal the moment secure deletion did. The object-storage surface
+would have reported `COMPLETED` for every key while leaving every byte on
+disk.
+
+Implemented for real (with the same path-containment check `verifyUpload`
+uses, since a storage key is attacker-influenced input). The integration
+test writes real files, then asserts they are gone from disk after
+execution — and that test was **verified to fail against the old no-op**
+before the fix was kept, so it genuinely protects the property rather than
+just passing.
+
+## Something the live run destroyed
+
+Driving the flow manually against the running app deleted the seeded
+Store #1052 — permanently, correctly, exactly as designed — which the
+deep-property e2e spec depends on. Re-seeded, and the e2e spec now creates
+and destroys its own disposable property. A deletion feature has no undo, so
+its tests must not point at shared fixtures.
+
+## Verified
+
+- `tests/integration/retention.test.ts` — 19 cases against real Postgres and
+  the real storage provider: every §52 category present, defaults not
+  persisted on read, grace window honoured, cancel restores the property,
+  cross-org requests refused, all six surfaces recorded, the search index
+  emptied, a readable record surviving the target's deletion, `runDueDeletions`
+  executing only what is due, and five legal-hold cases including a hold
+  placed *after* the request was made.
+- `tests/e2e/retention.spec.ts` — the flow in a real browser: policy saved, a
+  legal hold blocking a deletion, the hold released, the deletion scheduled
+  and executed by the admin job endpoint, and the six-surface breakdown
+  rendered to the customer including `NOT_APPLICABLE` and `SCHEDULED`.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+163 passed / 1 skipped · `playwright` 12/12 · `next build` succeeds.
+
+## Still open in this batch
+
+Backup and disaster recovery (§55).

@@ -173,6 +173,50 @@ enum DataRetentionStatus {
   DELETED
 }
 
+enum DeletionTargetType {
+  PROPERTY
+  ORGANIZATION
+}
+
+enum DeletionRequestStatus {
+  PENDING
+  CANCELLED
+  BLOCKED_BY_LEGAL_HOLD
+  COMPLETED
+  FAILED
+}
+
+/**
+ * The six surfaces spec §54 says a deletion must account for. Enumerated in
+ * the schema rather than as loose strings so a new surface cannot be added
+ * to the code without a migration making it visible.
+ */
+enum DeletionSurface {
+  DATABASE
+  OBJECT_STORAGE
+  SEARCH_INDEX
+  DERIVED_FILES
+  CACHE
+  BACKUP_RETENTION
+}
+
+enum DeletionSurfaceStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  // Recorded, dated, and genuinely not yet done — used for backup
+  // retention, where the data survives in backups until they expire.
+  SCHEDULED
+  // This deployment has no such surface. Stated explicitly rather than
+  // reported as a success that never happened.
+  NOT_APPLICABLE
+}
+
+enum LegalHoldScope {
+  ORGANIZATION
+  PROPERTY
+}
+
 enum SubscriptionComponentType {
   BASE_PLATFORM
   PROPERTY
@@ -254,6 +298,8 @@ model User {
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
   mfaRecoveryCodes       MfaRecoveryCode[]
   impersonationSessions  ImpersonationSession[]  @relation("ImpersonationAdmin")
+  legalHoldsPlaced       LegalHold[]             @relation("LegalHoldPlacedBy")
+  deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
 
   @@index([email])
 }
@@ -385,6 +431,9 @@ model Organization {
   exteriorMarkers      ExteriorMarker[]
   documentChunks       DocumentChunk[]
   impersonationSessions ImpersonationSession[]
+  retentionPolicy      RetentionPolicy?
+  legalHolds           LegalHold[]
+  deletionRequests     DeletionRequest[]
 
   @@index([slug])
 }
@@ -468,6 +517,7 @@ model Property {
   accessGrants    AccessGrant[]
   exteriorMarkers ExteriorMarker[]
   documentChunks  DocumentChunk[]
+  legalHolds      LegalHold[]
 
   @@unique([organizationId, customerPropertyId])
   @@index([organizationId])
@@ -1232,6 +1282,117 @@ model AuditLog {
   @@index([organizationId, createdAt])
   @@index([action])
   @@index([entityType, entityId])
+}
+
+// ---------------------------------------------------------------------------
+// Data retention and secure deletion (spec §52, §54)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-organization retention policy (spec §52). One field per category the
+ * spec names, so "define policies for X" has a literal answer in the schema
+ * rather than a value buried in code. Days, not booleans: every one of these
+ * is a duration question.
+ */
+model RetentionPolicy {
+  id             String @id @default(cuid())
+  organizationId String @unique
+
+  // "Active property" — how long condition history, captures and evidence
+  // are kept for a property still in service. Null = keep indefinitely,
+  // which is the correct default for an asset-condition record of truth.
+  activePropertyRetentionDays  Int?
+  // "Deleted property" — grace window between requesting deletion and the
+  // data actually being destroyed, so a mistake is recoverable.
+  deletedPropertyGraceDays     Int @default(30)
+  // "Deleted organization"
+  deletedOrganizationGraceDays Int @default(30)
+  // "Archived capture" — older captures superseded by a newer one.
+  archivedCaptureRetentionDays Int @default(365)
+  // "Customer termination" — how long after a contract ends the data is
+  // retained so the customer can still export it (spec §53).
+  customerTerminationGraceDays Int @default(30)
+  // "Backup expiration" — how long deleted data survives in backups. This
+  // is what makes the backup surface of a deletion honest: it cannot be
+  // erased on request, only aged out, and this says by when.
+  backupRetentionDays          Int @default(35)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * Legal hold (spec §52). While one is active, deletion of anything in scope
+ * is refused — retention policy does not override a hold, which is the whole
+ * point of having one.
+ */
+model LegalHold {
+  id             String         @id @default(cuid())
+  organizationId String
+  scopeType      LegalHoldScope
+  propertyId     String?
+  reason         String
+  placedByUserId String?
+  placedAt       DateTime       @default(now())
+  releasedAt     DateTime?
+  releasedByUserId String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?    @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  placedBy     User?        @relation("LegalHoldPlacedBy", fields: [placedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, releasedAt])
+  @@index([propertyId])
+}
+
+/**
+ * A request to destroy data, and the record of what actually happened to
+ * each surface (spec §54: "Delete does not mean hiding a row"). The
+ * per-surface breakdown is the deliverable — a single "deleted: true" flag
+ * would be exactly the claim the spec warns against.
+ */
+model DeletionRequest {
+  id                String                @id @default(cuid())
+  organizationId    String
+  targetType        DeletionTargetType
+  targetId          String
+  // Kept denormalised: after execution the target row is gone, and an audit
+  // record that can no longer say what was deleted is not much of a record.
+  targetLabel       String
+  reason            String
+  requestedByUserId String?
+  requestedAt       DateTime              @default(now())
+  scheduledFor      DateTime
+  status            DeletionRequestStatus @default(PENDING)
+  executedAt        DateTime?
+  cancelledAt       DateTime?
+  error             String?
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestedBy  User?                   @relation("DeletionRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  surfaces     DeletionSurfaceResult[]
+
+  @@index([organizationId, status])
+  @@index([status, scheduledFor])
+}
+
+model DeletionSurfaceResult {
+  id          String                @id @default(cuid())
+  requestId   String
+  surface     DeletionSurface
+  status      DeletionSurfaceStatus @default(PENDING)
+  // How many objects/rows this surface accounted for.
+  itemCount   Int                   @default(0)
+  // Why, when the status is not COMPLETED — e.g. which backups still hold
+  // the data and until when.
+  detail      String?
+  completedAt DateTime?
+
+  request DeletionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, surface])
 }
 
 model Notification {
