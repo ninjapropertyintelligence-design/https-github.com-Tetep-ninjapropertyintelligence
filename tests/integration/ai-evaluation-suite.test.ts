@@ -99,6 +99,7 @@ describe("AI evaluation suite", () => {
       permissions: [],
       mfaRequired: false,
       mfaEnrolled: false,
+      impersonation: null,
     };
   }
 

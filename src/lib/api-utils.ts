@@ -63,6 +63,16 @@ export function withApiHandler<T, Extra = unknown>(
           "Your organization requires multi-factor authentication. Enrol at /settings/security to continue.",
         );
       }
+      if (ctx.impersonation && !isReadOnlyRequest(req) && !isImpersonationControlPath(req)) {
+        // Spec §45 says support may *view* a customer's account. This makes
+        // that literal: while impersonating, nothing can be written. The
+        // VIEWER role already blocks permission-gated mutations; this also
+        // covers a route that happens not to gate on one.
+        return jsonError(
+          403,
+          "Read-only: platform support cannot modify customer data while impersonating.",
+        );
+      }
       const result = await handler(ctx, req, extra);
       if (result instanceof NextResponse) {
         const body = await result.json().catch(() => null);
@@ -124,5 +134,18 @@ export function enforceRateLimit(
   if (!result.allowed || !byIp.allowed) {
     const wait = Math.max(result.retryAfterSeconds, byIp.retryAfterSeconds);
     throw new ApiError(429, `Too many attempts. Try again in ${wait} second${wait === 1 ? "" : "s"}.`);
+  }
+}
+
+function isReadOnlyRequest(req: Request): boolean {
+  return req.method === "GET" || req.method === "HEAD";
+}
+
+/** Ending an impersonation session is the one write it must always allow. */
+function isImpersonationControlPath(req: Request): boolean {
+  try {
+    return new URL(req.url).pathname === "/api/v1/admin/impersonation/end";
+  } catch {
+    return false;
   }
 }

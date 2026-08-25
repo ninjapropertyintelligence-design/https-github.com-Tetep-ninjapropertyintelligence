@@ -73,6 +73,7 @@ describe("Matterport tenant isolation", () => {
       permissions: [],
       mfaRequired: false,
       mfaEnrolled: false,
+      impersonation: null,
     };
   }
 

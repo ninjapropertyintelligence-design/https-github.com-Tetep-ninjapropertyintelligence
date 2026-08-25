@@ -1070,3 +1070,79 @@ Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
 
 Admin impersonation (§45), data retention + secure deletion (§52/§54),
 backup/DR (§55).
+
+---
+
+# Enterprise security batch, part 2 — Admin impersonation (spec §45)
+
+Spec §45 lists five requirements for platform support viewing a customer's
+account. What existed before was not impersonation at all — `admin-service.ts`
+built a throwaway `{...ctx, organizationId}` object to run one internal
+Matterport retry. There was no support session, no reason, no indicator, and
+nothing the customer could see or switch off.
+
+## The five requirements, and where each is enforced
+
+| Spec requirement | Implementation |
+| --- | --- |
+| Require authorized support role | `canImpersonate`, held by `PLATFORM_ADMIN` only |
+| Log the impersonation | `ImpersonationSession` row + audit log **scoped to the customer's org** |
+| Record reason | Required, ≥10 chars, stored, shown to the customer and in the banner |
+| Show visible indicator | `ImpersonationBanner`, rendered by the app layout above the header on every page |
+| Allow customer policy to disable it | `Organization.allowSupportAccess`, customer-controlled |
+
+Two properties beyond the list, because the list is a floor:
+
+**Sessions expire** (60 minutes, capped server-side). A forgotten session
+must not quietly become standing cross-tenant access.
+
+**Impersonation is read-only.** The session resolves to a `VIEWER` of the
+customer's org — reusing the one permission engine rather than adding a
+second authorization path that could drift from it — and `withApiHandler`
+additionally refuses every non-GET request, so a route that happens not to
+gate on a permission is covered too. `isPlatformAdmin` is false during a
+session, so nothing cross-tenant is reachable while wearing a customer's
+face.
+
+## Authorization is read from the database, not from a token
+
+`getSessionContext` resolves the impersonation session by row on every
+request. That is the design decision that makes revocation real: expiry, the
+customer switching support access off, or support losing their role all take
+effect on the *next request*, rather than whenever a JWT happens to be
+reissued. Turning the policy off also ends sessions already in progress —
+a switch that only blocked future sessions would do nothing about the
+situation that prompted flipping it.
+
+## A permission leak caught while writing it
+
+Adding `canImpersonate` to the `PERMISSIONS` list immediately granted it to
+every customer's Owner, because `Role.OWNER` was defined as *everything
+except* `canAccessPlatformAdmin`. A subtraction-based grant means every new
+platform permission is handed to customers by default. Replaced with an
+explicit `PLATFORM_ONLY_PERMISSIONS` list, and a test now asserts that no
+non-platform role holds any member of it — so the next platform permission
+cannot repeat this.
+
+## Verified
+
+- `tests/integration/impersonation.test.ts` — 18 cases against real
+  Postgres, organised by the spec's five requirements: non-admins refused,
+  trivial reasons refused, the log written to the *customer's* org and
+  readable by them, history scoped per-org, expiry closed out correctly,
+  duration capped, a cookie from one admin unable to activate another's
+  session, revocation ending a live session, and role loss mid-session.
+- `tests/e2e/impersonation.spec.ts` — the whole thing in a real browser
+  across two contexts: admin starts a session, banner appears carrying the
+  reason, `GET /api/v1/properties` returns the customer's 6 properties,
+  `POST /api/v1/issues` returns 403 "Read-only", the banner follows to other
+  pages, the customer sees the record marked "In progress now", switches
+  support access off, and the admin's banner is gone on their very next
+  request.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+144 passed / 1 skipped · `playwright` 11/11 · `next build` succeeds.
+
+## Still open in this batch
+
+Data retention + secure deletion (§52/§54), backup/DR (§55).

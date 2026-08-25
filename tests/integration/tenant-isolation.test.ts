@@ -90,6 +90,7 @@ describe("cross-tenant property isolation", () => {
       permissions: [],
       mfaRequired: false,
       mfaEnrolled: false,
+      impersonation: null,
     };
   }
 

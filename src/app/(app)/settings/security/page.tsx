@@ -3,6 +3,8 @@ import { getSessionContext, can } from "@/lib/session-context";
 import { getMfaStatus } from "@/lib/mfa-service";
 import { MfaManager } from "@/components/security/MfaManager";
 import { OrgMfaPolicy } from "@/components/security/OrgMfaPolicy";
+import { SupportAccessPanel } from "@/components/security/SupportAccessPanel";
+import { listSupportAccessHistory } from "@/lib/impersonation";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -17,16 +19,22 @@ export default async function SecuritySettingsPage() {
 
   const canManagePolicy = Boolean(ctx.organizationId) && can(ctx, "canManageTeam");
 
-  const [status, org, unenrolledMembers] = await Promise.all([
+  const canViewSupportHistory = Boolean(ctx.organizationId) && can(ctx, "canViewAuditLogs");
+
+  const [status, org, unenrolledMembers, supportHistory] = await Promise.all([
     getMfaStatus(ctx.userId, ctx.organizationId || null),
     ctx.organizationId
-      ? prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { requireMfa: true } })
+      ? prisma.organization.findUnique({
+          where: { id: ctx.organizationId },
+          select: { requireMfa: true, allowSupportAccess: true },
+        })
       : Promise.resolve(null),
     canManagePolicy
       ? prisma.membership.count({
           where: { organizationId: ctx.organizationId, user: { mfaEnabledAt: null, isActive: true } },
         })
       : Promise.resolve(0),
+    canViewSupportHistory ? listSupportAccessHistory(ctx) : Promise.resolve([]),
   ]);
 
   return (
@@ -43,6 +51,13 @@ export default async function SecuritySettingsPage() {
             requireMfa={org?.requireMfa ?? false}
             unenrolledMembers={unenrolledMembers}
             selfEnrolled={status.state === "ENABLED"}
+          />
+        ) : null}
+        {canViewSupportHistory ? (
+          <SupportAccessPanel
+            allowSupportAccess={org?.allowSupportAccess ?? true}
+            history={supportHistory}
+            canManage={canManagePolicy}
           />
         ) : null}
       </div>

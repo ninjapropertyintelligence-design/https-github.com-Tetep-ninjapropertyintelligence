@@ -253,8 +253,38 @@ model User {
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
   mfaRecoveryCodes       MfaRecoveryCode[]
+  impersonationSessions  ImpersonationSession[]  @relation("ImpersonationAdmin")
 
   @@index([email])
+}
+
+/**
+ * A platform-support person viewing a customer's account (spec §45). The row
+ * IS the authorization: `getSessionContext` looks one up on every request,
+ * so revoking support access or letting the session expire takes effect
+ * immediately rather than waiting for a token to be reissued.
+ *
+ * `reason` is required by the spec and enforced as non-trivial at the
+ * service layer. `expiresAt` is what stops a forgotten session becoming
+ * standing cross-tenant access.
+ */
+model ImpersonationSession {
+  id             String    @id @default(cuid())
+  adminUserId    String
+  organizationId String
+  reason         String
+  startedAt      DateTime  @default(now())
+  expiresAt      DateTime
+  endedAt        DateTime?
+  // "manual" | "expired" | "revoked_by_customer"
+  endedReason    String?
+  ipAddress      String?
+
+  admin        User         @relation("ImpersonationAdmin", fields: [adminUserId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([adminUserId, endedAt])
+  @@index([organizationId, startedAt])
 }
 
 // One row per issued recovery code. Only the SHA-256 hash is stored, and a
@@ -326,6 +356,10 @@ model Organization {
   // have MFA enrolled before they can use the app. Enforced server-side in
   // the app layout, not only in the UI.
   requireMfa      Boolean             @default(false)
+  // Customer policy (spec §45): when false, platform support cannot start an
+  // impersonation session against this organization at all, and any session
+  // already running stops being honoured on the next request.
+  allowSupportAccess Boolean          @default(true)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
@@ -350,6 +384,7 @@ model Organization {
   aiQueryLogs          AIQueryLog[]
   exteriorMarkers      ExteriorMarker[]
   documentChunks       DocumentChunk[]
+  impersonationSessions ImpersonationSession[]
 
   @@index([slug])
 }
