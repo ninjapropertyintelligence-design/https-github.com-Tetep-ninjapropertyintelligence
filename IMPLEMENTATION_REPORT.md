@@ -956,3 +956,117 @@ passing **both** with the SDK key present and with it removed (the CI case).
 
 Gate: `tsc` clean · `eslint` clean · `vitest` 67 passed / 1 skipped ·
 `playwright` 9/9 · `next build` succeeds.
+
+---
+
+# Enterprise security batch, part 1 — MFA (spec §43)
+
+The first of the four items in the enterprise security batch. Before this,
+`src/` had zero references to MFA of any kind — the spec's very first
+"build from Day 1" bullet was entirely absent.
+
+## What was built
+
+**TOTP, implemented rather than imported.** `src/lib/mfa.ts` implements
+RFC 4226 (HOTP) and RFC 6238 (TOTP) on `node:crypto`. That is a deliberate
+choice for ~40 lines of authentication code: both RFCs publish test vectors,
+so `tests/unit/mfa.test.ts` asserts the implementation against *them* rather
+than against itself. All 10 RFC 4226 counter vectors and 5 RFC 6238 time
+vectors pass. If any regressed, real authenticator apps would disagree with
+us and users would be locked out — that is what these tests protect.
+
+Verification uses a ±1 step (30s) skew window, compared with
+`crypto.timingSafeEqual`, and rejects malformed input without throwing
+because the code is attacker-controlled.
+
+**Secrets encrypted at rest.** `src/lib/crypto.ts` is a new shared
+AES-256-GCM primitive. `lib/integrations/crypto.ts` (which already existed
+for Matterport credentials) now delegates to it with its original key
+derivation, so previously stored ciphertexts still decrypt — verified by
+encrypting with the pre-refactor code and decrypting with the new. MFA
+secrets use the same primitive with a `"mfa-totp"` domain separator, so
+neither key can decrypt the other's data (also verified). There is no
+plaintext path: a TOTP secret in the clear would make a database dump a
+bypass for the second factor it exists to provide.
+
+**Recovery codes.** Ten per enrollment, shown exactly once, stored as
+SHA-256 hashes (full-entropy random — a work factor buys nothing here).
+Single-use, enforced by a conditional `updateMany` on `usedAt: null`, so two
+concurrent redemptions of the same code consume it once. Tested by racing
+two.
+
+**Rate limiting** (`src/lib/rate-limit.ts`) — the other Day-1 §43 bullet.
+Login is keyed on both the account and the source address: an attacker can't
+escape the per-account limit by rotating IPs, and one host can't spray many
+accounts. A password-correct-but-MFA-failing attempt still consumes budget;
+only a fully successful login clears the counters. Stated limit: this bounds
+one Node instance, so a shared store must replace it before horizontal
+scaling.
+
+**Login flow.** The MFA step is signalled to the form through a
+`CredentialsSignin` error code rather than a separate "does this account have
+MFA?" endpoint — that endpoint would be a password oracle. There stays
+exactly one place a password is checked. Unknown accounts are compared
+against a real bcrypt hash so they cost the same as a wrong password
+(measured: 76ms vs 79ms).
+
+**Org policy.** `Organization.requireMfa` makes MFA mandatory for every
+member. Enforced in two independent places: the app layout replaces the
+whole shell with an enrollment gate, and `withApiHandler` refuses the same
+user's API calls, so bypassing the UI gains nothing. `/api/v1/auth/mfa/*` is
+exempt by path prefix — otherwise a user under a new policy could never
+comply.
+
+**Audit trail (spec §44).** `login`, `logout`, and `login.failed` (with the
+*reason*, never the password) now write audit rows, along with
+`mfa.enabled`, `mfa.disabled`, `mfa.recovery_code_used`,
+`mfa.recovery_codes_regenerated`, and `org.mfa_policy_changed`. Audit writes
+are wrapped so an unavailable audit table can never become an authentication
+outage.
+
+## A real bug found by driving the browser
+
+Typecheck, lint, and all 124 tests were green with a **permanent
+organization-wide lockout** in the code.
+
+Driving the real app: an owner who had *not* enrolled turned on the org
+policy. From that moment every request from them was refused by that
+policy — **including the request to turn the policy back off**. The
+organization had no route back. The UI disabled the button in that state,
+but a direct API call (which is what the check made) bypassed it, and the
+UI guard did nothing to help anyone already stuck.
+
+Fixed server-side: `setOrganizationMfaPolicy` refuses to *enable* the policy
+unless the actor is themselves enrolled. Disabling has no such precondition,
+so at least one person can always sign in and reverse it. Re-verified live:
+the direct API call now returns 400 with that reason, and an enrolled owner
+successfully turns the policy back off. Covered by two new regression tests.
+
+(The residual case — the last enrolled admin loses both device and recovery
+codes — is what platform-admin support access is for, §45, part 2 of this
+batch.)
+
+## Verified
+
+- `tests/unit/mfa.test.ts` — 35 cases: every RFC 4226/6238 vector, base32
+  against RFC 4648, skew-window bounds, malformed-input handling, and the
+  rate limiter's window/isolation/reset behaviour.
+- `tests/integration/mfa.test.ts` — 24 cases against real Postgres: the
+  secret is not readable as stored, PENDING never enforces, recovery codes
+  are single-use and per-user, disabling requires the factor itself,
+  regeneration invalidates the old set, policy doesn't leak across orgs.
+- `tests/e2e/mfa.spec.ts` — the full flow in a real browser: enrol, wrong
+  code rejected, password alone stops working, TOTP login, recovery-code
+  login, that same recovery code refused on reuse, disable. It creates its
+  own user rather than touching a seeded demo account.
+- The org-policy gate was additionally driven live end to end (member
+  blocked out of the shell, `/api/v1/properties` 403, `/api/v1/auth/mfa`
+  still 200, owner recovery path works).
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+126 passed / 1 skipped · `playwright` 10/10 · `next build` succeeds.
+
+## Still open in this batch
+
+Admin impersonation (§45), data retention + secure deletion (§52/§54),
+backup/DR (§55).

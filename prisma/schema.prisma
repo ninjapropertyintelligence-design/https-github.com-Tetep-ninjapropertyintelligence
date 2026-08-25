@@ -229,6 +229,14 @@ model User {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  // Multi-factor authentication (spec §43). `mfaSecret` holds an AES-256-GCM
+  // ciphertext, never the raw TOTP secret — see lib/mfa.ts. A secret may exist
+  // while `mfaEnabledAt` is null: that is the pending-enrollment state, where
+  // the user has scanned the code but not yet proven they can generate one.
+  mfaSecret        String?
+  mfaEnabledAt     DateTime?
+  mfaLastVerifiedAt DateTime?
+
   memberships            Membership[]
   auditLogs              AuditLog[]              @relation("AuditActor")
   events                 Event[]                 @relation("EventActor")
@@ -244,8 +252,25 @@ model User {
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
+  mfaRecoveryCodes       MfaRecoveryCode[]
 
   @@index([email])
+}
+
+// One row per issued recovery code. Only the SHA-256 hash is stored, and a
+// used code is retained (not deleted) so the audit trail can show that a
+// specific code was consumed and when.
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, codeHash])
+  @@index([userId])
 }
 
 // One row per (user, organization): defines the user's role within that org.
@@ -297,6 +322,10 @@ model Organization {
   name            String
   slug            String              @unique
   retentionStatus DataRetentionStatus @default(ACTIVE)
+  // Enterprise policy (spec §43): when true, every member of this org must
+  // have MFA enrolled before they can use the app. Enforced server-side in
+  // the app layout, not only in the UI.
+  requireMfa      Boolean             @default(false)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 

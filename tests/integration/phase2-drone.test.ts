@@ -49,6 +49,8 @@ describe("Drone pipeline tenant isolation", () => {
       vendorId: null,
       grants: [],
       permissions: [],
+      mfaRequired: false,
+      mfaEnrolled: false,
     };
   }
 

@@ -5,6 +5,14 @@ import { defineConfig } from "@playwright/test";
 // Falls back to Playwright's own managed browser when that path doesn't exist
 // (e.g. a contributor's local machine that ran `npx playwright install`).
 import { existsSync } from "node:fs";
+import { config } from "dotenv";
+
+// Playwright doesn't read .env the way Next does, and specs that touch the
+// database directly (tests/e2e/mfa.spec.ts creates its own user) need
+// DATABASE_URL. Loaded here, pointing at the same database the dev server
+// under test uses — deliberately NOT DATABASE_URL_TEST, which is the
+// isolated database the vitest suite owns.
+config({ path: ".env" });
 
 const PRE_INSTALLED_CHROMIUM = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
 const executablePath = existsSync(PRE_INSTALLED_CHROMIUM) ? PRE_INSTALLED_CHROMIUM : undefined;

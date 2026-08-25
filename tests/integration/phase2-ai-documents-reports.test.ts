@@ -62,6 +62,8 @@ describe("Phase 2: property-scoped AI tools, document search, and report scoping
       vendorId: null,
       grants: [],
       permissions: [],
+      mfaRequired: false,
+      mfaEnrolled: false,
     };
   }
 

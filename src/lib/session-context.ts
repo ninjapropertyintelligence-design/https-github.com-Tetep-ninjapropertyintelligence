@@ -10,7 +10,7 @@ import { SessionContext } from "@/lib/tenant-scope";
 // tenant-scope.ts (see that file's header comment) is an internal
 // implementation detail, not an API change.
 export type { SessionContext, AccessGrantScope } from "@/lib/tenant-scope";
-export { propertyScopeWhere, issueScopeWhere, canAccessProperty } from "@/lib/tenant-scope";
+export { propertyScopeWhere, issueScopeWhere, canAccessProperty, mfaPolicySatisfied } from "@/lib/tenant-scope";
 
 export const ACTIVE_ORG_COOKIE = "activeOrgId";
 
@@ -71,6 +71,10 @@ export async function getSessionContext(): Promise<SessionContext | null> {
         vendorId: null,
         grants: [],
         permissions: permissionsForRole(Role.PLATFORM_ADMIN),
+        // No org, so no org policy to satisfy. A platform admin's own MFA
+        // state still travels with the context for the settings UI.
+        mfaRequired: false,
+        mfaEnrolled: user.mfaEnabledAt !== null,
       };
     }
     return null;
@@ -99,6 +103,8 @@ export async function getSessionContext(): Promise<SessionContext | null> {
       propertyId: g.propertyId,
     })),
     permissions: permissionsForRole(membership.role),
+    mfaRequired: membership.organization.requireMfa,
+    mfaEnrolled: user.mfaEnabledAt !== null,
   };
 }
 

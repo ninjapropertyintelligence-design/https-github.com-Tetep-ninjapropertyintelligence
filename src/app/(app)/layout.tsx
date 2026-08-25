@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
-import { getSessionContext, can } from "@/lib/session-context";
+import { getSessionContext, can, mfaPolicySatisfied } from "@/lib/session-context";
 import { getNavItems } from "@/lib/nav";
 import { ROLE_LABELS } from "@/lib/role-labels";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
+import { MfaRequiredGate } from "@/components/security/MfaRequiredGate";
+import { getMfaStatus } from "@/lib/mfa-service";
 
 // Every route under this layout requires a resolved session. This is the
 // server-side auth guard — the same session context also drives which nav
@@ -14,6 +16,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const ctx = await getSessionContext();
   if (!ctx) {
     redirect("/login");
+  }
+
+  // Org policy gate (spec §43). Replaces the whole app shell rather than
+  // redirecting, so there is no route to slip past and no loop to fall into.
+  if (!mfaPolicySatisfied(ctx)) {
+    const status = await getMfaStatus(ctx.userId, ctx.organizationId || null);
+    return <MfaRequiredGate status={status} orgName={ctx.organizationName} />;
   }
 
   const navItems = getNavItems(ctx);

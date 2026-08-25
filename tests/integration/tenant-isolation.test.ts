@@ -88,6 +88,8 @@ describe("cross-tenant property isolation", () => {
       vendorId: null,
       grants,
       permissions: [],
+      mfaRequired: false,
+      mfaEnrolled: false,
     };
   }
 

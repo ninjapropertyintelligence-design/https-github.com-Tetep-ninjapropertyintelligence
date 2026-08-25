@@ -36,6 +36,19 @@ export interface SessionContext {
   vendorId: string | null;
   grants: AccessGrantScope[];
   permissions: Permission[];
+  /** The active organization requires MFA of every member (spec §43). */
+  mfaRequired: boolean;
+  /** This user has an activated second factor. */
+  mfaEnrolled: boolean;
+}
+
+/**
+ * True when the org's MFA policy is satisfied. Resolved once here so the
+ * layout guard and the API guard can never drift apart — a policy enforced
+ * in the UI but not on the API would be theatre.
+ */
+export function mfaPolicySatisfied(ctx: SessionContext): boolean {
+  return !ctx.mfaRequired || ctx.mfaEnrolled;
 }
 
 /**
