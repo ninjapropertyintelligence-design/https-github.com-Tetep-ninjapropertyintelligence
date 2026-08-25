@@ -15,7 +15,10 @@ export interface NavItem {
  */
 export function getNavItems(ctx: SessionContext): NavItem[] {
   if (ctx.isPlatformAdmin && !ctx.organizationId) {
-    return [{ label: "Platform Administration", href: "/admin" }];
+    return [
+      { label: "Platform Administration", href: "/admin" },
+      { label: "Security", href: "/settings/security" },
+    ];
   }
 
   const items: NavItem[] = [{ label: "Dashboard", href: "/dashboard" }];
@@ -39,6 +42,11 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   if (can(ctx, "canManageTeam") || can(ctx, "canManageBilling")) {
     items.push({ label: "Administration", href: "/settings" });
+  }
+  // Every role can manage its own second factor, so this is not permission-gated.
+  items.push({ label: "Security", href: "/settings/security" });
+  if (can(ctx, "canViewAuditLogs")) {
+    items.push({ label: "Retention", href: "/settings/retention" });
   }
   if (ctx.isPlatformAdmin) {
     items.push({ label: "Platform Admin", href: "/admin" });

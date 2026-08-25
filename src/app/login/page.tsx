@@ -22,6 +22,8 @@ function LoginForm() {
   const params = useSearchParams();
   const [email, setEmail] = useState("owner@demo.com");
   const [password, setPassword] = useState("password123");
+  const [mfaCode, setMfaCode] = useState("");
+  const [needsMfa, setNeedsMfa] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -29,12 +31,31 @@ function LoginForm() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const result = await signIn("credentials", { email, password, redirect: false });
+    // Sent on every attempt; the server ignores it unless the account has a
+    // second factor, so the form needs no prior knowledge of which do.
+    const result = await signIn("credentials", { email, password, mfaCode, redirect: false });
     setLoading(false);
+
     if (result?.error) {
-      setError("Invalid email or password.");
-      return;
+      // `code` comes from the CredentialsSignin subclass thrown in auth.ts.
+      switch (result.code) {
+        case "mfa_required":
+          setNeedsMfa(true);
+          setError(null);
+          return;
+        case "mfa_invalid":
+          setNeedsMfa(true);
+          setError("That authentication code is not valid. Try the next one your app shows.");
+          return;
+        case "too_many_attempts":
+          setError("Too many sign-in attempts. Wait a few minutes and try again.");
+          return;
+        default:
+          setError("Invalid email or password.");
+          return;
+      }
     }
+
     router.push(params.get("callbackUrl") ?? "/dashboard");
     router.refresh();
   }
@@ -63,9 +84,24 @@ function LoginForm() {
             onChange={(e) => setPassword(e.target.value)}
             className="mt-1 mb-4 w-full rounded-lg border border-border px-3 py-2 text-sm outline-none focus:border-brand"
           />
+          {needsMfa ? (
+            <>
+              <label className="block text-xs font-medium text-muted">Authentication code</label>
+              <input
+                autoFocus
+                inputMode="text"
+                autoComplete="one-time-code"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+                placeholder="000000"
+                className="mt-1 mb-1 w-full rounded-lg border border-border px-3 py-2 font-mono text-sm outline-none focus:border-brand"
+              />
+              <p className="mb-4 text-xs text-muted">From your authenticator app, or one of your recovery codes.</p>
+            </>
+          ) : null}
           {error ? <p className="mb-3 text-sm text-[var(--band-critical)]">{error}</p> : null}
           <Button type="submit" disabled={loading} className="w-full">
-            {loading ? "Signing in..." : "Sign in"}
+            {loading ? "Signing in..." : needsMfa ? "Verify and sign in" : "Sign in"}
           </Button>
         </form>
 

@@ -36,6 +36,37 @@ export interface SessionContext {
   vendorId: string | null;
   grants: AccessGrantScope[];
   permissions: Permission[];
+  /** The active organization requires MFA of every member (spec §43). */
+  mfaRequired: boolean;
+  /** This user has an activated second factor. */
+  mfaEnrolled: boolean;
+  /**
+   * Set when this request is platform support viewing a customer's account
+   * (spec §45). When set, `organizationId`/`role` describe the *customer's*
+   * context, not the admin's — so every existing scope query keeps working
+   * unchanged — and `isPlatformAdmin` is false, so nothing cross-tenant is
+   * reachable while impersonating.
+   */
+  impersonation: ImpersonationInfo | null;
+}
+
+export interface ImpersonationInfo {
+  sessionId: string;
+  adminUserId: string;
+  adminName: string;
+  adminEmail: string;
+  reason: string;
+  startedAt: Date;
+  expiresAt: Date;
+}
+
+/**
+ * True when the org's MFA policy is satisfied. Resolved once here so the
+ * layout guard and the API guard can never drift apart — a policy enforced
+ * in the UI but not on the API would be theatre.
+ */
+export function mfaPolicySatisfied(ctx: SessionContext): boolean {
+  return !ctx.mfaRequired || ctx.mfaEnrolled;
 }
 
 /**

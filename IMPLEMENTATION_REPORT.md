@@ -956,3 +956,385 @@ passing **both** with the SDK key present and with it removed (the CI case).
 
 Gate: `tsc` clean · `eslint` clean · `vitest` 67 passed / 1 skipped ·
 `playwright` 9/9 · `next build` succeeds.
+
+---
+
+# Enterprise security batch, part 1 — MFA (spec §43)
+
+The first of the four items in the enterprise security batch. Before this,
+`src/` had zero references to MFA of any kind — the spec's very first
+"build from Day 1" bullet was entirely absent.
+
+## What was built
+
+**TOTP, implemented rather than imported.** `src/lib/mfa.ts` implements
+RFC 4226 (HOTP) and RFC 6238 (TOTP) on `node:crypto`. That is a deliberate
+choice for ~40 lines of authentication code: both RFCs publish test vectors,
+so `tests/unit/mfa.test.ts` asserts the implementation against *them* rather
+than against itself. All 10 RFC 4226 counter vectors and 5 RFC 6238 time
+vectors pass. If any regressed, real authenticator apps would disagree with
+us and users would be locked out — that is what these tests protect.
+
+Verification uses a ±1 step (30s) skew window, compared with
+`crypto.timingSafeEqual`, and rejects malformed input without throwing
+because the code is attacker-controlled.
+
+**Secrets encrypted at rest.** `src/lib/crypto.ts` is a new shared
+AES-256-GCM primitive. `lib/integrations/crypto.ts` (which already existed
+for Matterport credentials) now delegates to it with its original key
+derivation, so previously stored ciphertexts still decrypt — verified by
+encrypting with the pre-refactor code and decrypting with the new. MFA
+secrets use the same primitive with a `"mfa-totp"` domain separator, so
+neither key can decrypt the other's data (also verified). There is no
+plaintext path: a TOTP secret in the clear would make a database dump a
+bypass for the second factor it exists to provide.
+
+**Recovery codes.** Ten per enrollment, shown exactly once, stored as
+SHA-256 hashes (full-entropy random — a work factor buys nothing here).
+Single-use, enforced by a conditional `updateMany` on `usedAt: null`, so two
+concurrent redemptions of the same code consume it once. Tested by racing
+two.
+
+**Rate limiting** (`src/lib/rate-limit.ts`) — the other Day-1 §43 bullet.
+Login is keyed on both the account and the source address: an attacker can't
+escape the per-account limit by rotating IPs, and one host can't spray many
+accounts. A password-correct-but-MFA-failing attempt still consumes budget;
+only a fully successful login clears the counters. Stated limit: this bounds
+one Node instance, so a shared store must replace it before horizontal
+scaling.
+
+**Login flow.** The MFA step is signalled to the form through a
+`CredentialsSignin` error code rather than a separate "does this account have
+MFA?" endpoint — that endpoint would be a password oracle. There stays
+exactly one place a password is checked. Unknown accounts are compared
+against a real bcrypt hash so they cost the same as a wrong password
+(measured: 76ms vs 79ms).
+
+**Org policy.** `Organization.requireMfa` makes MFA mandatory for every
+member. Enforced in two independent places: the app layout replaces the
+whole shell with an enrollment gate, and `withApiHandler` refuses the same
+user's API calls, so bypassing the UI gains nothing. `/api/v1/auth/mfa/*` is
+exempt by path prefix — otherwise a user under a new policy could never
+comply.
+
+**Audit trail (spec §44).** `login`, `logout`, and `login.failed` (with the
+*reason*, never the password) now write audit rows, along with
+`mfa.enabled`, `mfa.disabled`, `mfa.recovery_code_used`,
+`mfa.recovery_codes_regenerated`, and `org.mfa_policy_changed`. Audit writes
+are wrapped so an unavailable audit table can never become an authentication
+outage.
+
+## A real bug found by driving the browser
+
+Typecheck, lint, and all 124 tests were green with a **permanent
+organization-wide lockout** in the code.
+
+Driving the real app: an owner who had *not* enrolled turned on the org
+policy. From that moment every request from them was refused by that
+policy — **including the request to turn the policy back off**. The
+organization had no route back. The UI disabled the button in that state,
+but a direct API call (which is what the check made) bypassed it, and the
+UI guard did nothing to help anyone already stuck.
+
+Fixed server-side: `setOrganizationMfaPolicy` refuses to *enable* the policy
+unless the actor is themselves enrolled. Disabling has no such precondition,
+so at least one person can always sign in and reverse it. Re-verified live:
+the direct API call now returns 400 with that reason, and an enrolled owner
+successfully turns the policy back off. Covered by two new regression tests.
+
+(The residual case — the last enrolled admin loses both device and recovery
+codes — is what platform-admin support access is for, §45, part 2 of this
+batch.)
+
+## Verified
+
+- `tests/unit/mfa.test.ts` — 35 cases: every RFC 4226/6238 vector, base32
+  against RFC 4648, skew-window bounds, malformed-input handling, and the
+  rate limiter's window/isolation/reset behaviour.
+- `tests/integration/mfa.test.ts` — 24 cases against real Postgres: the
+  secret is not readable as stored, PENDING never enforces, recovery codes
+  are single-use and per-user, disabling requires the factor itself,
+  regeneration invalidates the old set, policy doesn't leak across orgs.
+- `tests/e2e/mfa.spec.ts` — the full flow in a real browser: enrol, wrong
+  code rejected, password alone stops working, TOTP login, recovery-code
+  login, that same recovery code refused on reuse, disable. It creates its
+  own user rather than touching a seeded demo account.
+- The org-policy gate was additionally driven live end to end (member
+  blocked out of the shell, `/api/v1/properties` 403, `/api/v1/auth/mfa`
+  still 200, owner recovery path works).
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+126 passed / 1 skipped · `playwright` 10/10 · `next build` succeeds.
+
+## Still open in this batch
+
+Admin impersonation (§45), data retention + secure deletion (§52/§54),
+backup/DR (§55).
+
+---
+
+# Enterprise security batch, part 2 — Admin impersonation (spec §45)
+
+Spec §45 lists five requirements for platform support viewing a customer's
+account. What existed before was not impersonation at all — `admin-service.ts`
+built a throwaway `{...ctx, organizationId}` object to run one internal
+Matterport retry. There was no support session, no reason, no indicator, and
+nothing the customer could see or switch off.
+
+## The five requirements, and where each is enforced
+
+| Spec requirement | Implementation |
+| --- | --- |
+| Require authorized support role | `canImpersonate`, held by `PLATFORM_ADMIN` only |
+| Log the impersonation | `ImpersonationSession` row + audit log **scoped to the customer's org** |
+| Record reason | Required, ≥10 chars, stored, shown to the customer and in the banner |
+| Show visible indicator | `ImpersonationBanner`, rendered by the app layout above the header on every page |
+| Allow customer policy to disable it | `Organization.allowSupportAccess`, customer-controlled |
+
+Two properties beyond the list, because the list is a floor:
+
+**Sessions expire** (60 minutes, capped server-side). A forgotten session
+must not quietly become standing cross-tenant access.
+
+**Impersonation is read-only.** The session resolves to a `VIEWER` of the
+customer's org — reusing the one permission engine rather than adding a
+second authorization path that could drift from it — and `withApiHandler`
+additionally refuses every non-GET request, so a route that happens not to
+gate on a permission is covered too. `isPlatformAdmin` is false during a
+session, so nothing cross-tenant is reachable while wearing a customer's
+face.
+
+## Authorization is read from the database, not from a token
+
+`getSessionContext` resolves the impersonation session by row on every
+request. That is the design decision that makes revocation real: expiry, the
+customer switching support access off, or support losing their role all take
+effect on the *next request*, rather than whenever a JWT happens to be
+reissued. Turning the policy off also ends sessions already in progress —
+a switch that only blocked future sessions would do nothing about the
+situation that prompted flipping it.
+
+## A permission leak caught while writing it
+
+Adding `canImpersonate` to the `PERMISSIONS` list immediately granted it to
+every customer's Owner, because `Role.OWNER` was defined as *everything
+except* `canAccessPlatformAdmin`. A subtraction-based grant means every new
+platform permission is handed to customers by default. Replaced with an
+explicit `PLATFORM_ONLY_PERMISSIONS` list, and a test now asserts that no
+non-platform role holds any member of it — so the next platform permission
+cannot repeat this.
+
+## Verified
+
+- `tests/integration/impersonation.test.ts` — 18 cases against real
+  Postgres, organised by the spec's five requirements: non-admins refused,
+  trivial reasons refused, the log written to the *customer's* org and
+  readable by them, history scoped per-org, expiry closed out correctly,
+  duration capped, a cookie from one admin unable to activate another's
+  session, revocation ending a live session, and role loss mid-session.
+- `tests/e2e/impersonation.spec.ts` — the whole thing in a real browser
+  across two contexts: admin starts a session, banner appears carrying the
+  reason, `GET /api/v1/properties` returns the customer's 6 properties,
+  `POST /api/v1/issues` returns 403 "Read-only", the banner follows to other
+  pages, the customer sees the record marked "In progress now", switches
+  support access off, and the admin's banner is gone on their very next
+  request.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+144 passed / 1 skipped · `playwright` 11/11 · `next build` succeeds.
+
+## Still open in this batch
+
+Data retention + secure deletion (§52/§54), backup/DR (§55).
+
+---
+
+# Enterprise security batch, part 3 — Retention and secure deletion (§52/§54)
+
+Before this the schema had a `DataRetentionStatus` enum and two unused
+columns. There was no policy, no legal hold, no deletion path, and no answer
+to "what happens when a customer asks us to delete a property."
+
+## Retention policy (§52)
+
+`RetentionPolicy` has one field per category the spec names — active
+property, deleted property, deleted organization, archived capture, customer
+termination, backup expiration — so "define policies for X" has a literal
+answer in the schema rather than a value buried in code. All are durations
+in days, because every one of them is a duration question. Reading a policy
+that was never set returns the defaults *without creating a row*: a policy
+appearing as a side effect of opening a settings page would make "was a
+policy ever set?" unanswerable.
+
+The seventh category, legal hold, is its own model. A hold blocks deletion
+of anything in scope, and is re-checked at *execution* time, not only when a
+deletion is requested — a hold placed during the grace window is exactly the
+situation holds exist for, and a request-time-only check would miss it.
+
+## Secure deletion (§54)
+
+The spec's line is "Delete does not mean hiding a row", and it names six
+surfaces. Every execution records an outcome per surface, so the answer to
+"was this really deleted?" is a breakdown rather than a boolean:
+
+| Surface | What happens |
+| --- | --- |
+| Database | Cascading delete of the property/organization |
+| Object storage | Every key from Evidence, DocumentVersion, DroneImage, DroneOutput — collected *before* the cascade, because a key you can no longer look up is an object that lives forever |
+| Search index | `DocumentChunk` rows, deleted and counted explicitly |
+| Derived files | Processing outputs and thumbnails, counted separately as §54 lists them |
+| Cache | `NOT_APPLICABLE`, with the reason |
+| Backup retention | `SCHEDULED`, with the date the last backup containing the data expires |
+
+The last two are the point. This deployment has no external cache holding
+customer data, and backups cannot be selectively purged on request —
+reporting either as `COMPLETED` would be claiming work that never happened,
+which is the failure §54 is about. The customer sees both states, with the
+explanation, in the UI.
+
+## A no-op that would have made the whole feature a lie
+
+`LocalStorageProvider.delete()` was an empty method with a comment saying
+deletion "is intentionally not implemented" — harmless while nothing called
+it, and fatal the moment secure deletion did. The object-storage surface
+would have reported `COMPLETED` for every key while leaving every byte on
+disk.
+
+Implemented for real (with the same path-containment check `verifyUpload`
+uses, since a storage key is attacker-influenced input). The integration
+test writes real files, then asserts they are gone from disk after
+execution — and that test was **verified to fail against the old no-op**
+before the fix was kept, so it genuinely protects the property rather than
+just passing.
+
+## Something the live run destroyed
+
+Driving the flow manually against the running app deleted the seeded
+Store #1052 — permanently, correctly, exactly as designed — which the
+deep-property e2e spec depends on. Re-seeded, and the e2e spec now creates
+and destroys its own disposable property. A deletion feature has no undo, so
+its tests must not point at shared fixtures.
+
+## Verified
+
+- `tests/integration/retention.test.ts` — 19 cases against real Postgres and
+  the real storage provider: every §52 category present, defaults not
+  persisted on read, grace window honoured, cancel restores the property,
+  cross-org requests refused, all six surfaces recorded, the search index
+  emptied, a readable record surviving the target's deletion, `runDueDeletions`
+  executing only what is due, and five legal-hold cases including a hold
+  placed *after* the request was made.
+- `tests/e2e/retention.spec.ts` — the flow in a real browser: policy saved, a
+  legal hold blocking a deletion, the hold released, the deletion scheduled
+  and executed by the admin job endpoint, and the six-surface breakdown
+  rendered to the customer including `NOT_APPLICABLE` and `SCHEDULED`.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+163 passed / 1 skipped · `playwright` 12/12 · `next build` succeeds.
+
+## Still open in this batch
+
+Backup and disaster recovery (§55).
+
+---
+
+# Enterprise security batch, part 4 — Backup and disaster recovery (§55)
+
+Spec §55 asks for two definitions (RPO, RTO) and four things to be **tested**:
+database restoration, file restoration, queue recovery, vendor outage
+behavior. A recovery plan nobody has run is a hypothesis, so the deliverable
+here is a script that performs a real restore, not a document describing one.
+
+## `npm run dr:verify`
+
+Takes a real `pg_dump`, restores it into a scratch database, runs six checks,
+drops the scratch database, and exits non-zero on failure so it can gate a
+pipeline. Measured on the seeded dataset:
+
+```
+PASS  Database restoration — row counts match across every checked table
+      14 tables, 217 rows; restored in 457ms (backup took 115ms)
+PASS  Database restoration — migration history restored
+      7 applied migrations present in the restored database
+PASS  Database restoration — foreign key constraints intact
+      111 foreign key constraints present
+PASS  File restoration — every referenced object exists in storage
+      4 referenced objects, all present
+PASS  Queue recovery — processing jobs restored with their state
+      1 jobs restored with matching status; 0 in a resumable state
+PASS  Vendor outage behavior — every provider fails in the way callers handle
+```
+
+The file-restoration check is the one that matters most: a database-only
+backup restores every row perfectly and then serves 404s for every photo and
+document. `npm run dr:backup` therefore writes a manifest of every storage
+key the database references alongside the dump, and the verifier confirms
+each one exists.
+
+## Checks that can't pass vacuously
+
+A check running against an empty table cannot tell "restored correctly" from
+"there was nothing to restore", so those report **INCONCLUSIVE**, not PASS.
+The first run did exactly that for queue recovery — the seed created no
+processing jobs. The seed now creates one, and the check reports real
+numbers.
+
+## Verified to catch failures, not just to pass
+
+- Removing **one** object from `.local-storage`: file restoration goes red,
+  script exits 1. Restored, back to 6/6.
+- Setting the seeded job to `PROCESSING`: resumable count goes 0 → 1. Back to
+  `READY`: 1 → 0.
+
+## Two bugs in this work, found before shipping
+
+**`?schema=public` broke `pg_dump` outright** — libpq rejects it as an
+invalid URI parameter. The first run died on it. Fixed with a `libpqUrl()`
+helper, which now has its own unit tests because it is exactly the kind of
+thing that silently breaks again.
+
+**The resumable-jobs filter named statuses that don't exist.** It tested for
+`QUEUED`/`RUNNING`, which are not members of `DroneCaptureStatus` — so it
+always reported zero, a check that could never fire. Found while writing the
+runbook against the real enum. The correct values are `UPLOADING` and
+`PROCESSING`.
+
+## What the document does and does not claim
+
+`docs/DISASTER_RECOVERY.md` states RPO (15 min) and RTO (4 hours full, 1 hour
+read-only) with the procedure behind each, and is explicit that:
+
+- The measured 457ms restore is **not** an RTO — it proves the procedure and
+  tooling work, and says nothing about a production-sized database.
+- The 15-minute RPO is a **deployment configuration** (WAL archiving, bucket
+  versioning + replication), not something this repository enforces.
+- Backups are not scheduled by this repo, failover is not automated, and
+  backup encryption lives wherever the dumps are stored.
+
+Queue recovery gets a genuine architectural note: this system has no broker.
+Jobs are database rows with a status, so restoring the database *is*
+restoring the queue. If a broker is introduced it becomes a separate recovery
+surface, because messages in flight are not covered by a database backup.
+
+## Wired into CI
+
+`npm run dr:verify` runs in the e2e job, after seeding — not in the quality
+job, because against an empty database the file and queue checks would report
+INCONCLUSIVE and prove nothing.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+167 passed / 1 skipped · `playwright` 12/12 · `next build` succeeds ·
+`dr:verify` 6/6.
+
+---
+
+# Enterprise security batch — complete
+
+All four items are done: MFA (§43), admin impersonation (§45), retention +
+secure deletion (§52/§54), backup/DR (§55).
+
+Still open from the wider audit, unchanged by this batch: bulk import + fuzzy
+dedup (§68/§69), outbound webhooks (§66), idempotency keys (§65), cost
+metering and property-level COGS (§49/§50), storage lifecycle tiering (§51),
+product analytics (§105), performance/load testing (§98/§103), and PostGIS
+(§11).

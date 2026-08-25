@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { stat, readFile } from "node:fs/promises";
+import { stat, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -91,9 +91,29 @@ class LocalStorageProvider implements StorageProvider {
     return `/api/v1/uploads/${encodeURIComponent(key)}?exp=${expiresAt}&token=${token}`;
   }
 
-  async delete(): Promise<void> {
-    // Local dev provider: deletion of the underlying file is intentionally
-    // not implemented (evidence/documents are soft-referenced, not purged).
+  /**
+   * Actually removes the file. This used to be a no-op, which was fine while
+   * nothing called it — but secure deletion (spec §54) does, and a provider
+   * that silently keeps the bytes would let a deletion report success while
+   * the customer's data stayed on disk. That is precisely the "delete does
+   * not mean hiding a row" failure the spec calls out.
+   *
+   * Missing files are not an error: deletion is retried and must converge,
+   * so a key that is already gone is the desired end state.
+   */
+  async delete(key: string): Promise<void> {
+    const filePath = path.join(LOCAL_STORAGE_ROOT, key);
+    // Same containment check as verifyUpload — a key is attacker-influenced
+    // input and must never escape the storage root.
+    if (!filePath.startsWith(LOCAL_STORAGE_ROOT + path.sep)) {
+      throw new Error("Refusing to delete a key outside the storage root");
+    }
+    try {
+      await unlink(filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
   }
 
   async verifyUpload(key: string): Promise<UploadVerification> {

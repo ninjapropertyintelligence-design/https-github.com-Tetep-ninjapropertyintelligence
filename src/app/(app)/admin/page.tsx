@@ -5,6 +5,7 @@ import { getIntegrationsOverview } from "@/lib/admin-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { IntegrationsPanel, IntegrationsOverview } from "@/components/admin/IntegrationsPanel";
+import { ImpersonationLauncher } from "@/components/admin/ImpersonationLauncher";
 import { formatRelativeTime } from "@/lib/format";
 
 /**
@@ -47,6 +48,12 @@ export default async function AdminPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Spec §45. Placed in the platform console because it is a support
+            action, gated on canImpersonate on the server regardless. */}
+        <ImpersonationLauncher
+          organizations={orgs.map((o) => ({ id: o.id, name: o.name, allowSupportAccess: o.allowSupportAccess }))}
+        />
+
         <Card>
           <CardHeader title="Organizations" />
           <CardBody className="p-0">

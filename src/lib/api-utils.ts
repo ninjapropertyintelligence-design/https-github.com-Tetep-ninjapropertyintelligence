@@ -6,9 +6,11 @@ import {
   UnauthenticatedError,
   can,
   getSessionContext,
+  mfaPolicySatisfied,
 } from "@/lib/session-context";
 import { Permission } from "@/lib/permissions";
 import { ApiError } from "@/lib/api-error";
+import { RateLimitRule, checkRateLimit, clientIpFromRequest } from "@/lib/rate-limit";
 
 export { ApiError };
 
@@ -52,6 +54,25 @@ export function withApiHandler<T, Extra = unknown>(
     try {
       const ctx = await getSessionContext();
       if (!ctx) return jsonError(401, "Not authenticated");
+      if (!mfaPolicySatisfied(ctx) && !isMfaEnrollmentPath(req)) {
+        // The org requires a second factor and this user has none. Enforced
+        // here as well as in the app layout, so the policy holds for a
+        // direct API call that never renders a page.
+        return jsonError(
+          403,
+          "Your organization requires multi-factor authentication. Enrol at /settings/security to continue.",
+        );
+      }
+      if (ctx.impersonation && !isReadOnlyRequest(req) && !isImpersonationControlPath(req)) {
+        // Spec §45 says support may *view* a customer's account. This makes
+        // that literal: while impersonating, nothing can be written. The
+        // VIEWER role already blocks permission-gated mutations; this also
+        // covers a route that happens not to gate on one.
+        return jsonError(
+          403,
+          "Read-only: platform support cannot modify customer data while impersonating.",
+        );
+      }
       const result = await handler(ctx, req, extra);
       if (result instanceof NextResponse) {
         const body = await result.json().catch(() => null);
@@ -80,5 +101,51 @@ export function requirePermission(ctx: SessionContext, permission: Permission) {
 export function requireOrgContext(ctx: SessionContext) {
   if (!ctx.organizationId) {
     throw new ApiError(403, "No organization context");
+  }
+}
+
+/**
+ * The enrollment endpoints must stay reachable while the policy is
+ * unsatisfied, or a user under a newly-enabled policy could never comply.
+ * Matched on the path prefix rather than a per-route opt-out flag so a new
+ * MFA route can't be added without inheriting the exemption.
+ */
+function isMfaEnrollmentPath(req: Request): boolean {
+  try {
+    return new URL(req.url).pathname.startsWith("/api/v1/auth/mfa");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Applies a rate-limit rule to an authenticated request, keyed on the user
+ * (not just the address — a session is the thing being spent here). Throws
+ * a 429 ApiError, which `withApiHandler` renders in the standard envelope.
+ */
+export function enforceRateLimit(
+  ctx: SessionContext,
+  req: Request,
+  rule: RateLimitRule,
+  action: string,
+): void {
+  const result = checkRateLimit(`${action}:user:${ctx.userId}`, rule);
+  const byIp = checkRateLimit(`${action}:ip:${clientIpFromRequest(req)}`, rule);
+  if (!result.allowed || !byIp.allowed) {
+    const wait = Math.max(result.retryAfterSeconds, byIp.retryAfterSeconds);
+    throw new ApiError(429, `Too many attempts. Try again in ${wait} second${wait === 1 ? "" : "s"}.`);
+  }
+}
+
+function isReadOnlyRequest(req: Request): boolean {
+  return req.method === "GET" || req.method === "HEAD";
+}
+
+/** Ending an impersonation session is the one write it must always allow. */
+function isImpersonationControlPath(req: Request): boolean {
+  try {
+    return new URL(req.url).pathname === "/api/v1/admin/impersonation/end";
+  } catch {
+    return false;
   }
 }

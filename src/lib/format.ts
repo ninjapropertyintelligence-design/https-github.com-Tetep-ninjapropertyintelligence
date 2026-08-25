@@ -10,6 +10,18 @@ export function formatDate(value: string | Date | null | undefined): string {
   return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+/** Date + time — for audit-style records where the exact minute matters. */
+export function formatDateTime(value: string | Date | null | undefined): string {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function formatRelativeTime(value: string | Date): string {
   const date = new Date(value);
   const diffMs = Date.now() - date.getTime();

@@ -56,3 +56,6 @@ next-env.d.ts
 /.claude/
 /.windsurf/
 skills-lock.json
+
+# Backup artifacts from `npm run dr:backup` — never commit a database dump
+/backups

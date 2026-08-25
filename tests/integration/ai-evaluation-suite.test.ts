@@ -97,6 +97,9 @@ describe("AI evaluation suite", () => {
       vendorId: null,
       grants: [],
       permissions: [],
+      mfaRequired: false,
+      mfaEnrolled: false,
+      impersonation: null,
     };
   }
 

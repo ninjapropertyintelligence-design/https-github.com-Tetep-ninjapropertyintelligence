@@ -28,11 +28,20 @@ export const PERMISSIONS = [
   "canViewAuditLogs",
   "canManageFeatureFlags",
   "canAccessPlatformAdmin",
+  // Spec §45 "Require authorized support role": impersonating a customer is
+  // its own capability, not something every platform admin action implies.
+  "canImpersonate",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
 
 const ALL: Permission[] = [...PERMISSIONS];
+
+/**
+ * Capabilities that belong to the platform operator, never to a customer —
+ * no org role may hold one, however senior.
+ */
+export const PLATFORM_ONLY_PERMISSIONS: Permission[] = ["canAccessPlatformAdmin", "canImpersonate"];
 
 // Roles that are implicitly organization-wide: every property in the org is
 // in scope without needing explicit AccessGrant rows.
@@ -50,9 +59,13 @@ export const SCOPED_ROLES: Role[] = [
 ];
 
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  [Role.PLATFORM_ADMIN]: ["canAccessPlatformAdmin", "canViewAuditLogs", "canManageFeatureFlags"],
+  [Role.PLATFORM_ADMIN]: ["canAccessPlatformAdmin", "canViewAuditLogs", "canManageFeatureFlags", "canImpersonate"],
 
-  [Role.OWNER]: ALL.filter((p) => p !== "canAccessPlatformAdmin"),
+  // Everything except the two platform-side capabilities. Spelled out as a
+  // list rather than "ALL minus one" so adding a platform permission to
+  // PERMISSIONS can never silently grant it to every customer's Owner —
+  // which is exactly what adding `canImpersonate` did on the first pass.
+  [Role.OWNER]: ALL.filter((p) => !PLATFORM_ONLY_PERMISSIONS.includes(p)),
 
   [Role.PORTFOLIO_ADMIN]: [
     "canViewPortfolio",
