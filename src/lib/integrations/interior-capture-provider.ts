@@ -29,8 +29,22 @@ export interface InteriorConnectResult {
 
 export interface InteriorCaptureProvider {
   readonly name: string;
-  /** True only when the environment/org actually has credentials configured — never attempts network calls otherwise. */
+  /**
+   * True only when full API credentials are present — the ones needed to
+   * *discover* spaces (list/get/sync). Never attempts network calls otherwise.
+   */
   isConfigured(): boolean;
+  /**
+   * True when the viewer can embed a space the user already knows the ID of,
+   * even with no API credentials at all.
+   *
+   * These are deliberately separate capabilities because vendors issue them
+   * separately: Matterport's Model API needs a token+secret pair (partner
+   * account, long lead time), while an SDK key is self-serve and issued
+   * alone. A customer with only the latter can still see their 3D tour —
+   * they just have to paste the space ID instead of picking from a list.
+   */
+  isViewerConfigured(): boolean;
   connect(): Promise<InteriorConnectResult>;
   disconnect(): Promise<void>;
   listSpaces(): Promise<InteriorSpaceSummary[]>;

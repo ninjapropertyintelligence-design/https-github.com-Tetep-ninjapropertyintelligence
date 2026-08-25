@@ -149,6 +149,84 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
   return link;
 }
 
+/**
+ * Link a Matterport Space by ID with no Model API call (spec §2, viewer-only
+ * path). Matterport issues SDK keys self-serve but gates the Model API behind
+ * a partner account, so a customer often has a working 3D tour and its space
+ * ID long before they can list spaces programmatically. This lets them paste
+ * that ID and get the real viewer immediately.
+ *
+ * The trade-off is explicit and recorded: because nothing calls Matterport,
+ * the space ID is unverified at link time — a typo surfaces as a viewer that
+ * won't load, not as a validation error here. The space row is marked
+ * `status: "UNVERIFIED"` so the UI can say so plainly rather than implying
+ * the metadata was confirmed. Once real API credentials are added,
+ * `syncPropertyInterior()` verifies and corrects it in place.
+ */
+export async function linkSpaceByIdDirect(
+  ctx: SessionContext,
+  propertyId: string,
+  externalSpaceId: string,
+  name?: string,
+) {
+  const property = await assertPropertyInScope(ctx, propertyId);
+
+  const provider = getMatterportProvider();
+  if (!provider.isViewerConfigured() && !provider.isConfigured()) {
+    throw new ApiError(400, "Matterport is not configured — set MATTERPORT_SDK_KEY to embed a space by ID");
+  }
+
+  // A MatterportSpace needs a parent connection row. Reuse the org's
+  // existing one when present (preserving a real CONNECTED status), else
+  // create a viewer-only marker so the org's Matterport state is still
+  // represented truthfully rather than being claimed as "connected".
+  const connection = await prisma.matterportConnection.upsert({
+    where: { organizationId: ctx.organizationId },
+    create: { organizationId: ctx.organizationId, status: "VIEWER_ONLY" },
+    update: {},
+  });
+
+  const space = await prisma.matterportSpace.upsert({
+    where: { connectionId_externalSpaceId: { connectionId: connection.id, externalSpaceId } },
+    create: {
+      connectionId: connection.id,
+      externalSpaceId,
+      name: name ?? null,
+      status: "UNVERIFIED",
+      coverageNotes: "Linked by space ID without Model API verification.",
+    },
+    update: { ...(name ? { name } : {}) },
+  });
+
+  const link = await prisma.matterportPropertyLink.upsert({
+    where: { propertyId_spaceId: { propertyId: property.id, spaceId: space.id } },
+    create: { propertyId: property.id, spaceId: space.id, operator: ctx.userName },
+    update: {},
+    include: { space: true },
+  });
+
+  await Promise.all([
+    emitEvent({
+      organizationId: ctx.organizationId,
+      propertyId: property.id,
+      type: EVENT_TYPES.CAPTURE_CREATED,
+      actorUserId: ctx.userId,
+      payload: { provider: "matterport", externalSpaceId, verified: false },
+    }),
+    writeAuditLog({
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.userId,
+      action: "matterport.space_linked_direct",
+      entityType: "Property",
+      entityId: property.id,
+      metadata: { externalSpaceId, verified: false },
+    }),
+    recalculatePropertyHealth(property.id),
+  ]);
+
+  return link;
+}
+
 /** Re-sync a property's linked Matterport space metadata. */
 export async function syncPropertyInterior(ctx: SessionContext, propertyId: string) {
   const property = await assertPropertyInScope(ctx, propertyId);
@@ -258,6 +336,9 @@ export async function getPropertyInteriorStatus(ctx: SessionContext, propertyId:
 
   return {
     providerConfigured: provider.isConfigured(),
+    // An SDK key alone still enables the by-ID embed path, so the UI can
+    // offer something real instead of a dead "not configured" state.
+    viewerConfigured: provider.isViewerConfigured(),
     connectionStatus: connection?.status ?? "NOT_CONFIGURED",
     connectionError: connection?.errorMessage ?? null,
     lastSync: connection?.lastSyncedAt ?? null,

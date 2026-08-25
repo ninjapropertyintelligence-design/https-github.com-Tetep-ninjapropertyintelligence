@@ -19,6 +19,8 @@ interface AvailableSpace {
 
 export interface InteriorStatusData {
   providerConfigured: boolean;
+  /** SDK key present — the by-ID embed path is available even without API credentials. */
+  viewerConfigured: boolean;
   connectionStatus: string;
   connectionError: string | null;
   lastSync: string | null;
@@ -43,6 +45,9 @@ const STATUS_LABEL: Record<string, string> = {
   DISCONNECTED: "Not Connected",
   CONNECTED: "Connected",
   ERROR: "Error",
+  // Viewer works (SDK key), but no Model API credentials — so spaces can be
+  // embedded by ID but not browsed or synced.
+  VIEWER_ONLY: "Viewer Only (no API)",
 };
 
 export function InteriorManager({
@@ -60,6 +65,7 @@ export function InteriorManager({
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [availableSpaces, setAvailableSpaces] = useState<AvailableSpace[] | null>(null);
+  const [directSpaceId, setDirectSpaceId] = useState("");
 
   async function call(action: string, url: string, body?: unknown) {
     setLoading(action);
@@ -116,6 +122,11 @@ export function InteriorManager({
               <>
                 <span><span className="text-muted">Capture Date:</span> {formatDate(data.link.space.capturedAt)}</span>
                 <span><span className="text-muted">Space ID:</span> {data.link.space.externalSpaceId}</span>
+                {data.link.space.status === "UNVERIFIED" ? (
+                  <span className="font-medium text-[var(--band-needs-attention)]">
+                    Unverified — linked by ID, no API check
+                  </span>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -123,11 +134,74 @@ export function InteriorManager({
           {data.connectionError ? <p className="text-sm text-[var(--band-critical)]">{data.connectionError}</p> : null}
           {error ? <p className="text-sm text-[var(--band-critical)]">{error}</p> : null}
 
-          {!data.providerConfigured ? (
+          {!data.providerConfigured && !data.viewerConfigured ? (
             <EmptyState
               title="Matterport is not configured"
-              description="Set MATTERPORT_API_TOKEN, MATTERPORT_API_SECRET (and optionally MATTERPORT_SDK_KEY) to enable this integration. Everything else — the connection state machine, linking, sync, and this UI — is fully built and ready."
+              description="Set MATTERPORT_SDK_KEY to embed a space by ID, or MATTERPORT_API_TOKEN + MATTERPORT_API_SECRET to browse and link spaces automatically. Everything else — the connection state machine, linking, sync, and this UI — is fully built and ready."
             />
+          ) : data.link ? (
+            // A linked space is the goal state — render the viewer regardless
+            // of how the link was created. Ordering this before the
+            // connection-status checks matters: a space linked by ID has no
+            // CONNECTED API connection behind it, and gating the viewer on
+            // connection status would hide a tour that works perfectly.
+            <div className="space-y-3">
+              {data.link.viewerConfig?.embedUrl ? (
+                <iframe src={data.link.viewerConfig.embedUrl} className="h-96 w-full rounded-lg border border-border" allow="xr-spatial-tracking" allowFullScreen />
+              ) : (
+                <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-border bg-background text-sm text-muted">
+                  Viewer unavailable — check the connection status above.
+                </div>
+              )}
+              {canPerformCapture ? (
+                <div className="flex gap-2">
+                  {/* Sync needs the Model API — offering it without credentials
+                      would just produce a guaranteed error. */}
+                  {data.providerConfigured ? (
+                    <Button variant="secondary" onClick={() => call("sync", `/api/v1/properties/${propertyId}/interior/sync`)} disabled={loading === "sync"}>
+                      {loading === "sync" ? "Syncing..." : "Sync"}
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" onClick={() => call("disconnect", `/api/v1/properties/${propertyId}/interior/disconnect`)} disabled={loading === "disconnect"}>
+                    {loading === "disconnect" ? "Disconnecting..." : "Disconnect (keeps property)"}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : !data.providerConfigured ? (
+            // Viewer-only: an SDK key can embed a space the user already
+            // knows the ID of, without the partner-gated Model API.
+            canPerformCapture ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted">
+                  Matterport&apos;s space browser needs API credentials (a partner account). You can still embed a tour now by
+                  pasting its space ID or Showcase URL.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={directSpaceId}
+                    onChange={(e) => setDirectSpaceId(e.target.value)}
+                    placeholder="Space ID or https://my.matterport.com/show/?m=..."
+                    className="min-w-[320px] flex-1 rounded-lg border border-border px-3 py-2 text-sm outline-none focus:border-brand"
+                  />
+                  <Button
+                    onClick={() =>
+                      call("link-direct", `/api/v1/properties/${propertyId}/interior/link-direct`, {
+                        externalSpaceId: directSpaceId,
+                      })
+                    }
+                    disabled={loading === "link-direct" || directSpaceId.trim().length === 0}
+                  >
+                    {loading === "link-direct" ? "Linking..." : "Embed this space"}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted">
+                  The ID isn&apos;t verified against Matterport without API credentials — if the tour doesn&apos;t load, check the ID.
+                </p>
+              </div>
+            ) : (
+              <p className="text-muted">Ask someone with capture permission to link a Matterport space.</p>
+            )
           ) : data.connectionStatus !== "CONNECTED" ? (
             canManageIntegrations ? (
               <Button onClick={() => call("connect", "/api/v1/integrations/matterport/connect")} disabled={loading === "connect"}>
@@ -136,7 +210,7 @@ export function InteriorManager({
             ) : (
               <p className="text-muted">Ask an org admin to connect Matterport for your organization.</p>
             )
-          ) : !data.link ? (
+          ) : (
             canPerformCapture ? (
               <div className="space-y-2">
                 <Button variant="secondary" onClick={loadSpaces} disabled={loading === "list-spaces"}>
@@ -166,26 +240,6 @@ export function InteriorManager({
             ) : (
               <p className="text-muted">No interior capture linked to this property yet.</p>
             )
-          ) : (
-            <div className="space-y-3">
-              {data.link.viewerConfig?.embedUrl ? (
-                <iframe src={data.link.viewerConfig.embedUrl} className="h-96 w-full rounded-lg border border-border" allow="xr-spatial-tracking" allowFullScreen />
-              ) : (
-                <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-border bg-background text-sm text-muted">
-                  Viewer unavailable — check the connection status above.
-                </div>
-              )}
-              {canPerformCapture ? (
-                <div className="flex gap-2">
-                  <Button variant="secondary" onClick={() => call("sync", `/api/v1/properties/${propertyId}/interior/sync`)} disabled={loading === "sync"}>
-                    {loading === "sync" ? "Syncing..." : "Sync"}
-                  </Button>
-                  <Button variant="ghost" onClick={() => call("disconnect", `/api/v1/properties/${propertyId}/interior/disconnect`)} disabled={loading === "disconnect"}>
-                    {loading === "disconnect" ? "Disconnecting..." : "Disconnect (keeps property)"}
-                  </Button>
-                </div>
-              ) : null}
-            </div>
           )}
         </CardBody>
       </Card>

@@ -886,3 +886,73 @@ admin impersonation (§43/§45), data retention / secure deletion / backup-DR
 metering and property-level COGS (§49/§50), storage lifecycle tiering
 (§51), product analytics (§105), and performance/load-testing evidence
 (§98/§103). PostGIS (§11) is the one remaining piece of the map story.
+
+---
+
+# Post-Phase-2 workstream — Matterport viewer-only (link by space ID)
+
+## Why
+
+Matterport issues its credentials from two different places with very
+different access barriers: an **SDK Key** is self-serve and issued alone,
+while **Model API** access needs a partner account (Token ID + Token Secret,
+always a pair, with real application lead time). The Interior tab required
+the latter for everything — so a customer holding a working 3D tour, its
+space ID, and a self-serve SDK key still saw a dead "not configured" state.
+
+## What changed
+
+- **`InteriorCaptureProvider` now separates two capabilities**:
+  `isConfigured()` (can *discover* spaces — list/get/sync) and
+  `isViewerConfigured()` (can *embed* a space whose ID is already known).
+  These were conflated; vendors issue them separately, so the interface now
+  reflects that.
+- **`linkSpaceByIdDirect()`** (`matterport-service.ts`) links a space with no
+  Model API call at all. The space row is marked `status: "UNVERIFIED"` and
+  the org connection `status: "VIEWER_ONLY"` — the system never claims a
+  verified connection it doesn't have. `syncPropertyInterior()` corrects both
+  in place once real API credentials arrive.
+- **`POST /api/v1/properties/[id]/interior/link-direct`** — accepts a bare
+  space ID *or* a full Showcase URL (`...?m=XXXX`), extracting the ID, since a
+  URL is what a user actually has in hand.
+- **UI**: viewer-only orgs get a paste-the-ID input; the tab shows
+  `Status: Viewer Only (no API)` plus an amber "Unverified — linked by ID, no
+  API check" marker. Sync is hidden without API credentials rather than
+  offered as a guaranteed error.
+
+## A real bug found by verifying in the browser
+
+The first implementation linked successfully but **rendered no viewer**. The
+render chain was ordered by *connection state*, so a space linked by ID fell
+into the "not CONNECTED" branch and showed "Ask an org admin to connect"
+instead of the working tour. Reordered so a linked space renders its viewer
+first, regardless of how the link was created — connection status is not a
+precondition for showing a tour that works. This was only visible by driving
+the real UI; typecheck and unit tests were green throughout.
+
+## Verified
+
+Driven through the real UI with Playwright against a running server, with the
+supplied SDK key in `.env`:
+- The by-ID input appears for a viewer-only org.
+- Pasting a full Showcase URL yields `iframe src=https://my.matterport.com/show/?m=SxQL3iGyoDo&mpsk=…`
+  — the ID extracted correctly from the URL, and the SDK key applied.
+- Data confidence moved 80% → 95% on linking, confirming the interior capture
+  feeds the scoring engine.
+- The embed itself could not be loaded *in this sandbox* — its egress policy
+  blocks `matterport.com` (proxy returns 403 on CONNECT). The iframe renders
+  with the correct URL; whether Matterport serves that tour is unverified here.
+
+Tests: a new tenant-isolation case (Org B cannot direct-link onto Org A's
+property), a case asserting the UNVERIFIED/VIEWER_ONLY honesty invariants, and
+a provider case separating API from viewer capability. The direct-link test
+uses its own org/property fixture — sharing one contaminated a sibling test
+asserting an org with *no* connection.
+
+The deep-property e2e assertion was rewritten to be capability-aware: it now
+asserts an honest state for whatever credentials the environment actually has
+(none / SDK-only / linked) instead of hardcoding "not configured". Verified
+passing **both** with the SDK key present and with it removed (the CI case).
+
+Gate: `tsc` clean · `eslint` clean · `vitest` 67 passed / 1 skipped ·
+`playwright` 9/9 · `next build` succeeds.
