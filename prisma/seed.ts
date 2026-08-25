@@ -589,6 +589,22 @@ async function main() {
     console.log(`  Wrote 1 real XYZ point cloud under .local-storage/${org.id}/`);
   }
 
+  // A completed processing job for the dataset above. Without one, the
+  // queue-recovery check in scripts/dr-verify.ts has nothing to restore and
+  // reports INCONCLUSIVE rather than passing vacuously.
+  const existingJob = await prisma.droneProcessingJob.findFirst({ where: { datasetId: dataset.id } });
+  if (!existingJob) {
+    await prisma.droneProcessingJob.create({
+      data: {
+        datasetId: dataset.id,
+        status: "READY",
+        startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        completedAt: new Date(Date.now() - 90 * 60 * 1000),
+      },
+    });
+    console.log("  Created 1 completed drone processing job");
+  }
+
   console.log("Seeding shallow properties (5)...");
   const shallow: Array<{
     name: string;

@@ -153,6 +153,18 @@ jobs:
       - name: Seed demo data
         run: npm run db:seed
 
+      # Spec §55 requires backup/DR to be *tested*, not just documented. This
+      # takes a real pg_dump of the seeded database, restores it into a
+      # scratch database, and checks row counts, migration history, foreign
+      # keys, that every referenced storage object exists, that processing
+      # jobs survive with their state, and that every vendor integration
+      # degrades correctly. Exits non-zero on any failure. Runs here rather
+      # than in the quality job because it needs the seeded data — against an
+      # empty database the file and queue checks report INCONCLUSIVE and
+      # prove nothing.
+      - name: Verify backup and restore (spec §55)
+        run: npm run dr:verify
+
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 

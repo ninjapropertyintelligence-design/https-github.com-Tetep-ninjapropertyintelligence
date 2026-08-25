@@ -1235,3 +1235,106 @@ Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
 ## Still open in this batch
 
 Backup and disaster recovery (§55).
+
+---
+
+# Enterprise security batch, part 4 — Backup and disaster recovery (§55)
+
+Spec §55 asks for two definitions (RPO, RTO) and four things to be **tested**:
+database restoration, file restoration, queue recovery, vendor outage
+behavior. A recovery plan nobody has run is a hypothesis, so the deliverable
+here is a script that performs a real restore, not a document describing one.
+
+## `npm run dr:verify`
+
+Takes a real `pg_dump`, restores it into a scratch database, runs six checks,
+drops the scratch database, and exits non-zero on failure so it can gate a
+pipeline. Measured on the seeded dataset:
+
+```
+PASS  Database restoration — row counts match across every checked table
+      14 tables, 217 rows; restored in 457ms (backup took 115ms)
+PASS  Database restoration — migration history restored
+      7 applied migrations present in the restored database
+PASS  Database restoration — foreign key constraints intact
+      111 foreign key constraints present
+PASS  File restoration — every referenced object exists in storage
+      4 referenced objects, all present
+PASS  Queue recovery — processing jobs restored with their state
+      1 jobs restored with matching status; 0 in a resumable state
+PASS  Vendor outage behavior — every provider fails in the way callers handle
+```
+
+The file-restoration check is the one that matters most: a database-only
+backup restores every row perfectly and then serves 404s for every photo and
+document. `npm run dr:backup` therefore writes a manifest of every storage
+key the database references alongside the dump, and the verifier confirms
+each one exists.
+
+## Checks that can't pass vacuously
+
+A check running against an empty table cannot tell "restored correctly" from
+"there was nothing to restore", so those report **INCONCLUSIVE**, not PASS.
+The first run did exactly that for queue recovery — the seed created no
+processing jobs. The seed now creates one, and the check reports real
+numbers.
+
+## Verified to catch failures, not just to pass
+
+- Removing **one** object from `.local-storage`: file restoration goes red,
+  script exits 1. Restored, back to 6/6.
+- Setting the seeded job to `PROCESSING`: resumable count goes 0 → 1. Back to
+  `READY`: 1 → 0.
+
+## Two bugs in this work, found before shipping
+
+**`?schema=public` broke `pg_dump` outright** — libpq rejects it as an
+invalid URI parameter. The first run died on it. Fixed with a `libpqUrl()`
+helper, which now has its own unit tests because it is exactly the kind of
+thing that silently breaks again.
+
+**The resumable-jobs filter named statuses that don't exist.** It tested for
+`QUEUED`/`RUNNING`, which are not members of `DroneCaptureStatus` — so it
+always reported zero, a check that could never fire. Found while writing the
+runbook against the real enum. The correct values are `UPLOADING` and
+`PROCESSING`.
+
+## What the document does and does not claim
+
+`docs/DISASTER_RECOVERY.md` states RPO (15 min) and RTO (4 hours full, 1 hour
+read-only) with the procedure behind each, and is explicit that:
+
+- The measured 457ms restore is **not** an RTO — it proves the procedure and
+  tooling work, and says nothing about a production-sized database.
+- The 15-minute RPO is a **deployment configuration** (WAL archiving, bucket
+  versioning + replication), not something this repository enforces.
+- Backups are not scheduled by this repo, failover is not automated, and
+  backup encryption lives wherever the dumps are stored.
+
+Queue recovery gets a genuine architectural note: this system has no broker.
+Jobs are database rows with a status, so restoring the database *is*
+restoring the queue. If a broker is introduced it becomes a separate recovery
+surface, because messages in flight are not covered by a database backup.
+
+## Wired into CI
+
+`npm run dr:verify` runs in the e2e job, after seeding — not in the quality
+job, because against an empty database the file and queue checks would report
+INCONCLUSIVE and prove nothing.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+167 passed / 1 skipped · `playwright` 12/12 · `next build` succeeds ·
+`dr:verify` 6/6.
+
+---
+
+# Enterprise security batch — complete
+
+All four items are done: MFA (§43), admin impersonation (§45), retention +
+secure deletion (§52/§54), backup/DR (§55).
+
+Still open from the wider audit, unchanged by this batch: bulk import + fuzzy
+dedup (§68/§69), outbound webhooks (§66), idempotency keys (§65), cost
+metering and property-level COGS (§49/§50), storage lifecycle tiering (§51),
+product analytics (§105), performance/load testing (§98/§103), and PostGIS
+(§11).

@@ -15,7 +15,9 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:seed": "node --env-file=.env node_modules/.bin/tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "dr:backup": "node --env-file=.env node_modules/.bin/tsx scripts/backup.ts",
+    "dr:verify": "node --env-file=.env node_modules/.bin/tsx scripts/dr-verify.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
