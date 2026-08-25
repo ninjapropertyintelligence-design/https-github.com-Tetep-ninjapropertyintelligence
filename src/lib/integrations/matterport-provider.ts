@@ -36,6 +36,17 @@ export class MatterportProvider implements InteriorCaptureProvider {
     return !!this.token && !!this.secret;
   }
 
+  /**
+   * An SDK key alone is enough to embed a known space in the Showcase
+   * viewer — no Model API call is involved in rendering the iframe. The
+   * public share embed also works with no key at all, but only for spaces
+   * whose visibility is public/unlisted, so we don't claim viewer support
+   * on that basis.
+   */
+  isViewerConfigured(): boolean {
+    return !!this.sdkKey;
+  }
+
   private authHeader(): string {
     return "Basic " + Buffer.from(`${this.token}:${this.secret}`).toString("base64");
   }

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { SessionContext } from "@/lib/tenant-scope";
-import { getPropertyInteriorStatus, linkSpaceToProperty, syncPropertyInterior, disconnectPropertyInterior } from "@/lib/matterport-service";
+import { getPropertyInteriorStatus, linkSpaceToProperty, linkSpaceByIdDirect, syncPropertyInterior, disconnectPropertyInterior } from "@/lib/matterport-service";
 import { ApiError } from "@/lib/api-error";
 import { MatterportProvider } from "@/lib/integrations/matterport-provider";
 
@@ -19,6 +19,12 @@ describe("Matterport tenant isolation", () => {
   let userB: { id: string };
   let connectionA: { id: string };
   let spaceA: { id: string; externalSpaceId: string };
+  // Dedicated org/property for the direct-link test: it necessarily creates
+  // a VIEWER_ONLY connection, which would otherwise contaminate the sibling
+  // test asserting an org with no connection at all.
+  let orgC: { id: string };
+  let propertyC: { id: string };
+  let userC: { id: string };
   const suffix = `t${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   beforeAll(async () => {
@@ -35,15 +41,21 @@ describe("Matterport tenant isolation", () => {
     userA = await prisma.user.create({ data: { email: `mp-a-${suffix}@example.com`, passwordHash: "x", name: "User A" } });
     userB = await prisma.user.create({ data: { email: `mp-b-${suffix}@example.com`, passwordHash: "x", name: "User B" } });
 
+    orgC = await prisma.organization.create({ data: { name: `MP Org C ${suffix}`, slug: `mp-org-c-${suffix}` } });
+    const portfolioC = await prisma.portfolio.create({ data: { organizationId: orgC.id, name: "P" } });
+    propertyC = await prisma.property.create({ data: { ...baseProp, organizationId: orgC.id, portfolioId: portfolioC.id, name: "Prop C" } });
+    userC = await prisma.user.create({ data: { email: `mp-c-${suffix}@example.com`, passwordHash: "x", name: "User C" } });
+
     connectionA = await prisma.matterportConnection.create({ data: { organizationId: orgA.id, status: "CONNECTED" } });
     spaceA = await prisma.matterportSpace.create({ data: { connectionId: connectionA.id, externalSpaceId: `space-${suffix}`, name: "Space A", status: "READY" } });
     await prisma.matterportPropertyLink.create({ data: { propertyId: propertyA.id, spaceId: spaceA.id, operator: "Test" } });
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({ where: { id: { in: [userA.id, userB.id] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [userA.id, userB.id, userC.id] } } });
     await prisma.organization.delete({ where: { id: orgA.id } });
     await prisma.organization.delete({ where: { id: orgB.id } });
+    await prisma.organization.delete({ where: { id: orgC.id } });
   });
 
   function ctxFor(orgId: string, userId: string): SessionContext {
@@ -70,6 +82,34 @@ describe("Matterport tenant isolation", () => {
     await expect(linkSpaceToProperty(ctxFor(orgB.id, userB.id), propertyA.id, spaceA.externalSpaceId)).rejects.toThrow(ApiError);
   });
 
+  it("Org B cannot direct-link a space onto Org A's property (new by-ID path enforces the same tenant boundary)", async () => {
+    await expect(
+      linkSpaceByIdDirect(ctxFor(orgB.id, userB.id), propertyA.id, "some-space-id"),
+    ).rejects.toThrow(ApiError);
+  });
+
+  it("direct-link marks the space UNVERIFIED and does not claim the org is CONNECTED", async () => {
+    // Requires an SDK key to be available to the provider singleton; when
+    // this environment has none, the call must refuse rather than pretend.
+    const { getMatterportProvider } = await import("@/lib/integrations/matterport-provider");
+    const provider = getMatterportProvider();
+
+    if (!provider.isViewerConfigured() && !provider.isConfigured()) {
+      await expect(
+        linkSpaceByIdDirect(ctxFor(orgC.id, userC.id), propertyC.id, "xyz789"),
+      ).rejects.toThrow(/not configured/i);
+      return;
+    }
+
+    const link = await linkSpaceByIdDirect(ctxFor(orgC.id, userC.id), propertyC.id, "xyz789");
+    expect(link.space.externalSpaceId).toBe("xyz789");
+    expect(link.space.status).toBe("UNVERIFIED");
+
+    const connection = await prisma.matterportConnection.findUnique({ where: { organizationId: orgC.id } });
+    // Never claims a real API connection just because a space was embedded.
+    expect(connection?.status).not.toBe("CONNECTED");
+  });
+
   it("Org B cannot sync or disconnect Org A's property interior link", async () => {
     await expect(syncPropertyInterior(ctxFor(orgB.id, userB.id), propertyA.id)).rejects.toThrow(ApiError);
     await expect(disconnectPropertyInterior(ctxFor(orgB.id, userB.id), propertyA.id)).rejects.toThrow(ApiError);
@@ -91,6 +131,17 @@ describe("MatterportProvider error handling (no live credentials in this environ
   it("isConfigured() is false with no token/secret — never attempts a network call", () => {
     const provider = new MatterportProvider(undefined, undefined, undefined);
     expect(provider.isConfigured()).toBe(false);
+  });
+
+  it("separates API capability from viewer capability — an SDK key alone enables the embed path but not space discovery", () => {
+    const sdkOnly = new MatterportProvider(undefined, undefined, "sdk-key");
+    expect(sdkOnly.isConfigured()).toBe(false); // can't list/get/sync spaces
+    expect(sdkOnly.isViewerConfigured()).toBe(true); // but can embed a known one
+    expect(sdkOnly.getViewerConfig("abc123").embedUrl).toContain("abc123");
+    expect(sdkOnly.getViewerConfig("abc123").usesSdk).toBe(true);
+
+    const nothing = new MatterportProvider(undefined, undefined, undefined);
+    expect(nothing.isViewerConfigured()).toBe(false);
   });
 
   it("connect() with configured-but-invalid credentials against an unreachable endpoint returns a clean ERROR state, not a thrown exception or a fake CONNECTED", async () => {
