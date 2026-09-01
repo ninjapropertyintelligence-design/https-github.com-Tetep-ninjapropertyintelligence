@@ -45,6 +45,9 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   // Every role can manage its own second factor, so this is not permission-gated.
   items.push({ label: "Security", href: "/settings/security" });
+  if (can(ctx, "canManageProperties")) {
+    items.push({ label: "Import", href: "/imports" });
+  }
   if (can(ctx, "canViewAuditLogs")) {
     items.push({ label: "Retention", href: "/settings/retention" });
   }

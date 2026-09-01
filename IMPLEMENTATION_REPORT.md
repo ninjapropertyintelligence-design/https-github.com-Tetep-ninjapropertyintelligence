@@ -1338,3 +1338,126 @@ dedup (§68/§69), outbound webhooks (§66), idempotency keys (§65), cost
 metering and property-level COGS (§49/§50), storage lifecycle tiering (§51),
 product analytics (§105), performance/load testing (§98/§103), and PostGIS
 (§11).
+
+---
+
+# Bulk import and deduplication (spec §68/§69/§70)
+
+`ImportJob` and `ImportEntityType` existed in the schema with **zero code
+referencing them** — the same schema-only scaffolding the retention enum
+turned out to be. §70 (property identity) was already satisfied:
+`customerPropertyId` and `externalIds` were on Property.
+
+## Dependency choice, corrected mid-flight
+
+Excel support needed a parser. My first measurement said `exceljs` (78
+transitive deps, 2 moderate advisories) versus hand-rolling on `fflate`.
+That comparison was **wrong** — `npm install` accumulates into
+`package.json`, so each library in my loop was measured with the previous
+ones still installed. Re-run in isolation:
+
+| Library | Transitive deps | Advisories |
+| --- | --- | --- |
+| exceljs | 78 | 2 moderate |
+| **read-excel-file** | **7** | **none** |
+| @e965/xlsx | 1 | none |
+| fflate | 1 | none |
+
+`read-excel-file` removed the tradeoff entirely, so the plan to hand-roll a
+SpreadsheetML parser was dropped. That mattered: this environment has no
+LibreOffice Calc, no openpyxl, and no `.xlsx` file anywhere on disk, so a
+hand-rolled parser could only have been validated against fixtures I also
+wrote — a shared misunderstanding would have passed silently, in the one
+feature where correctness on messy customer files is the entire point.
+
+`fflate` is a **devDependency** only, used to build xlsx test fixtures by
+hand from the OOXML spec. Writer mine, parser theirs: a disagreement fails
+the test instead of passing quietly. That round-trip immediately caught that
+`read-excel-file/node` returns `[{sheet, data}]` for a Buffer, not a flat 2D
+array — which TypeScript had already told me and I had silenced with a
+double cast.
+
+## Deduplication (§69)
+
+The spec states the requirement as a failure to avoid: *Store 1052 / Store
+#1052 / Store-1052 becoming three properties*. Normalisation collapses
+punctuation, case, spacing and accents; matching then runs four ranked rules
+with explicit reasons, because "this looks like a duplicate" is not
+actionable and "same customer property ID (STORE-1052)" is:
+
+| Rule | Confidence | Outcome |
+| --- | --- | --- |
+| Customer property ID | 1.00 | Duplicate |
+| Shared external system ID | 0.95 | Duplicate |
+| Address + ZIP | 0.90 | Duplicate |
+| Name + city/state | 0.88 | Duplicate |
+| Name alone | 0.60 | **Needs review** |
+
+Name-alone sits deliberately below the merge threshold: two real stores can
+share a name across regions, and auto-merging would silently destroy one.
+Rows in that band are never auto-created *or* auto-merged — they are held
+back for a human. Duplicates *within the uploaded file* are detected
+separately, since a spreadsheet listing one store three times is at least as
+common as one colliding with existing data.
+
+## The pipeline (§68)
+
+Every §68 requirement has an enforcement point: field mapping (auto-detected
+from headers, always user-confirmed), validation (row/column/reason precise),
+error report (CSV, because the person fixing it is in a spreadsheet), preview
+(nothing written), duplicate detection, and rollback.
+
+Rollback is two things. The commit runs in **one transaction**, so a failure
+part-way cannot leave a half-imported portfolio. And a completed import can
+be **undone afterwards** from stored per-row before-images — restoring only
+the fields that import actually changed, so an unrelated edit made later
+survives the undo.
+
+## Three bugs found
+
+**A silent portfolio misplacement.** A row naming a portfolio that didn't
+exist fell back to the import's default instead of failing. A typo would have
+filed properties into the wrong portfolio with nothing to notice. Now an
+unresolvable named portfolio or region is an error, surfaced at *preview*
+time so it is fixed before committing rather than thrown mid-commit.
+
+**The error report returned `{"data":{}}` instead of CSV.** `withApiHandler`
+JSON-envelopes whatever it returns, and the existing file-download routes
+deliberately sit outside it. Only driving the browser caught it.
+
+**A pre-existing MFA hole in my own §43 work.** Fixing the above surfaced
+that the three report routes resolve the session themselves and so never had
+the org MFA policy check — meaning an unenrolled user under a required-MFA
+policy could still download reports. PR #6 claimed that policy was "enforced
+in two independent places"; for those three routes it was enforced in one.
+Now closed, with `tests/unit/mfa-route-coverage.test.ts` walking every route
+file so the next such route cannot forget.
+
+That coverage test **passed against a deliberately broken file on its first
+version** — it matched the bare word `withApiHandler` anywhere, including in a
+comment explaining why a route sits outside it. It now strips comments and
+matches call syntax, and was re-verified by mutation.
+
+## Verified
+
+- 25 unit cases on dedup, driving the spec's three spellings from both sides
+  — that they collapse, and that "Store 1053", a neighbouring street number, a
+  different ZIP, a different city, and an id in a different system all stay
+  separate.
+- 27 unit cases on parsing: quoted delimiters, embedded newlines, escaped
+  quotes, BOM, CRLF, ragged rows, and an xlsx round-trip preserving `07030`
+  as text rather than the number 7030.
+- 25 integration cases against real Postgres: preview writes nothing, the
+  three spellings import as one property, an ambiguous match is never
+  auto-created, a mid-commit failure leaves nothing behind, and an undo
+  restores the changed fields while preserving a later edit.
+- An e2e spec driving the wizard with a deliberately messy file end to end.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+245 passed / 1 skipped · `playwright` 13/13 · `next build` succeeds.
+
+## Still open from the audit
+
+Idempotency keys (§65), outbound webhooks (§66), cost metering and
+property-level COGS (§49/§50), storage lifecycle tiering (§51), product
+analytics (§105), performance/load testing (§98/§103), PostGIS (§11).

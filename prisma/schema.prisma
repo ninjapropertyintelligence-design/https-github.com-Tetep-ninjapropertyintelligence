@@ -249,6 +249,17 @@ enum ImportStatus {
   IMPORTING
   COMPLETED
   FAILED
+  // Spec §68 lists "Rollback" as an import requirement. A completed import
+  // that turns out to be wrong is undone rather than deleted, so the record
+  // of what happened survives the undo.
+  ROLLED_BACK
+}
+
+enum ImportRowAction {
+  CREATED
+  UPDATED
+  SKIPPED_DUPLICATE
+  SKIPPED_ERROR
 }
 
 enum SavedViewEntity {
@@ -1550,13 +1561,46 @@ model ImportJob {
   rowCount         Int              @default(0)
   successCount     Int              @default(0)
   errorCount       Int              @default(0)
+  // Rows matched to something that already exists (spec §69). Counted
+  // separately from errors: a duplicate is a normal outcome, not a failure.
+  duplicateCount   Int              @default(0)
   errorReportKey   String?
+  // Properties are created inside a portfolio, so an import has to be told
+  // which one unless every row names its own.
+  targetPortfolioId String?
   createdById      String
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
+  completedAt      DateTime?
+  undoneAt         DateTime?
+  errorMessage     String?
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  rowResults   ImportRowResult[]
 
   @@index([organizationId])
   @@index([status])
+}
+
+/**
+ * What happened to each row, and enough information to undo it (spec §68
+ * "Rollback"). `beforeImage` holds the previous values of exactly the fields
+ * an update changed — storing the whole record would make an undo overwrite
+ * edits made after the import, which is a different kind of data loss.
+ */
+model ImportRowResult {
+  id          String          @id @default(cuid())
+  importJobId String
+  /** 1-based data row in the source file, so an error report matches what the user sees. */
+  rowNumber   Int
+  action      ImportRowAction
+  entityId    String?
+  beforeImage Json?
+  message     String?
+  createdAt   DateTime        @default(now())
+
+  job ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@index([importJobId])
+  @@index([importJobId, action])
 }

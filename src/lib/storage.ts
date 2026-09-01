@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { stat, readFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -50,6 +50,13 @@ export interface StorageProvider {
    * files that must never round-trip through the app server.
    */
   readBytes(key: string): Promise<Buffer | null>;
+  /**
+   * Writes an object from the app server. The counterpart to `readBytes`,
+   * and subject to the same rule: only for small files the server is
+   * legitimately holding anyway — an uploaded import spreadsheet, capped at
+   * a few MB — never the large capture files that use signed direct upload.
+   */
+  writeBytes(key: string, bytes: Buffer): Promise<void>;
 }
 
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
@@ -139,6 +146,16 @@ class LocalStorageProvider implements StorageProvider {
     } catch {
       return null;
     }
+  }
+
+  async writeBytes(key: string, bytes: Buffer): Promise<void> {
+    const filePath = path.join(LOCAL_STORAGE_ROOT, key);
+    // Same containment check as everywhere else a key becomes a path.
+    if (!filePath.startsWith(LOCAL_STORAGE_ROOT + path.sep)) {
+      throw new Error("Refusing to write a key outside the storage root");
+    }
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, bytes);
   }
 }
 
