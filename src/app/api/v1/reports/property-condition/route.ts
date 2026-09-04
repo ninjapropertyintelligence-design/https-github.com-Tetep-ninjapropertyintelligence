@@ -1,4 +1,4 @@
-import { getSessionContext, propertyScopeWhere } from "@/lib/session-context";
+import { getSessionContext, mfaPolicySatisfied, propertyScopeWhere } from "@/lib/session-context";
 import { requirePermission } from "@/lib/api-utils";
 import { prisma } from "@/lib/prisma";
 import { toCsv, csvResponse } from "@/lib/csv";
@@ -16,6 +16,13 @@ import { renderPropertyConditionPdf } from "@/lib/reports/pdf-renderer";
 export async function GET(req: Request) {
   const ctx = await getSessionContext();
   if (!ctx) return new Response("Unauthorized", { status: 401 });
+  // This route resolves the session itself instead of going through
+  // `withApiHandler` (it returns a file, not the JSON envelope), so the
+  // org MFA policy has to be re-checked by hand — stepping outside the
+  // wrapper means stepping outside its guards.
+  if (!mfaPolicySatisfied(ctx)) {
+    return new Response("Your organization requires multi-factor authentication.", { status: 403 });
+  }
   try {
     requirePermission(ctx, "canViewFinancialExposure");
   } catch {
