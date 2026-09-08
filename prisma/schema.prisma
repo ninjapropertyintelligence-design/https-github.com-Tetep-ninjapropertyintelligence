@@ -217,6 +217,25 @@ enum LegalHoldScope {
   PROPERTY
 }
 
+/**
+ * Idempotency (spec §65). IN_PROGRESS is claimed atomically by the unique
+ * constraint before the handler runs, so a concurrent retry of the same key
+ * is detected rather than executing twice.
+ */
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCEEDED
+  // Attempt failed; nextAttemptAt is set and it will be retried.
+  FAILED
+  // Retries exhausted. Terminal — kept for the customer to inspect and replay.
+  EXHAUSTED
+}
+
 enum SubscriptionComponentType {
   BASE_PLATFORM
   PROPERTY
@@ -311,6 +330,7 @@ model User {
   impersonationSessions  ImpersonationSession[]  @relation("ImpersonationAdmin")
   legalHoldsPlaced       LegalHold[]             @relation("LegalHoldPlacedBy")
   deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
+  webhookEndpoints       WebhookEndpoint[]       @relation("WebhookCreatedBy")
 
   @@index([email])
 }
@@ -443,6 +463,8 @@ model Organization {
   documentChunks       DocumentChunk[]
   impersonationSessions ImpersonationSession[]
   retentionPolicy      RetentionPolicy?
+  idempotencyKeys      IdempotencyKey[]
+  webhookEndpoints     WebhookEndpoint[]
   legalHolds           LegalHold[]
   deletionRequests     DeletionRequest[]
 
@@ -1274,6 +1296,108 @@ model Event {
   @@index([organizationId, createdAt])
   @@index([propertyId, createdAt])
   @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency (spec §65) and outbound webhooks (spec §66)
+// ---------------------------------------------------------------------------
+
+/**
+ * A client-supplied Idempotency-Key and the response it produced (spec §65:
+ * "Repeated requests must not create duplicates").
+ *
+ * The key is unique per organization, NOT per endpoint: a key identifies one
+ * logical operation, so reusing it on a different route or with a different
+ * body is a client bug worth reporting rather than a second cache entry.
+ * `requestHash` is what makes that detectable.
+ */
+model IdempotencyKey {
+  id             String            @id @default(cuid())
+  organizationId String
+  userId         String?
+  key            String
+  method         String
+  path           String
+  /** SHA-256 of the request body — same key + different body is an error. */
+  requestHash    String
+  status         IdempotencyStatus @default(IN_PROGRESS)
+  responseStatus Int?
+  responseBody   Json?
+  createdAt      DateTime          @default(now())
+  /** Replay window. Past this, the key may be reused for a new operation. */
+  expiresAt      DateTime
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, key])
+  @@index([expiresAt])
+}
+
+/**
+ * A customer-registered destination for event notifications (spec §66,
+ * "prepares for CMMS integration").
+ *
+ * `secretEnc` is encrypted at rest through lib/crypto.ts — it is the signing
+ * key the receiver uses to verify a delivery really came from us, so a
+ * database dump must not hand an attacker the ability to forge deliveries.
+ */
+model WebhookEndpoint {
+  id             String   @id @default(cuid())
+  organizationId String
+  url            String
+  description    String?
+  secretEnc      String
+  enabled        Boolean  @default(true)
+  /** Event names this endpoint wants; empty array means every event. */
+  eventTypes     Json     @default("[]")
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastSuccessAt  DateTime?
+  lastFailureAt  DateTime?
+  /** Reset on any success. Drives auto-disable of a dead endpoint. */
+  consecutiveFailures Int @default(0)
+  disabledReason String?
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?             @relation("WebhookCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId, enabled])
+}
+
+/**
+ * One attempt-tracked delivery of one event to one endpoint.
+ *
+ * The row is created when the event fires and delivered out-of-band, so a
+ * slow or unreachable customer endpoint can never slow down — or roll back —
+ * the transaction that produced the event.
+ *
+ * Its `id` is sent as the delivery id header and is stable across retries,
+ * which is what lets a receiver dedupe: spec §65 lists webhooks among the
+ * operations that must be idempotent, and that is the receiver's half of it.
+ */
+model WebhookDelivery {
+  id             String                @id @default(cuid())
+  endpointId     String
+  organizationId String
+  eventId        String?
+  eventType      String
+  payload        Json
+  status         WebhookDeliveryStatus @default(PENDING)
+  attempts       Int                   @default(0)
+  responseStatus Int?
+  responseBody   String?
+  error          String?
+  nextAttemptAt  DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime              @default(now())
+
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([endpointId, createdAt])
+  @@index([organizationId, createdAt])
 }
 
 model AuditLog {

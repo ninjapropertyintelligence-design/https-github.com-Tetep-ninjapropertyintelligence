@@ -38,7 +38,7 @@ export async function emitEvent(params: {
   payload?: Record<string, unknown>;
   actorUserId?: string | null;
 }) {
-  return prisma.event.create({
+  const event = await prisma.event.create({
     data: {
       organizationId: params.organizationId,
       propertyId: params.propertyId ?? null,
@@ -47,4 +47,28 @@ export async function emitEvent(params: {
       actorUserId: params.actorUserId ?? null,
     },
   });
+
+  // Outbound webhooks (spec §66) fan out from here, for the same reason the
+  // Event table exists at all: one choke point. A feature that emits an
+  // event gets webhook delivery without knowing webhooks exist.
+  //
+  // This only ENQUEUES rows — the HTTP calls happen out-of-band. A customer's
+  // endpoint being slow or down must never slow down, or roll back, the
+  // operation that produced the event. `enqueueEventDeliveries` also swallows
+  // its own errors, so a webhook fault cannot fail a business write.
+  //
+  // Constraint worth knowing before adding a caller: emitEvent writes on the
+  // global client, so calling it INSIDE an interactive `$transaction` would
+  // enqueue a delivery that survives a rollback — telling a customer's system
+  // something happened that then didn't. Every current caller emits after its
+  // transaction has committed; keep it that way.
+  const { enqueueEventDeliveries } = await import("@/lib/webhooks");
+  await enqueueEventDeliveries({
+    organizationId: params.organizationId,
+    eventId: event.id,
+    eventType: params.type,
+    payload: { ...(params.payload ?? {}), propertyId: params.propertyId ?? null, eventId: event.id },
+  });
+
+  return event;
 }
