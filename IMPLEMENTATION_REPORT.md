@@ -1461,3 +1461,125 @@ Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
 Idempotency keys (§65), outbound webhooks (§66), cost metering and
 property-level COGS (§49/§50), storage lifecycle tiering (§51), product
 analytics (§105), performance/load testing (§98/§103), PostGIS (§11).
+
+---
+
+# Idempotency and outbound webhooks (spec §65/§66)
+
+Neither existed — no reference to either anywhere in `src/`. Both plug into
+choke points that were already there, which is why this batch is small
+relative to what it covers.
+
+## Idempotency (§65)
+
+The spec states an outcome — "repeated requests must not create duplicates"
+for file processing, capture creation, issue imports, and webhooks. Clients
+send an `Idempotency-Key` header; a replay returns the **original** response
+instead of executing again.
+
+Four cases have to stay distinct, and conflating any two is how these go
+wrong:
+
+| Case | Behaviour |
+| --- | --- |
+| Key never seen | Claim it, run, store the response |
+| Key seen, completed | Replay the stored response verbatim, with `Idempotency-Replayed: true` |
+| Key seen, in flight | 409 — a concurrent duplicate, not a retry |
+| Same key, **different** request | 422 — a client bug, not a replay |
+
+The claim is the unique constraint on `(organizationId, key)`, not a
+check-then-insert. Two simultaneous requests race to insert, one wins, the
+loser gets a constraint violation it turns into the 409. Check-then-insert
+leaves a window where both see "no key" and both execute — the precise
+duplicate §65 exists to prevent. **Verified by mutation:** swapping in the
+naive implementation makes the concurrency test fail (a raw Prisma error
+leaks instead of a clean 409); restoring it passes.
+
+A failed handler releases its claim, so a client retrying after a 500 isn't
+locked out for 24 hours.
+
+## Webhooks (§66)
+
+The internal event system already emitted exactly the five events §66 names,
+so webhooks are a delivery layer rather than a new taxonomy. Fan-out happens
+in `emitEvent` — a feature that emits an event gets webhook delivery without
+knowing webhooks exist.
+
+**Signed.** HMAC-SHA256 over `timestamp.body`, `t=…,v1=…` (the shape Stripe
+uses, so integrators often already have code for it). The timestamp is inside
+the signed material, which is what stops a captured request being replayed
+later; signing the body alone would leave a valid payload valid forever.
+
+**Retried.** Backoff at ~1m/5m/30m/2h/6h, then `EXHAUSTED`. Every attempt is
+recorded, so "did you send it?" has an answer. An endpoint failing 20 times
+consecutively auto-disables with an audit entry — a dead endpoint retried
+forever is a cost.
+
+**Idempotent for the receiver.** §65 lists webhooks among the operations that
+must not duplicate. We can't control the receiver, but we can make dedupe
+possible: the delivery id is stable across retries *and across a manual
+replay*, sent as a header.
+
+**Out-of-band.** Rows are enqueued with the event; HTTP happens in a runner.
+A customer's endpoint must never slow down — or roll back — the operation
+that produced the event.
+
+**Not an SSRF tool.** The URL is customer-supplied and we fetch it from
+inside our network, so https is required and loopback, RFC1918, link-local
+(including the cloud metadata address) and `.internal`/`.local` are refused.
+
+Signing secrets are encrypted at rest through `lib/crypto.ts` with a
+`webhook-secret` domain separator, returned exactly once, and never selected
+into any read path.
+
+## What the tooling caught
+
+**Lint found a bug typecheck missed.** The idempotency wiring re-declared
+`idempotencyRecordId` *inside* the try block, shadowing the outer one — so
+the catch always saw `null` and **a failed handler would never release its
+claim**, the exact failure the code's own comment claims to prevent.
+TypeScript allowed it (legal block shadowing); `prefer-const` on the
+now-never-reassigned outer variable exposed it.
+
+**A crude grep produced a false positive** suggesting `emitEvent` ran inside
+a transaction, which would enqueue deliveries that survive a rollback.
+Reading the actual code showed the call sits *after* the transaction closes.
+No bug — but the constraint is now documented at the call site, because it is
+a real footgun for the next caller.
+
+## One unexplained e2e failure, stated plainly
+
+The first full e2e run after these changes had `retention.spec.ts` fail. It
+then passed in isolation, passed paired with the new spec, and passed in
+**three consecutive full-suite runs**. The failure artifact was cleared by
+the passing rerun before it could be read, so the root cause was not
+established.
+
+What is established: the retention deletion path emits **zero** events, so
+the webhook fan-out added here cannot reach it. That rules this change out as
+the cause for that spec specifically. It is recorded rather than dismissed as
+a flake, because "passed on retry" is not a diagnosis.
+
+## Verified
+
+- 23 unit cases on signing and URL safety: a tampered body, the wrong secret,
+  a stale *and* a future timestamp, malformed headers, and eight SSRF targets.
+- 28 integration cases against real Postgres: the simultaneous-key race,
+  replay fidelity, same-key-different-body, claim release after failure,
+  per-org key scoping, expiry and reuse, secret encryption and one-time
+  return, event filtering, and retry/backoff against a guaranteed-unreachable
+  host.
+- An e2e spec proving the header survives `withApiHandler` re-wrapping the
+  request body — something a library-only test would pass regardless.
+- Driven live against a **real HTTP receiver run out-of-process**, which
+  independently recomputed the HMAC and confirmed `signatureValid=true`. That
+  is stronger than our own verifier, which could share a bug with the signer.
+
+Gate: `tsc` clean · `eslint` clean (1 pre-existing warning) · `vitest`
+296 passed / 1 skipped · `playwright` 15/15 · `next build` succeeds.
+
+## Still open from the audit
+
+Cost metering and property-level COGS (§49/§50), storage lifecycle tiering
+(§51), product analytics (§105), performance/load testing (§98/§103), PostGIS
+(§11).

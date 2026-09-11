@@ -11,6 +11,12 @@ import {
 import { Permission } from "@/lib/permissions";
 import { ApiError } from "@/lib/api-error";
 import { RateLimitRule, checkRateLimit, clientIpFromRequest } from "@/lib/rate-limit";
+import {
+  IDEMPOTENCY_HEADER,
+  beginIdempotentRequest,
+  completeIdempotentRequest,
+  releaseIdempotentRequest,
+} from "@/lib/idempotency";
 
 export { ApiError };
 
@@ -51,6 +57,9 @@ export function withApiHandler<T, Extra = unknown>(
   handler: (ctx: SessionContext, req: Request, extra: Extra) => Promise<T>,
 ) {
   return async (req: Request, extra: Extra) => {
+    // Declared outside the try so the catch can release a claimed key.
+    let idempotencyRecordId: string | null = null;
+    let rawBody = "";
     try {
       const ctx = await getSessionContext();
       if (!ctx) return jsonError(401, "Not authenticated");
@@ -73,13 +82,65 @@ export function withApiHandler<T, Extra = unknown>(
           "Read-only: platform support cannot modify customer data while impersonating.",
         );
       }
+      // Idempotency (spec §65). Only mutating requests take a key: a GET is
+      // already idempotent by definition, and caching one here would be a
+      // response cache wearing the wrong name.
+      const idempotencyKey = isReadOnlyRequest(req) ? null : req.headers.get(IDEMPOTENCY_HEADER);
+
+      if (idempotencyKey && ctx.organizationId) {
+        // The body has to be read to hash it, and a Request body can only be
+        // read once — so the handler is given a fresh Request wrapping the
+        // text we already consumed. Without this, every keyed route would
+        // see an empty body.
+        rawBody = await req.text();
+        req = new Request(req.url, {
+          method: req.method,
+          headers: req.headers,
+          body: rawBody.length > 0 ? rawBody : undefined,
+        });
+
+        const outcome = await beginIdempotentRequest({
+          organizationId: ctx.organizationId,
+          userId: ctx.userId,
+          key: idempotencyKey,
+          method: req.method,
+          path: new URL(req.url).pathname,
+          body: rawBody,
+        });
+
+        if (outcome.kind === "REPLAY") {
+          // The original response, verbatim, including its status. The
+          // header tells the client this did not re-execute.
+          return NextResponse.json(outcome.response.body as ApiEnvelope<unknown>, {
+            status: outcome.response.status,
+            headers: { "Idempotency-Replayed": "true" },
+          });
+        }
+        if (outcome.kind === "PROCEED") idempotencyRecordId = outcome.recordId;
+      }
+
       const result = await handler(ctx, req, extra);
+
+      let status = 200;
+      let envelope: ApiEnvelope<unknown>;
       if (result instanceof NextResponse) {
         const body = await result.json().catch(() => null);
-        return NextResponse.json({ data: body, error: null, meta: {} } satisfies ApiEnvelope<unknown>, { status: result.status });
+        status = result.status;
+        envelope = { data: body, error: null, meta: {} };
+      } else {
+        envelope = { data: result, error: null, meta: {} };
       }
-      return NextResponse.json({ data: result, error: null, meta: {} } satisfies ApiEnvelope<T>);
+
+      if (idempotencyRecordId) {
+        await completeIdempotentRequest(idempotencyRecordId, { status, body: envelope });
+      }
+      return NextResponse.json(envelope, { status });
     } catch (err) {
+      // A failed handler must release its claim, or a client retrying after
+      // a 500 would be told the key is still in progress — forever.
+      if (idempotencyRecordId) {
+        await releaseIdempotentRequest(idempotencyRecordId).catch(() => {});
+      }
       if (err instanceof ApiError) return jsonError(err.status, err.message);
       if (err instanceof UnauthenticatedError) return jsonError(401, err.message);
       if (err instanceof NoOrganizationError) return jsonError(403, err.message);

@@ -48,6 +48,9 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canManageProperties")) {
     items.push({ label: "Import", href: "/imports" });
   }
+  if (can(ctx, "canManageIntegrations")) {
+    items.push({ label: "Webhooks", href: "/settings/webhooks" });
+  }
   if (can(ctx, "canViewAuditLogs")) {
     items.push({ label: "Retention", href: "/settings/retention" });
   }
