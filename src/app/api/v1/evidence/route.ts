@@ -1,6 +1,7 @@
+import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, StorageObjectKind } from "@/generated/prisma/client";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
 import { propertyScopeWhere } from "@/lib/session-context";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
@@ -84,6 +85,14 @@ export const POST = withApiHandler(async (ctx, req) => {
       metadata: input.metadata as unknown as Prisma.InputJsonValue,
       uploadedById: ctx.userId,
     },
+  });
+
+  await registerStorageObjectBestEffort({
+    organizationId: ctx.organizationId,
+    storageKey: evidence.storageKey,
+    kind: StorageObjectKind.EVIDENCE,
+    sizeBytes: evidence.sizeBytes,
+    objectCreatedAt: evidence.createdAt,
   });
 
   if (input.propertyId) {

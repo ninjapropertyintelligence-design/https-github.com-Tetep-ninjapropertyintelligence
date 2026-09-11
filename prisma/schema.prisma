@@ -467,6 +467,8 @@ model Organization {
   webhookEndpoints     WebhookEndpoint[]
   legalHolds           LegalHold[]
   deletionRequests     DeletionRequest[]
+  storageTieringPolicy StorageTieringPolicy?
+  storageObjects       StorageObject[]
 
   @@index([slug])
 }
@@ -1727,4 +1729,101 @@ model ImportRowResult {
 
   @@index([importJobId])
   @@index([importJobId, action])
+}
+
+// ---------------------------------------------------------------------------
+// Storage lifecycle tiering (spec §51)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an object currently lives. These map onto S3 storage classes, but the
+ * names are deliberately ours: not every backing store has all of them, and
+ * some (Supabase Storage, Cloudflare R2) have none at all. The provider
+ * reports what it supports and the runner records what actually happened —
+ * never what was intended.
+ */
+enum StorageTier {
+  STANDARD
+  INFREQUENT_ACCESS
+  ARCHIVE
+  DEEP_ARCHIVE
+}
+
+/**
+ * Which kind of record owns an object. The tier ledger is deliberately
+ * uniform across object kinds rather than a `tier` column bolted onto each of
+ * DroneImage/DroneOutput/DocumentVersion/Evidence, because cost reporting
+ * (§49/§50) wants one table to sum, not a four-way union.
+ */
+enum StorageObjectKind {
+  DRONE_IMAGE
+  DRONE_OUTPUT
+  DOCUMENT_VERSION
+  EVIDENCE
+}
+
+/** An archived object cannot be read until it is restored, and restore is asynchronous. */
+enum StorageRestoreState {
+  NOT_REQUESTED
+  IN_PROGRESS
+  AVAILABLE
+  FAILED
+}
+
+model StorageTieringPolicy {
+  id             String @id @default(cuid())
+  organizationId String @unique
+
+  // Off by default. Tiering changes read semantics for archived objects, so
+  // it is opt-in rather than something a customer discovers after the fact.
+  enabled Boolean @default(false)
+
+  // Age in days after which an object becomes eligible for each tier. Null
+  // means "never move it there", which is why these are nullable rather than
+  // sentinel zeroes.
+  infrequentAccessAfterDays Int? @default(90)
+  archiveAfterDays          Int? @default(365)
+  deepArchiveAfterDays      Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * The tier ledger: one row per stored object, recording where it actually is.
+ *
+ * `sizeBytes` is copied here rather than joined. That is not duplicated
+ * business data — stored objects are immutable once written, so this is a
+ * point-in-time record of what was transitioned, and it is what makes a
+ * cost-by-tier rollup a single indexed scan instead of a four-table union.
+ */
+model StorageObject {
+  id             String            @id @default(cuid())
+  organizationId String
+  storageKey     String
+  kind           StorageObjectKind
+  sizeBytes      Int?
+
+  currentTier        StorageTier @default(STANDARD)
+  // When the underlying object was created, which is what age is measured
+  // from — not when this ledger row was written, since backfilled rows would
+  // otherwise all look brand new and never become eligible.
+  objectCreatedAt    DateTime
+  lastTransitionedAt DateTime?
+
+  restoreState       StorageRestoreState @default(NOT_REQUESTED)
+  restoreRequestedAt DateTime?
+  restoreExpiresAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, storageKey])
+  @@index([organizationId, currentTier])
+  // Drives the "what is due for transition" scan.
+  @@index([organizationId, objectCreatedAt])
 }

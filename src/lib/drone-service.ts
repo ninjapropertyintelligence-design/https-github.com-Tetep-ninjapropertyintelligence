@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
+import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
 import { ApiError } from "@/lib/api-error";
 import { getStorageProvider } from "@/lib/storage";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
-import { DroneOutputType } from "@/generated/prisma/client";
+import { DroneOutputType, StorageObjectKind } from "@/generated/prisma/client";
 import { logEvent } from "@/lib/observability";
 import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogrammetry-provider";
 
@@ -191,7 +192,7 @@ export async function registerDroneImage(
     clientChecksum: input.checksum,
   });
 
-  return prisma.droneImage.create({
+  const image = await prisma.droneImage.create({
     data: {
       datasetId: dataset.id,
       storageKey: input.storageKey,
@@ -205,6 +206,19 @@ export async function registerDroneImage(
       capturedAt: input.capturedAt,
     },
   });
+
+  // Age for tiering runs from when the object landed in the store, not from
+  // `capturedAt` — a backfilled capture from two years ago is a brand-new
+  // object as far as storage billing is concerned.
+  await registerStorageObjectBestEffort({
+    organizationId: ctx.organizationId,
+    storageKey: image.storageKey,
+    kind: StorageObjectKind.DRONE_IMAGE,
+    sizeBytes: image.sizeBytes,
+    objectCreatedAt: image.createdAt,
+  });
+
+  return image;
 }
 
 export async function registerDroneOutput(
@@ -243,6 +257,14 @@ export async function registerDroneOutput(
       checksum: verification.actualChecksumSha256,
       metadata: (input.metadata ?? {}) as never,
     },
+  });
+
+  await registerStorageObjectBestEffort({
+    organizationId: ctx.organizationId,
+    storageKey: output.storageKey,
+    kind: StorageObjectKind.DRONE_OUTPUT,
+    sizeBytes: output.sizeBytes,
+    objectCreatedAt: output.createdAt,
   });
 
   return output;

@@ -19,6 +19,7 @@ export type ObservabilityEvent =
    * right either, and that distinction needs to survive into the logs.
    */
   | "drone.upload.checksum_unverified"
+  | "storage.register_failed"
   | "drone.processing_job"
   | "geocoding.request"
   | "ai.tool_call"

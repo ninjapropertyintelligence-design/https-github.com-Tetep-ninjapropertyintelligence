@@ -109,13 +109,44 @@ function canonicalQueryString(params: Record<string, string>): string {
 }
 
 export interface PresignParams {
-  method: "GET" | "PUT" | "HEAD" | "DELETE";
+  method: "GET" | "PUT" | "HEAD" | "DELETE" | "POST";
   key: string;
   expiresInSeconds: number;
   /** Extra query parameters to include in the signature (e.g. response-content-type). */
   query?: Record<string, string>;
+  /**
+   * Additional headers to include in the signature, beyond `host`.
+   *
+   * Needed for operations where S3 takes its instructions from headers rather
+   * than the body — changing an object's storage class is a CopyObject driven
+   * entirely by `x-amz-copy-source` and `x-amz-storage-class`. Anything signed
+   * here MUST be sent byte-identically on the request or the store returns an
+   * opaque 403, which is why this is opt-in per call rather than a blanket
+   * "sign everything".
+   */
+  signedHeaders?: Record<string, string>;
   /** Injectable for deterministic tests; defaults to now. */
   now?: Date;
+}
+
+/**
+ * Canonical header form: lowercase names, sequential inner whitespace
+ * collapsed, sorted by name. Returns both the canonical block and the
+ * semicolon-joined name list, which must agree or the signature is invalid.
+ */
+function canonicalHeaders(
+  host: string,
+  extra: Record<string, string> | undefined,
+): { canonical: string; signedList: string } {
+  const all: Record<string, string> = { host };
+  for (const [k, v] of Object.entries(extra ?? {})) {
+    all[k.toLowerCase()] = v.trim().replace(/\s+/g, " ");
+  }
+  const names = Object.keys(all).sort();
+  return {
+    canonical: names.map((n) => `${n}:${all[n]}\n`).join(""),
+    signedList: names.join(";"),
+  };
 }
 
 export interface PresignResult {
@@ -155,13 +186,15 @@ export function presignS3Url(config: S3SignerConfig, params: PresignParams): Pre
     canonicalUri = `${basePath}/${uriEncode(params.key, false)}`;
   }
 
+  const headers = canonicalHeaders(host, params.signedHeaders);
+
   const query: Record<string, string> = {
     ...(params.query ?? {}),
     "X-Amz-Algorithm": ALGORITHM,
     "X-Amz-Credential": `${config.accessKeyId}/${credentialScope}`,
     "X-Amz-Date": amzDate,
     "X-Amz-Expires": String(params.expiresInSeconds),
-    "X-Amz-SignedHeaders": "host",
+    "X-Amz-SignedHeaders": headers.signedList,
   };
   if (config.sessionToken) {
     query["X-Amz-Security-Token"] = config.sessionToken;
@@ -171,8 +204,8 @@ export function presignS3Url(config: S3SignerConfig, params: PresignParams): Pre
     params.method,
     canonicalUri,
     canonicalQueryString(query),
-    `host:${host}\n`,
-    "host",
+    headers.canonical,
+    headers.signedList,
     UNSIGNED_PAYLOAD,
   ].join("\n");
 
@@ -206,13 +239,15 @@ export function __buildCanonicalRequestForTest(
     ? `${basePath}/${uriEncode(config.bucket, true)}/${uriEncode(params.key, false)}`
     : `${basePath}/${uriEncode(params.key, false)}`;
 
+  const headers = canonicalHeaders(host, params.signedHeaders);
+
   const query: Record<string, string> = {
     ...(params.query ?? {}),
     "X-Amz-Algorithm": ALGORITHM,
     "X-Amz-Credential": `${config.accessKeyId}/${credentialScope}`,
     "X-Amz-Date": amzDate,
     "X-Amz-Expires": String(params.expiresInSeconds),
-    "X-Amz-SignedHeaders": "host",
+    "X-Amz-SignedHeaders": headers.signedList,
   };
   if (config.sessionToken) query["X-Amz-Security-Token"] = config.sessionToken;
 
@@ -220,8 +255,8 @@ export function __buildCanonicalRequestForTest(
     params.method,
     canonicalUri,
     canonicalQueryString(query),
-    `host:${host}\n`,
-    "host",
+    headers.canonical,
+    headers.signedList,
     UNSIGNED_PAYLOAD,
   ].join("\n");
   const stringToSign = [ALGORITHM, amzDate, credentialScope, sha256Hex(canonicalRequest)].join("\n");

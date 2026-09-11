@@ -1,3 +1,5 @@
+import { StorageObjectKind } from "@/generated/prisma/client";
+import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
@@ -90,6 +92,16 @@ export const POST = withApiHandler(async (ctx, req) => {
     },
     include: { versions: true },
   });
+
+  for (const version of document.versions) {
+    await registerStorageObjectBestEffort({
+      organizationId: ctx.organizationId,
+      storageKey: version.storageKey,
+      kind: StorageObjectKind.DOCUMENT_VERSION,
+      sizeBytes: version.sizeBytes,
+      objectCreatedAt: version.uploadedAt,
+    });
+  }
 
   if (input.propertyId) {
     await emitEvent({

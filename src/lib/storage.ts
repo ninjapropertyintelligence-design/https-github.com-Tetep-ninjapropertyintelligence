@@ -28,7 +28,52 @@ export interface UploadVerification {
   actualChecksumSha256: string | null;
 }
 
+/**
+ * Storage classes this app can ask for, named independently of any one
+ * vendor's vocabulary. Mapped to concrete S3 class names in the provider.
+ */
+export type StorageTierName = "STANDARD" | "INFREQUENT_ACCESS" | "ARCHIVE" | "DEEP_ARCHIVE";
+
+/**
+ * The outcome of a tier transition, kept as a discriminated union so a caller
+ * cannot record "moved to archive" when nothing moved.
+ *
+ * NOT_SUPPORTED is a first-class outcome rather than an error: Supabase
+ * Storage and Cloudflare R2 have a single storage class, so "this store does
+ * not tier" is the honest answer for a large share of deployments, and it is
+ * different from "the transition was attempted and failed".
+ */
+export type TierTransitionResult =
+  | { status: "TRANSITIONED"; tier: StorageTierName }
+  | { status: "NOT_SUPPORTED"; reason: string }
+  | { status: "FAILED"; reason: string };
+
+/**
+ * Archived objects cannot be read until restored, and restore takes time.
+ * REQUESTED means the store accepted the request, not that bytes are ready.
+ */
+export type RestoreResult =
+  | { status: "REQUESTED"; availableAfter: Date | null }
+  | { status: "ALREADY_AVAILABLE" }
+  | { status: "NOT_SUPPORTED"; reason: string }
+  | { status: "FAILED"; reason: string };
+
+export interface StorageCapabilities {
+  /** Whether this backend has distinct storage classes at all. */
+  tiering: boolean;
+}
+
 export interface StorageProvider {
+  /**
+   * What this backend can actually do. Callers branch on this rather than
+   * assuming, so a feature that depends on tiering can degrade visibly
+   * instead of silently no-op'ing.
+   */
+  capabilities(): StorageCapabilities;
+  /** Moves an existing object to a different storage class. */
+  transitionTier(key: string, tier: StorageTierName): Promise<TierTransitionResult>;
+  /** Asks the store to make an archived object readable again. */
+  restoreObject(key: string, availableForDays: number): Promise<RestoreResult>;
   createUploadUrl(params: {
     organizationId: string;
     filename: string;
@@ -76,6 +121,28 @@ export function verifyStorageToken(key: string, expiresAt: number, token: string
 }
 
 class LocalStorageProvider implements StorageProvider {
+  /**
+   * A directory on disk has no storage classes. Saying so is the point:
+   * reporting a successful "transition to archive" here would make the
+   * tiering feature look like it worked in development and then behave
+   * completely differently in production.
+   */
+  capabilities(): StorageCapabilities {
+    return { tiering: false };
+  }
+
+  async transitionTier(): Promise<TierTransitionResult> {
+    return {
+      status: "NOT_SUPPORTED",
+      reason: "Local disk storage has no storage classes to transition between",
+    };
+  }
+
+  async restoreObject(): Promise<RestoreResult> {
+    // Nothing is ever archived here, so everything is always readable.
+    return { status: "ALREADY_AVAILABLE" };
+  }
+
   async createUploadUrl(params: {
     organizationId: string;
     filename: string;
@@ -174,8 +241,87 @@ class LocalStorageProvider implements StorageProvider {
  * here than it did on local disk, because on serverless these bytes cross the
  * network and count against the function's memory and execution budget.
  */
+/**
+ * Our tier names to concrete S3 storage classes.
+ *
+ * GLACIER_IR rather than GLACIER for ARCHIVE: instant retrieval costs more per
+ * GB but needs no restore step, and an archived-but-unreadable inspection
+ * photo is a support ticket. DEEP_ARCHIVE is the tier that genuinely requires
+ * restore, and is opt-in precisely because of that.
+ */
+const S3_STORAGE_CLASS: Record<StorageTierName, string> = {
+  STANDARD: "STANDARD",
+  INFREQUENT_ACCESS: "STANDARD_IA",
+  ARCHIVE: "GLACIER_IR",
+  DEEP_ARCHIVE: "DEEP_ARCHIVE",
+};
+
 class S3StorageProvider implements StorageProvider {
   constructor(private readonly config: S3SignerConfig) {}
+
+  capabilities(): StorageCapabilities {
+    // Not every S3-compatible store implements storage classes — Supabase and
+    // R2 do not. Operators say which they have rather than the app guessing
+    // from the endpoint hostname, which would be a brittle inference.
+    return { tiering: (process.env.STORAGE_SUPPORTS_TIERING ?? "false") === "true" };
+  }
+
+  async transitionTier(key: string, tier: StorageTierName): Promise<TierTransitionResult> {
+    if (!this.capabilities().tiering) {
+      return {
+        status: "NOT_SUPPORTED",
+        reason:
+          "STORAGE_SUPPORTS_TIERING is not enabled — this backend is configured as having a single storage class",
+      };
+    }
+    // S3 changes an existing object's class by copying it onto itself with a
+    // new class. There is no "set storage class" operation.
+    const copySource = `/${this.config.bucket}/${key}`;
+    const signedHeaders = {
+      "x-amz-copy-source": copySource,
+      "x-amz-storage-class": S3_STORAGE_CLASS[tier],
+      // Keep the object's existing metadata; we are changing where it lives,
+      // not what it is.
+      "x-amz-metadata-directive": "COPY",
+    };
+    const { url } = presignS3Url(this.config, {
+      method: "PUT",
+      key,
+      expiresInSeconds: 300,
+      signedHeaders,
+    });
+    const res = await fetch(url, { method: "PUT", headers: signedHeaders });
+    if (!res.ok) {
+      return { status: "FAILED", reason: `Storage class transition returned HTTP ${res.status}` };
+    }
+    return { status: "TRANSITIONED", tier };
+  }
+
+  async restoreObject(key: string, availableForDays: number): Promise<RestoreResult> {
+    if (!this.capabilities().tiering) {
+      // Without tiering nothing is ever archived, so nothing needs restoring.
+      return { status: "ALREADY_AVAILABLE" };
+    }
+    const body = `<RestoreRequest><Days>${availableForDays}</Days></RestoreRequest>`;
+    const { url } = presignS3Url(this.config, {
+      method: "POST",
+      key,
+      expiresInSeconds: 300,
+      query: { restore: "" },
+    });
+    const res = await fetch(url, { method: "POST", body });
+    // 202 = restore started. 200 = already restored. 409 = restore already in
+    // progress, which is success from the caller's point of view: someone
+    // asked first and the object is on its way back either way.
+    if (res.status === 200) return { status: "ALREADY_AVAILABLE" };
+    if (res.status === 202 || res.status === 409) {
+      return {
+        status: "REQUESTED",
+        availableAfter: new Date(Date.now() + availableForDays * 24 * 60 * 60 * 1000),
+      };
+    }
+    return { status: "FAILED", reason: `Restore request returned HTTP ${res.status}` };
+  }
 
   async createUploadUrl(params: {
     organizationId: string;
