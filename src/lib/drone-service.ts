@@ -118,10 +118,39 @@ async function verifyUploadedFile(ctx: SessionContext, params: {
         `Uploaded file size (${verification.actualSizeBytes} bytes) doesn't match the reported size (${params.clientSizeBytes} bytes)`,
       );
     }
-    if (params.clientChecksum && verification.actualChecksumSha256 !== params.clientChecksum.toLowerCase()) {
-      throw new ApiError(400, "Uploaded file checksum doesn't match the reported checksum — upload may be corrupted");
+    /**
+     * Three distinct outcomes, and collapsing any two of them is a bug:
+     *
+     *  - checksums differ        → the bytes are wrong, reject
+     *  - checksums match         → verified
+     *  - store reports no digest → *unverified*, which is not the same as wrong
+     *
+     * The third case only appears on object stores. Local disk always hashes
+     * what it holds, but S3-compatible stores return a SHA-256 only for objects
+     * that were uploaded with one. Treating "absent" as "mismatch" would reject
+     * every correct upload that carried a client checksum; treating it as
+     * "match" would silently drop an integrity control. So it passes, and says
+     * so, leaving a record that the guarantee was weaker for this object.
+     */
+    let checksumVerified = false;
+    if (params.clientChecksum) {
+      if (verification.actualChecksumSha256 === null) {
+        logEvent("drone.upload.checksum_unverified", {
+          ok: true,
+          organizationId: ctx.organizationId,
+        });
+      } else if (verification.actualChecksumSha256 !== params.clientChecksum.toLowerCase()) {
+        throw new ApiError(400, "Uploaded file checksum doesn't match the reported checksum — upload may be corrupted");
+      } else {
+        checksumVerified = true;
+      }
     }
-    logEvent("drone.upload", { ok: true, organizationId: ctx.organizationId, sizeBytes: verification.actualSizeBytes ?? undefined });
+    logEvent("drone.upload", {
+      ok: true,
+      organizationId: ctx.organizationId,
+      sizeBytes: verification.actualSizeBytes ?? undefined,
+      checksumVerified,
+    });
     return verification;
   } catch (err) {
     logEvent("drone.upload", {

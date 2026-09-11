@@ -53,6 +53,20 @@ function rateLimitKeys(email: string, req: Request | undefined): string[] {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  /**
+   * NextAuth refuses to honour the request's Host header in production unless
+   * told to, and fails the whole auth flow with `UntrustedHost` when it is not.
+   * Development trusts it implicitly, which is why this never surfaced locally
+   * or in the e2e suite — both run `next dev`. The first production build to
+   * serve a login rejected every attempt.
+   *
+   * Trusting the host is correct for a platform deployed behind a host we
+   * control (Vercel and equivalents terminate TLS and set Host from the real
+   * request). `AUTH_TRUST_HOST` is honoured as an override so an operator can
+   * turn it off for a deployment sitting behind a proxy they do not trust,
+   * where the header really can be forged.
+   */
+  trustHost: (process.env.AUTH_TRUST_HOST ?? "true") !== "false",
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
   providers: [

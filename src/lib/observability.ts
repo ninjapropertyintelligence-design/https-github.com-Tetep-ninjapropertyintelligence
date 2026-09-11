@@ -12,6 +12,13 @@ export type ObservabilityEvent =
   | "matterport.api_call"
   | "matterport.sync"
   | "drone.upload"
+  /**
+   * Emitted when a client supplied a checksum but the object store could not
+   * report one back, so the integrity check could not be performed. Distinct
+   * from a failed check: nothing is known to be wrong, but nothing was proven
+   * right either, and that distinction needs to survive into the logs.
+   */
+  | "drone.upload.checksum_unverified"
   | "drone.processing_job"
   | "geocoding.request"
   | "ai.tool_call"

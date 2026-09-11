@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { presignS3Url, type S3SignerConfig } from "@/lib/s3-signer";
 
 /**
  * FILE STORAGE (spec §18-19). Large files must never be proxied through the
@@ -159,17 +160,149 @@ class LocalStorageProvider implements StorageProvider {
   }
 }
 
+/**
+ * S3-compatible object storage (AWS S3, Supabase Storage, Cloudflare R2, MinIO).
+ *
+ * Every operation goes through a presigned URL rather than an SDK call. That is
+ * a deliberate consequence of the §18-19 contract: browsers must be handed a
+ * signed URL for direct upload, so presigning is required regardless — and
+ * routing the server-side operations through the same path means there is one
+ * signing implementation to get right instead of two.
+ *
+ * The app server never streams large objects. `readBytes`/`writeBytes` are
+ * documented as small-file-only on the interface and that rule matters more
+ * here than it did on local disk, because on serverless these bytes cross the
+ * network and count against the function's memory and execution budget.
+ */
+class S3StorageProvider implements StorageProvider {
+  constructor(private readonly config: S3SignerConfig) {}
+
+  async createUploadUrl(params: {
+    organizationId: string;
+    filename: string;
+    contentType: string;
+  }): Promise<SignedUploadUrl> {
+    // Key shape is kept identical to the local provider so that objects written
+    // by one are addressable by the other — which is what makes a migration
+    // between them a data copy rather than a re-keying exercise.
+    const safeName = params.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const key = `${params.organizationId}/${crypto.randomUUID()}-${safeName}`;
+    const { url, expiresAt } = presignS3Url(this.config, {
+      method: "PUT",
+      key,
+      expiresInSeconds: Math.floor(UPLOAD_TTL_MS / 1000),
+    });
+    return { url, method: "PUT", key, expiresAt: expiresAt.toISOString() };
+  }
+
+  async getDownloadUrl(key: string): Promise<string> {
+    const { url } = presignS3Url(this.config, {
+      method: "GET",
+      key,
+      expiresInSeconds: Math.floor(DOWNLOAD_TTL_MS / 1000),
+    });
+    return url;
+  }
+
+  async delete(key: string): Promise<void> {
+    const { url } = presignS3Url(this.config, { method: "DELETE", key, expiresInSeconds: 300 });
+    const res = await fetch(url, { method: "DELETE" });
+    // S3 returns 204 for a successful delete and also for a key that was never
+    // there. 404 is treated the same way for stores that report it instead:
+    // deletion is retried and must converge, so "already gone" is success.
+    if (!res.ok && res.status !== 404) {
+      throw new Error(`Storage delete failed for key (HTTP ${res.status})`);
+    }
+  }
+
+  async verifyUpload(key: string): Promise<UploadVerification> {
+    const { url } = presignS3Url(this.config, { method: "HEAD", key, expiresInSeconds: 300 });
+    const res = await fetch(url, {
+      method: "HEAD",
+      // Asks the store to return the stored SHA-256 alongside the metadata.
+      // Only objects uploaded with a checksum have one; see the null case below.
+      headers: { "x-amz-checksum-mode": "ENABLED" },
+    });
+    if (!res.ok) {
+      return { exists: false, actualSizeBytes: null, actualChecksumSha256: null };
+    }
+    const length = res.headers.get("content-length");
+    // S3 reports checksums base64-encoded; the rest of the codebase speaks hex.
+    const b64 = res.headers.get("x-amz-checksum-sha256");
+    const checksum = b64 ? Buffer.from(b64, "base64").toString("hex") : null;
+    return {
+      exists: true,
+      actualSizeBytes: length === null ? null : Number(length),
+      actualChecksumSha256: checksum,
+    };
+  }
+
+  async readBytes(key: string): Promise<Buffer | null> {
+    const { url } = presignS3Url(this.config, { method: "GET", key, expiresInSeconds: 300 });
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  async writeBytes(key: string, bytes: Buffer): Promise<void> {
+    const { url } = presignS3Url(this.config, { method: "PUT", key, expiresInSeconds: 300 });
+    const res = await fetch(url, {
+      method: "PUT",
+      body: new Uint8Array(bytes),
+      headers: { "content-length": String(bytes.byteLength) },
+    });
+    if (!res.ok) {
+      throw new Error(`Storage write failed for key (HTTP ${res.status})`);
+    }
+  }
+}
+
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(
+      `STORAGE_PROVIDER is "s3" but ${name} is not set. ` +
+        "S3 storage needs STORAGE_BUCKET, STORAGE_REGION, STORAGE_ENDPOINT, " +
+        "STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY.",
+    );
+  }
+  return value;
+}
+
+export function readS3ConfigFromEnv(): S3SignerConfig {
+  return {
+    accessKeyId: requireEnv("STORAGE_ACCESS_KEY_ID"),
+    secretAccessKey: requireEnv("STORAGE_SECRET_ACCESS_KEY"),
+    region: requireEnv("STORAGE_REGION"),
+    endpoint: requireEnv("STORAGE_ENDPOINT"),
+    bucket: requireEnv("STORAGE_BUCKET"),
+    // Supabase, R2 and MinIO are path-style; AWS S3 proper prefers virtual-host.
+    // Defaulting to path-style matches the store this app is deployed against
+    // and is the safer default — virtual-host silently breaks on endpoints that
+    // do not wildcard their subdomains.
+    forcePathStyle: (process.env.STORAGE_FORCE_PATH_STYLE ?? "true") !== "false",
+    sessionToken: process.env.STORAGE_SESSION_TOKEN || undefined,
+  };
+}
+
 let provider: StorageProvider | null = null;
 
 export function getStorageProvider(): StorageProvider {
   if (provider) return provider;
   const kind = process.env.STORAGE_PROVIDER ?? "local";
-  if (kind !== "local") {
+  if (kind === "local") {
+    provider = new LocalStorageProvider();
+  } else if (kind === "s3") {
+    provider = new S3StorageProvider(readS3ConfigFromEnv());
+  } else {
     throw new Error(
-      `Storage provider "${kind}" is not implemented yet — only "local" is available in this phase. ` +
-        "Add an S3StorageProvider behind the StorageProvider interface to enable it.",
+      `Unknown STORAGE_PROVIDER "${kind}". Supported values are "local" and "s3".`,
     );
   }
-  provider = new LocalStorageProvider();
   return provider;
+}
+
+/** Test seam: lets a suite install a provider without touching module state directly. */
+export function __setStorageProviderForTest(next: StorageProvider | null): void {
+  provider = next;
 }
