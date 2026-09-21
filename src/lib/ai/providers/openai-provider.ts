@@ -56,6 +56,12 @@ export class OpenAIProvider implements AIProvider {
     ];
     const toolCalls: AIToolCallRecord[] = [];
     const maxIterations = params.maxIterations ?? MAX_ITERATIONS;
+    // See the Anthropic provider: summed across iterations, returned on every
+    // exit path, and left undefined rather than zero when never reported.
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let sawUsage = false;
+    const usage = () => (sawUsage ? { inputTokens, outputTokens } : undefined);
 
     for (let i = 0; i < maxIterations; i++) {
       const completion = await this.client.chat.completions.create({
@@ -64,9 +70,15 @@ export class OpenAIProvider implements AIProvider {
         tools: openaiTools,
       });
 
+      if (completion.usage) {
+        inputTokens += completion.usage.prompt_tokens ?? 0;
+        outputTokens += completion.usage.completion_tokens ?? 0;
+        sawUsage = true;
+      }
+
       const message = completion.choices[0]?.message;
       if (!message) {
-        return { answer: "The AI provider returned no response.", toolCalls };
+        return { answer: "The AI provider returned no response.", toolCalls, usage: usage() };
       }
 
       const functionCalls = (message.tool_calls ?? []).filter(
@@ -74,7 +86,7 @@ export class OpenAIProvider implements AIProvider {
       );
 
       if (functionCalls.length === 0) {
-        return { answer: (message.content ?? "").trim(), toolCalls };
+        return { answer: (message.content ?? "").trim(), toolCalls, usage: usage() };
       }
 
       messages.push(message);
@@ -100,6 +112,6 @@ export class OpenAIProvider implements AIProvider {
       }
     }
 
-    return { answer: "I wasn't able to finish answering within the allotted tool-call budget.", toolCalls };
+    return { answer: "I wasn't able to finish answering within the allotted tool-call budget.", toolCalls, usage: usage() };
   }
 }

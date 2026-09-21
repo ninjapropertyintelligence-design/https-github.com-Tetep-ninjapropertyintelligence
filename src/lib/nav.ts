@@ -36,6 +36,7 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Reports", href: "/reports" });
+    items.push({ label: "Cost to Serve", href: "/reports/cogs" });
   }
   if (can(ctx, "canViewAI")) {
     items.push({ label: "AI", href: "/ai" });

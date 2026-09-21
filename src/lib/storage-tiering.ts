@@ -344,7 +344,9 @@ export async function summarizeStorageByTier(organizationId: string) {
     byTier[tier] = { objects: 0, bytes: 0 };
   }
   for (const row of grouped) {
-    byTier[row.currentTier] = { objects: row._count._all, bytes: row._sum.sizeBytes ?? 0 };
+    // Prisma returns a BigInt sum for a BigInt column; Number is exact to
+    // 2^53 bytes (~9 PB), far past any figure this will ever hold.
+    byTier[row.currentTier] = { objects: row._count._all, bytes: Number(row._sum.sizeBytes ?? 0) };
   }
   // Totals are returned rather than left to the caller so every consumer —
   // the settings screen and the cost report (§49/§50) — agrees on them.

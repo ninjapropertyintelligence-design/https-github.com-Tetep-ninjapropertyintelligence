@@ -91,7 +91,7 @@ export const POST = withApiHandler(async (ctx, req) => {
     organizationId: ctx.organizationId,
     storageKey: evidence.storageKey,
     kind: StorageObjectKind.EVIDENCE,
-    sizeBytes: evidence.sizeBytes,
+    sizeBytes: evidence.sizeBytes === null ? null : Number(evidence.sizeBytes),
     objectCreatedAt: evidence.createdAt,
   });
 

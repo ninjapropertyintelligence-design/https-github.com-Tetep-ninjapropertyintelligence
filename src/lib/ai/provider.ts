@@ -25,9 +25,29 @@ export interface AIToolCallRecord {
   args: unknown;
 }
 
+/**
+ * Token usage for a whole tool loop, summed across every iteration.
+ *
+ * Summing matters: each iteration resends the entire conversation so far, so
+ * a five-step agentic answer costs far more than its last request reports.
+ * Reading usage off the final response alone would undercount badly, and the
+ * undercount grows with exactly the long tool-using conversations that cost
+ * the most.
+ */
+export interface AITokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface AIToolLoopResult {
   answer: string;
   toolCalls: AIToolCallRecord[];
+  /**
+   * Undefined when the provider reported no usage at all. Undefined is not
+   * zero: zero would be metered as a free call, when in truth the cost is
+   * simply unknown. Callers must preserve that distinction.
+   */
+  usage?: AITokenUsage;
 }
 
 export type AIToolExecutor = (name: string, args: Record<string, unknown>) => Promise<unknown>;

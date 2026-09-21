@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
+import { recordUsage } from "@/lib/cost-metering";
 import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
 import { ApiError } from "@/lib/api-error";
 import { getStorageProvider } from "@/lib/storage";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
-import { DroneOutputType, StorageObjectKind } from "@/generated/prisma/client";
+import { DroneOutputType, StorageObjectKind, UsageMetricType } from "@/generated/prisma/client";
 import { logEvent } from "@/lib/observability";
 import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogrammetry-provider";
 
@@ -100,6 +101,17 @@ export async function createDroneDataset(ctx: SessionContext, captureId: string)
   // this is what lets a real PIX4D provider slot in later without
   // redesigning this service.
   await getPhotogrammetryProvider().createJob({ datasetId: dataset.id, captureId: capture.id });
+
+  // Metering (§49). Attributed to the capture's property — this is the
+  // clearest example of a cost that genuinely belongs to one property.
+  await recordUsage({
+    organizationId: ctx.organizationId,
+    propertyId: capture.propertyId,
+    metricType: UsageMetricType.PROCESSING_JOB,
+    quantity: 1,
+    source: "drone-service",
+    metadata: { datasetId: dataset.id, captureId: capture.id },
+  });
   return dataset;
 }
 
@@ -214,7 +226,7 @@ export async function registerDroneImage(
     organizationId: ctx.organizationId,
     storageKey: image.storageKey,
     kind: StorageObjectKind.DRONE_IMAGE,
-    sizeBytes: image.sizeBytes,
+    sizeBytes: image.sizeBytes === null ? null : Number(image.sizeBytes),
     objectCreatedAt: image.createdAt,
   });
 
@@ -263,7 +275,7 @@ export async function registerDroneOutput(
     organizationId: ctx.organizationId,
     storageKey: output.storageKey,
     kind: StorageObjectKind.DRONE_OUTPUT,
-    sizeBytes: output.sizeBytes,
+    sizeBytes: output.sizeBytes === null ? null : Number(output.sizeBytes),
     objectCreatedAt: output.createdAt,
   });
 

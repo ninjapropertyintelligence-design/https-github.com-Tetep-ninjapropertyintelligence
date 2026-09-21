@@ -303,7 +303,7 @@ describe("registerStorageObject", () => {
     const rows = await prisma.storageObject.findMany({ where: { storageKey: "k-dup" } });
     expect(rows).toHaveLength(1);
     expect(rows[0].currentTier).toBe(StorageTier.ARCHIVE);
-    expect(rows[0].sizeBytes).toBe(2_000_000);
+    expect(Number(rows[0].sizeBytes)).toBe(2_000_000);
   });
 });
 

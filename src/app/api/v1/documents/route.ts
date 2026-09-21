@@ -98,7 +98,7 @@ export const POST = withApiHandler(async (ctx, req) => {
       organizationId: ctx.organizationId,
       storageKey: version.storageKey,
       kind: StorageObjectKind.DOCUMENT_VERSION,
-      sizeBytes: version.sizeBytes,
+      sizeBytes: Number(version.sizeBytes),
       objectCreatedAt: version.uploadedAt,
     });
   }

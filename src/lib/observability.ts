@@ -20,6 +20,7 @@ export type ObservabilityEvent =
    */
   | "drone.upload.checksum_unverified"
   | "storage.register_failed"
+  | "usage.record_failed"
   | "drone.processing_job"
   | "geocoding.request"
   | "ai.tool_call"

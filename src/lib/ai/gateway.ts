@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { getAIProvider } from "@/lib/ai/provider-factory";
 import { AIProviderNotConfiguredError, AIToolDefinition } from "@/lib/ai/provider";
 import { logEvent } from "@/lib/observability";
+import { recordUsage } from "@/lib/cost-metering";
+import { UsageMetricType } from "@/generated/prisma/client";
 
 const SYSTEM_PROMPT = `You are Property AI, embedded in a commercial real estate intelligence platform.
 
@@ -186,6 +188,36 @@ export async function askPropertyAI(
     const loopResult = await provider.runToolLoop({ system, userMessage, tools, executeTool });
     answer = loopResult.answer || "I wasn't able to produce an answer from the available data.";
     logEvent("ai.provider_call", { ok: true, organizationId: ctx.organizationId, provider: provider.name, durationMs: Date.now() - startedAt });
+
+    // Metering (§49). The request is always metered; tokens only when the
+    // provider actually reported them. Recording zero tokens for a provider
+    // that reports none would meter a real call as free.
+    await recordUsage({
+      organizationId: ctx.organizationId,
+      propertyId: verifiedPropertyId ?? null,
+      metricType: UsageMetricType.AI_REQUEST,
+      quantity: 1,
+      source: "ai-gateway",
+      metadata: { provider: provider.name },
+    });
+    if (loopResult.usage) {
+      await recordUsage({
+        organizationId: ctx.organizationId,
+        propertyId: verifiedPropertyId ?? null,
+        metricType: UsageMetricType.AI_INPUT_TOKENS,
+        quantity: loopResult.usage.inputTokens,
+        source: "ai-gateway",
+        metadata: { provider: provider.name },
+      });
+      await recordUsage({
+        organizationId: ctx.organizationId,
+        propertyId: verifiedPropertyId ?? null,
+        metricType: UsageMetricType.AI_OUTPUT_TOKENS,
+        quantity: loopResult.usage.outputTokens,
+        source: "ai-gateway",
+        metadata: { provider: provider.name },
+      });
+    }
   } catch (err) {
     if (err instanceof AIProviderNotConfiguredError) {
       // Honest degradation (spec §28): never fake an AI response.

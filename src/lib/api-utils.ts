@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { normalizeBigInts } from "@/lib/json-safe";
 import { ZodError } from "zod";
 import {
   NoOrganizationError,
@@ -130,6 +131,10 @@ export function withApiHandler<T, Extra = unknown>(
       } else {
         envelope = { data: result, error: null, meta: {} };
       }
+
+      // Before the envelope reaches either JSON.stringify or the idempotency
+      // store, both of which throw on a BigInt.
+      envelope = normalizeBigInts(envelope) as ApiEnvelope<unknown>;
 
       if (idempotencyRecordId) {
         await completeIdempotentRequest(idempotencyRecordId, { status, body: envelope });

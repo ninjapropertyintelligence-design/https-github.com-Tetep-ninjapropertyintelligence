@@ -1,6 +1,12 @@
 import { PrismaClient } from "@/generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
+import { installBigIntJson } from "@/lib/json-safe";
+
+// Installed here because this module is imported by every path that can
+// produce a BigInt — they come out of Prisma — so the guard cannot be
+// bypassed by a route that forgets it.
+installBigIntJson();
 // Standard Next.js dev-mode singleton to avoid exhausting DB connections
 // across hot reloads. Uses the Prisma 7 driver-adapter API (node-postgres).
 const globalForPrisma = globalThis as unknown as {

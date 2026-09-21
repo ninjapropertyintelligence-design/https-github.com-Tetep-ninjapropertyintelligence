@@ -244,13 +244,31 @@ enum SubscriptionComponentType {
   PREMIUM_INTEGRATION
 }
 
+/**
+ * What is being metered (spec §49).
+ *
+ * Storage is split per tier because the tiers are priced roughly an order of
+ * magnitude apart — billing a deep-archived gigabyte at the standard rate
+ * would overstate cost by ~20x, which is the whole point of having tiered it.
+ *
+ * AI is split into requests and tokens because both cost money on different
+ * axes, and a provider that reports no token usage can still be metered
+ * honestly as a request rather than recorded as zero tokens (i.e. as free).
+ */
 enum UsageMetricType {
-  STORAGE_GB
+  STORAGE_STANDARD_GB_MONTH
+  STORAGE_IA_GB_MONTH
+  STORAGE_ARCHIVE_GB_MONTH
+  STORAGE_DEEP_ARCHIVE_GB_MONTH
   BANDWIDTH_GB
   PROCESSING_JOB
   AI_REQUEST
-  AI_TOKENS
+  AI_INPUT_TOKENS
+  AI_OUTPUT_TOKENS
   MATTERPORT_ALLOCATION
+  GEOCODING_REQUEST
+  DOCUMENT_INDEX_JOB
+  REPORT_GENERATION
   DB_USAGE
 }
 
@@ -455,6 +473,7 @@ model Organization {
   matterportConnection MatterportConnection?
   subscription         OrganizationSubscription?
   usageRecords         UsageRecord[]
+  costRates            CostRate[]
   onboardingProgress   OnboardingProgress?
   importJobs           ImportJob[]
   savedViews           SavedView[]
@@ -553,6 +572,7 @@ model Property {
   exteriorMarkers ExteriorMarker[]
   documentChunks  DocumentChunk[]
   legalHolds      LegalHold[]
+  usageRecords    UsageRecord[]
 
   @@unique([organizationId, customerPropertyId])
   @@index([organizationId])
@@ -935,7 +955,8 @@ model Evidence {
   storageKey   String
   thumbnailKey String?
   mimeType     String?
-  sizeBytes    Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes    BigInt?
   metadata     Json    @default("{}")
 
   createdAt DateTime @default(now())
@@ -1001,7 +1022,8 @@ model DocumentVersion {
   versionNumber    Int
   originalFilename String
   mimeType         String
-  sizeBytes        Int
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes        BigInt
   storageKey       String
   thumbnailKey     String?
   uploadedById     String
@@ -1158,7 +1180,8 @@ model DroneImage {
   storageKey   String
   thumbnailKey String?
   mimeType     String?
-  sizeBytes    Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes    BigInt?
   checksum     String? // sha256 of the uploaded bytes, verified against client-reported value
   latitude     Float?
   longitude    Float?
@@ -1194,7 +1217,8 @@ model DroneOutput {
   outputType DroneOutputType
   storageKey String
   mimeType   String?
-  sizeBytes  Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes  BigInt?
   checksum   String?
   metadata   Json            @default("{}")
   createdAt  DateTime        @default(now())
@@ -1639,18 +1663,70 @@ model SubscriptionItem {
   @@index([subscriptionId])
 }
 
+/**
+ * One metered unit of consumption (spec §49).
+ *
+ * Deliberately stores QUANTITY ONLY, never a cost. Cost is derived at report
+ * time from the CostRate that was in effect at `recordedAt`. Denormalising a
+ * cost here would freeze every historical row against whatever rate happened
+ * to be configured on the day it was written, so correcting a mistyped rate
+ * could never be applied to the periods it corrupted. This is internal
+ * cost-to-serve, not a customer invoice that has to stay frozen once issued.
+ *
+ * `propertyId` is null when the consumption genuinely belongs to no single
+ * property (an org-wide AI question, a platform job). That null is meaningful
+ * and must survive into the report as unattributed overhead rather than being
+ * quietly spread across properties — see summarizePropertyCogs.
+ */
 model UsageRecord {
   id             String          @id @default(cuid())
   organizationId String
   propertyId     String?
   metricType     UsageMetricType
   quantity       Float
+  /** Which subsystem recorded this, for tracing a surprising number back. */
+  source         String?
   recordedAt     DateTime        @default(now())
   metadata       Json            @default("{}")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, metricType, recordedAt])
+  @@index([organizationId, propertyId, recordedAt])
+  @@index([organizationId, recordedAt])
+}
+
+/**
+ * A versioned unit cost (spec §50).
+ *
+ * Rates are versioned by effective window rather than mutated in place: a
+ * report for last month must price last month's usage at last month's rate.
+ * Editing a rate row in place would silently rewrite history.
+ *
+ * `organizationId` null is the platform default; an organization-specific row
+ * overrides it for that organization only.
+ *
+ * Costs are in MICROS (millionths of a currency unit), not cents, because
+ * per-token AI costs are several orders of magnitude below a cent — at cent
+ * precision every token rounds to zero and the entire AI line reads as free.
+ */
+model CostRate {
+  id             String          @id @default(cuid())
+  organizationId String?
+  metricType     UsageMetricType
+  unitCostMicros Int
+  currency       String          @default("USD")
+  effectiveFrom  DateTime
+  /** Null means "still in effect". */
+  effectiveTo    DateTime?
+  note           String?
+  createdAt      DateTime        @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, metricType, effectiveFrom])
+  @@index([metricType, effectiveFrom])
 }
 
 // ---------------------------------------------------------------------------
@@ -1804,7 +1880,8 @@ model StorageObject {
   organizationId String
   storageKey     String
   kind           StorageObjectKind
-  sizeBytes      Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes      BigInt?
 
   currentTier        StorageTier @default(STANDARD)
   // When the underlying object was created, which is what age is measured
