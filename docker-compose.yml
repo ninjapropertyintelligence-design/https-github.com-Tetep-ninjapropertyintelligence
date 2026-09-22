@@ -1,0 +1,51 @@
+# One-command local demo:  docker compose up
+#
+# Brings up PostGIS-enabled Postgres and the app, applies every migration,
+# seeds the demo organization, and serves on http://localhost:3000.
+services:
+  db:
+    # postgis/postgis, NOT plain postgres: the §11 spatial migration runs
+    # CREATE EXTENSION postgis and fails partway on a stock image, leaving a
+    # half-applied schema.
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: property_intel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/property_intel?schema=public
+      # Demo-only secret. Production values live in the host's environment.
+      NEXTAUTH_SECRET: local-demo-only-not-a-real-secret-change-me
+      NEXTAUTH_URL: http://localhost:3000
+      AUTH_TRUST_HOST: "true"
+      # Writes to a container-local directory. Fine for a demo; a real
+      # deployment must use s3, because serverless filesystems are ephemeral.
+      STORAGE_PROVIDER: local
+      AI_PROVIDER: none
+    ports:
+      - "3000:3000"
+    volumes:
+      # Live source, but keep the image's node_modules and build output.
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  pgdata:

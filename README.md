@@ -42,6 +42,24 @@ full platform specification, migrations, known risks, and next workstreams.
   Supabase, RDS and most managed Postgres offerings already have it available;
   the migration enables it for you.
 
+### Fastest path: Docker
+
+If you have Docker, this brings up PostGIS, applies every migration, seeds the
+demo organization and serves the app:
+
+```bash
+docker compose up
+# then open http://localhost:3000 and log in as owner@demo.com / password123
+```
+
+It uses the `postgis/postgis` image rather than plain `postgres`, because the
+spatial migration enables the PostGIS extension and fails partway on a stock
+image. `docker compose down -v` removes the database volume and starts clean.
+
+Caveat: this compose file has been syntax-checked but not executed end to end —
+the environment it was written in has no Docker daemon. If it misbehaves, the
+manual setup below is the well-trodden path.
+
 ### Setup
 
 ```bash
