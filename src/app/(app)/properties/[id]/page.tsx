@@ -17,6 +17,7 @@ import { DocumentSearchBox } from "@/components/property/DocumentSearchBox";
 import { AskAiInline } from "@/components/ai/AskAiInline";
 import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
 import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
+import { recordProductEvent } from "@/lib/analytics";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -38,6 +39,12 @@ export default async function PropertyDetailPage({
 
   const property = await loadProperty(id, ctx);
   if (!property) notFound();
+
+  // Product analytics (§105). After the scope check: a blocked request is
+  // not a property view, and recording one would inflate adoption with
+  // access failures. Awaited but never able to throw, and flagged
+  // automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "property.viewed");
 
   const health = await getLatestHealthSnapshot(property.id);
 

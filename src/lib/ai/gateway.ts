@@ -5,6 +5,7 @@ import { getAIProvider } from "@/lib/ai/provider-factory";
 import { AIProviderNotConfiguredError, AIToolDefinition } from "@/lib/ai/provider";
 import { logEvent } from "@/lib/observability";
 import { recordUsage } from "@/lib/cost-metering";
+import { recordProductEvent } from "@/lib/analytics";
 import { UsageMetricType } from "@/generated/prisma/client";
 
 const SYSTEM_PROMPT = `You are Property AI, embedded in a commercial real estate intelligence platform.
@@ -188,6 +189,11 @@ export async function askPropertyAI(
     const loopResult = await provider.runToolLoop({ system, userMessage, tools, executeTool });
     answer = loopResult.answer || "I wasn't able to produce an answer from the available data.";
     logEvent("ai.provider_call", { ok: true, organizationId: ctx.organizationId, provider: provider.name, durationMs: Date.now() - startedAt });
+
+    // Product analytics (§105). Only on the success path: a question that
+    // hit an unconfigured provider and got the honest "not configured"
+    // answer is not AI adoption.
+    await recordProductEvent(ctx, "ai.question_asked");
 
     // Metering (§49). The request is always metered; tokens only when the
     // provider actually reported them. Recording zero tokens for a provider

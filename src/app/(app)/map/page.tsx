@@ -5,12 +5,20 @@ import { getLatestHealthSnapshots } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PortfolioMap } from "@/components/map/PortfolioMap";
+import { recordProductEvent } from "@/lib/analytics";
 
 export default async function MapPage() {
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
 
   const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+
+  // Product analytics (§105). `configured` records whether the map could
+  // actually render: without a Mapbox token the page degrades to a list, and
+  // counting that as map adoption would report a feature as popular in an
+  // environment where it does not work. Awaited but never able to throw, and
+  // flagged automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "map.viewed", { configured: !!token });
 
   const properties = await prisma.property.findMany({
     where: { AND: [propertyScopeWhere(ctx), { latitude: { not: null } }, { longitude: { not: null } }] },

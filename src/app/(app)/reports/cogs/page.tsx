@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { can, getSessionContext } from "@/lib/session-context";
 import { summarizePropertyCogs } from "@/lib/cost-metering";
 import { CogsReport } from "@/components/reports/CogsReport";
+import { recordProductEvent } from "@/lib/analytics";
 
 /**
  * Property-level cost of goods sold (spec §49/§50).
@@ -15,6 +16,9 @@ export default async function CogsPage() {
   if (!ctx) redirect("/login");
   if (!ctx.organizationId || !can(ctx, "canViewFinancialExposure")) redirect("/dashboard");
 
+  // Product analytics (§105). Awaited but never able to throw, and
+  // flagged automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "cogs.viewed");
   const periodEnd = new Date();
   const periodStart = new Date(periodEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
   const report = await summarizePropertyCogs(ctx.organizationId, periodStart, periodEnd);

@@ -55,6 +55,7 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canViewAuditLogs")) {
     items.push({ label: "Retention", href: "/settings/retention" });
     items.push({ label: "Storage", href: "/settings/storage" });
+    items.push({ label: "Product Usage", href: "/settings/usage" });
   }
   if (ctx.isPlatformAdmin) {
     items.push({ label: "Platform Admin", href: "/admin" });

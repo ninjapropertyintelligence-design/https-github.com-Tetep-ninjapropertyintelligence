@@ -8,6 +8,7 @@ import { Card, CardBody } from "@/components/ui/Card";
 import { HealthBandBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { formatCents } from "@/lib/format";
+import { recordProductEvent } from "@/lib/analytics";
 
 const BANDS = ["Excellent", "Good", "Needs Attention", "Poor", "Critical"];
 
@@ -19,6 +20,9 @@ export default async function PropertiesPage({
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
 
+  // Product analytics (§105). Awaited but never able to throw, and
+  // flagged automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "portfolio.viewed");
   const params = await searchParams;
 
   const properties = await prisma.property.findMany({

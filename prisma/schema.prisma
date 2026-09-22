@@ -332,6 +332,7 @@ model User {
   memberships            Membership[]
   auditLogs              AuditLog[]              @relation("AuditActor")
   events                 Event[]                 @relation("EventActor")
+  productEvents          ProductEvent[]          @relation("ProductEventActor")
   notifications          Notification[]
   savedViews             SavedView[]
   assignedIssues         Issue[]                 @relation("IssueAssignee")
@@ -474,6 +475,7 @@ model Organization {
   subscription         OrganizationSubscription?
   usageRecords         UsageRecord[]
   costRates            CostRate[]
+  productEvents        ProductEvent[]
   onboardingProgress   OnboardingProgress?
   importJobs           ImportJob[]
   savedViews           SavedView[]
@@ -1727,6 +1729,58 @@ model CostRate {
 
   @@index([organizationId, metricType, effectiveFrom])
   @@index([metricType, effectiveFrom])
+}
+
+// ---------------------------------------------------------------------------
+// Product analytics (spec §105)
+// ---------------------------------------------------------------------------
+
+/**
+ * A product-usage event: someone used a feature.
+ *
+ * THIS IS A THIRD THING, deliberately separate from the two event streams
+ * that already exist, because conflating them breaks all three:
+ *
+ *  - `Event` records business facts about the portfolio ("issue.created").
+ *    It is domain data a customer can act on, and it is not emitted when
+ *    someone merely *looks* at something — which is most of what product
+ *    analytics is about.
+ *  - `AuditLog` is a compliance record of sensitive actions, with IP
+ *    addresses. It answers "who did this" under scrutiny. Product analytics
+ *    is high-volume and disposable; letting it share that table would drown
+ *    the audit trail and force one retention policy onto two things that
+ *    need different ones.
+ *
+ * `impersonated` is the field that keeps these numbers honest. Platform
+ * support can view a customer's account (§45), and while impersonating,
+ * `ctx.organizationId` is the CUSTOMER's — so without this flag our own
+ * staff's clicks would be indistinguishable from customer engagement and
+ * would inflate every adoption and active-user figure we report.
+ *
+ * `metadata` is for low-cardinality dimensions only (a step number, a tab
+ * name). No free text and no PII: this table must not quietly become a
+ * second copy of the customer's data with a weaker retention policy.
+ */
+model ProductEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  /** Null for system-triggered activity that no user performed. */
+  userId         String?
+  /** A key from the closed vocabulary in src/lib/analytics.ts, not free text. */
+  feature        String
+  /** True when platform support performed this while impersonating (§45). */
+  impersonated   Boolean  @default(false)
+  role           Role?
+  metadata       Json     @default("{}")
+  occurredAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation("ProductEventActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, occurredAt])
+  @@index([organizationId, feature, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([feature, occurredAt])
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { can, getSessionContext } from "@/lib/session-context";
 import { getTieringPolicy, summarizeStorageByTier } from "@/lib/storage-tiering";
 import { StorageTieringManager } from "@/components/security/StorageTieringManager";
+import { recordProductEvent } from "@/lib/analytics";
 
 /**
  * Storage lifecycle tiering (spec §51). Readable by anyone who can see audit
@@ -14,6 +15,9 @@ export default async function StorageSettingsPage() {
   if (!ctx) redirect("/login");
   if (!ctx.organizationId || !can(ctx, "canViewAuditLogs")) redirect("/dashboard");
 
+  // Product analytics (§105). Awaited but never able to throw, and
+  // flagged automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "storage_settings.viewed");
   const [policy, usage] = await Promise.all([
     getTieringPolicy(ctx.organizationId),
     summarizeStorageByTier(ctx.organizationId),

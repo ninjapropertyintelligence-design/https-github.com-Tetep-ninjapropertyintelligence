@@ -7,6 +7,7 @@ import { FacilitiesActionDashboard } from "@/components/dashboard/FacilitiesActi
 import { FieldWorkDashboard } from "@/components/dashboard/FieldWorkDashboard";
 import { VendorDashboard } from "@/components/dashboard/VendorDashboard";
 import { prisma } from "@/lib/prisma";
+import { recordProductEvent } from "@/lib/analytics";
 
 /**
  * Role-based home routing (spec §2, §46 final requirement): the same login
@@ -22,6 +23,12 @@ export default async function DashboardPage() {
   if (ctx.isPlatformAdmin && !ctx.organizationId) {
     redirect("/admin");
   }
+
+  // Product analytics (§105). After the platform-admin redirect: an admin
+  // with no organization has no organizationId to attribute a view to.
+  // Awaited but never able to throw, and flagged automatically when the
+  // viewer is support impersonating.
+  await recordProductEvent(ctx, "dashboard.viewed");
 
   switch (ctx.role) {
     case "OWNER": {

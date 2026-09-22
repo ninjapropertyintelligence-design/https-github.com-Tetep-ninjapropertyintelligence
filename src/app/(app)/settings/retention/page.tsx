@@ -3,6 +3,7 @@ import { can, getSessionContext, propertyScopeWhere } from "@/lib/session-contex
 import { prisma } from "@/lib/prisma";
 import { getRetentionPolicy, listDeletionRequests, listLegalHolds } from "@/lib/retention";
 import { RetentionManager } from "@/components/security/RetentionManager";
+import { recordProductEvent } from "@/lib/analytics";
 
 /**
  * Data retention and deletion (spec §52/§54). Gated on canViewAuditLogs to
@@ -14,6 +15,9 @@ export default async function RetentionSettingsPage() {
   if (!ctx) redirect("/login");
   if (!ctx.organizationId || !can(ctx, "canViewAuditLogs")) redirect("/dashboard");
 
+  // Product analytics (§105). Awaited but never able to throw, and
+  // flagged automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "retention_settings.viewed");
   const [policy, legalHolds, deletionRequests, properties] = await Promise.all([
     getRetentionPolicy(ctx.organizationId),
     listLegalHolds(ctx),
