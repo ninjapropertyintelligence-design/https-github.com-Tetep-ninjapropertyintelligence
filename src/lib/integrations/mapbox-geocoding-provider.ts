@@ -10,7 +10,7 @@ import { withObservability } from "@/lib/observability";
 
 /**
  * Mapbox forward geocoding (Geocoding API v6). Mapbox is already this
- * project's map vendor (`PortfolioMap`, `NEXT_PUBLIC_MAPBOX_TOKEN`) and is
+ * project's map vendor (`ExploreMap`, `NEXT_PUBLIC_MAPBOX_TOKEN`) and is
  * the vendor the spec names in §11/§83 — reusing it here avoids taking on a
  * second mapping vendor for the same capability.
  *
