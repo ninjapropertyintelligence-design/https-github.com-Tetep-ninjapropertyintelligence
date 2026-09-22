@@ -321,3 +321,118 @@ describe("the fake store genuinely enforces signatures", () => {
     expect(rejections.some((r) => r.reason === "expired")).toBe(true);
   });
 });
+
+/**
+ * Supabase Storage does not serve S3 at the root of its host — the endpoint is
+ * `https://<ref>.storage.supabase.co/storage/v1/s3`, so every canonical URI
+ * carries that prefix before the bucket.
+ *
+ * A unit test already pins the canonical string for that shape, but a string
+ * assertion cannot show that a real signed request verifies. These drive the
+ * same independent verifier as the suite above, with the store mounted under
+ * the prefix, so a base-path handling bug fails here rather than as an opaque
+ * 403 from Supabase in production.
+ */
+describe("an endpoint served under a path prefix (Supabase Storage)", () => {
+  const PREFIX = "/storage/v1/s3";
+  let prefixedServer: http.Server;
+  let prefixedBase: string;
+
+  beforeAll(async () => {
+    prefixedServer = http.createServer((req, res) => {
+      const host = req.headers.host ?? "";
+      const url = new URL(req.url ?? "/", `http://${host}`);
+
+      // The prefix is part of what was signed; strip it only to locate the
+      // object, never before verifying.
+      const failure = independentlyVerifySignature(req.method ?? "GET", url, host);
+      if (failure) {
+        rejections.push({ reason: failure, url: url.toString() });
+        res.writeHead(403).end(failure);
+        return;
+      }
+      if (!url.pathname.startsWith(`${PREFIX}/`)) {
+        res.writeHead(404).end("not under the expected prefix");
+        return;
+      }
+      const after = url.pathname.slice(PREFIX.length + 1);
+      const [bucket, ...rest] = after.split("/");
+      if (bucket !== BUCKET) {
+        res.writeHead(404).end("wrong bucket");
+        return;
+      }
+      const key = decodeURIComponent(rest.join("/"));
+
+      if (req.method === "PUT") {
+        const chunks: Buffer[] = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          const body = Buffer.concat(chunks);
+          objects.set(key, {
+            body,
+            sha256Base64: crypto.createHash("sha256").update(body).digest("base64"),
+          });
+          res.writeHead(200).end();
+        });
+        return;
+      }
+      const found = objects.get(key);
+      if (!found) {
+        res.writeHead(404).end("no such key");
+        return;
+      }
+      res.writeHead(200, { "content-length": String(found.body.length) }).end(found.body);
+    });
+
+    await new Promise<void>((resolve) => prefixedServer.listen(0, "127.0.0.1", resolve));
+    const { port } = prefixedServer.address() as AddressInfo;
+    prefixedBase = `http://127.0.0.1:${port}${PREFIX}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => prefixedServer.close(() => resolve()));
+  });
+
+  async function signed(method: "GET" | "PUT", key: string) {
+    const { presignS3Url } = await import("@/lib/s3-signer");
+    return presignS3Url(
+      {
+        accessKeyId: ACCESS_KEY,
+        secretAccessKey: SECRET_KEY,
+        region: REGION,
+        endpoint: prefixedBase,
+        bucket: BUCKET,
+        forcePathStyle: true,
+      },
+      { method, key, expiresInSeconds: 300 },
+    ).url;
+  }
+
+  it("puts the prefix before the bucket in the signed path", async () => {
+    const url = new URL(await signed("GET", "org-1/roof.tif"));
+    expect(url.pathname).toBe(`${PREFIX}/${BUCKET}/org-1/roof.tif`);
+  });
+
+  it("round-trips an upload and download that the verifier accepts", async () => {
+    const before = rejections.length;
+    const body = Buffer.from("orthomosaic bytes");
+
+    const put = await fetch(await signed("PUT", "org-1/roof.tif"), { method: "PUT", body });
+    expect(put.status).toBe(200);
+
+    const get = await fetch(await signed("GET", "org-1/roof.tif"));
+    expect(get.status).toBe(200);
+    expect(Buffer.from(await get.arrayBuffer()).equals(body)).toBe(true);
+
+    // Nothing was rejected along the way — the signature covered the prefix.
+    expect(rejections.length).toBe(before);
+  });
+
+  it("still rejects a request whose path is altered after signing", async () => {
+    // Proves the prefixed verifier is enforcing, not merely permissive.
+    const url = new URL(await signed("GET", "org-1/roof.tif"));
+    url.pathname = `${PREFIX}/${BUCKET}/org-2/secret.tif`;
+    const res = await fetch(url.toString());
+    expect(res.status).toBe(403);
+  });
+});
