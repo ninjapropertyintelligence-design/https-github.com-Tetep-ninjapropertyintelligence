@@ -1,10 +1,9 @@
 import crypto from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
 import { recalculatePropertyHealth } from "../src/lib/scoring";
 import { DEFAULT_CATEGORY_WEIGHTS } from "../src/lib/scoring-categories";
+import { getStorageProvider } from "../src/lib/storage";
 
 // A tiny (43-byte) but fully valid 1x1 JPEG — real bytes on real disk, not a
 // fake placeholder string, so verifyUpload()/checksum logic behaves exactly
@@ -29,7 +28,7 @@ async function main() {
   const flags: Array<{ key: string; description: string; defaultEnabled: boolean }> = [
     { key: "matterport", description: "Matterport interior capture integration", defaultEnabled: true },
     { key: "drone_processing", description: "Drone/photogrammetry capture + processing", defaultEnabled: true },
-    { key: "point_cloud", description: "Point cloud / mesh 3D viewer", defaultEnabled: false },
+    { key: "point_cloud", description: "Point cloud / mesh 3D viewer", defaultEnabled: true },
     { key: "offline_mobile", description: "Offline-capable field app", defaultEnabled: false },
     { key: "owner_ai", description: "Executive/Owner AI ('Ask My Portfolio')", defaultEnabled: true },
     { key: "portfolio_ai", description: "Portfolio-wide AI across dashboards", defaultEnabled: true },
@@ -469,7 +468,14 @@ async function main() {
   await recalculatePropertyHealth(pilot.id);
 
   console.log("Seeding a real drone exterior capture for the pilot property...");
-  const localStorageRoot = path.join(process.cwd(), ".local-storage");
+  // Seeded capture files go through the configured StorageProvider, not
+  // straight to disk. Writing with fs here worked locally by accident —
+  // the seed and the app shared a filesystem — but when the seed runs from
+  // a build container (STORAGE_PROVIDER=s3) those bytes land on a disk that
+  // is discarded, leaving DroneImage/DroneOutput rows whose files 404. All
+  // three files below are tiny, which is what makes writeBytes appropriate;
+  // real capture uploads still use signed direct upload (spec §36).
+  const storage = getStorageProvider();
   let capture = await prisma.droneCapture.findFirst({ where: { propertyId: pilot.id } });
   if (!capture) {
     capture = await prisma.droneCapture.create({
@@ -499,9 +505,7 @@ async function main() {
     ];
     for (const spec of photoSpecs) {
       const key = `${org.id}/${crypto.randomUUID()}-${spec.label}`;
-      const filePath = path.join(localStorageRoot, key);
-      await mkdir(path.dirname(filePath), { recursive: true });
-      await writeFile(filePath, MINIMAL_JPEG);
+      await storage.writeBytes(key, MINIMAL_JPEG);
       await prisma.droneImage.create({
         data: {
           datasetId: dataset.id,
@@ -515,7 +519,7 @@ async function main() {
         },
       });
     }
-    console.log(`  Wrote ${photoSpecs.length} real JPEG file(s) under .local-storage/${org.id}/`);
+    console.log(`  Wrote ${photoSpecs.length} real JPEG file(s) via ${storage.constructor.name} under ${org.id}/`);
   }
 
   // A real, valid ASCII PLY mesh (tetrahedron) and a real XYZ point cloud
@@ -545,8 +549,7 @@ async function main() {
     ].join("\n");
     const plyBuffer = Buffer.from(plyMesh, "utf-8");
     const plyKey = `${org.id}/${crypto.randomUUID()}-roof-mesh.ply`;
-    await mkdir(path.dirname(path.join(localStorageRoot, plyKey)), { recursive: true });
-    await writeFile(path.join(localStorageRoot, plyKey), plyBuffer);
+    await storage.writeBytes(plyKey, plyBuffer);
     await prisma.droneOutput.create({
       data: {
         datasetId: dataset.id,
@@ -558,7 +561,7 @@ async function main() {
         metadata: { source: "seed", format: "ply" },
       },
     });
-    console.log(`  Wrote 1 real PLY mesh under .local-storage/${org.id}/`);
+    console.log(`  Wrote 1 real PLY mesh via ${storage.constructor.name} under ${org.id}/`);
   }
 
   const existingPointCloud = await prisma.droneOutput.findFirst({ where: { datasetId: dataset.id, outputType: "POINT_CLOUD" } });
@@ -573,8 +576,7 @@ async function main() {
     }
     const xyzBuffer = Buffer.from(xyzLines.join("\n") + "\n", "utf-8");
     const xyzKey = `${org.id}/${crypto.randomUUID()}-roof-point-cloud.xyz`;
-    await mkdir(path.dirname(path.join(localStorageRoot, xyzKey)), { recursive: true });
-    await writeFile(path.join(localStorageRoot, xyzKey), xyzBuffer);
+    await storage.writeBytes(xyzKey, xyzBuffer);
     await prisma.droneOutput.create({
       data: {
         datasetId: dataset.id,
@@ -586,7 +588,7 @@ async function main() {
         metadata: { source: "seed", format: "xyz", pointCount: xyzLines.length },
       },
     });
-    console.log(`  Wrote 1 real XYZ point cloud under .local-storage/${org.id}/`);
+    console.log(`  Wrote 1 real XYZ point cloud via ${storage.constructor.name} under ${org.id}/`);
   }
 
   // A completed processing job for the dataset above. Without one, the
