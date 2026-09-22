@@ -1,0 +1,56 @@
+/**
+ * Applies pending Prisma migrations during a Vercel build, but ONLY when
+ * explicitly opted in.
+ *
+ * Why this exists: the environment this repo is developed in cannot open a
+ * TCP connection to the database (its egress allows HTTPS only), so
+ * `prisma migrate deploy` cannot be run from a developer session against a
+ * hosted Postgres. The build environment can reach it, so that is where
+ * migrations run.
+ *
+ * Why it is opt-in rather than unconditional: a migration step that runs on
+ * every build runs on every PREVIEW build too, each of which would migrate
+ * whatever database its environment variables happen to point at. Requiring
+ * RUN_MIGRATIONS=1 means schema changes are applied deliberately, by someone
+ * who set that variable, and never as a side effect of pushing a branch.
+ *
+ * Two separate URLs on purpose: migrations use MIGRATION_DATABASE_URL, which
+ * must be a SESSION-mode connection (port 5432). Prisma takes a Postgres
+ * advisory lock for the duration of a migration, and transaction-mode
+ * pooling (port 6543) hands out a different backend per statement, so the
+ * lock cannot be held. The app's own DATABASE_URL stays on the pooler.
+ */
+import { execFileSync } from "node:child_process";
+
+const optedIn = process.env.RUN_MIGRATIONS === "1";
+const url = process.env.MIGRATION_DATABASE_URL;
+
+if (!optedIn) {
+  console.log("[migrate-on-build] RUN_MIGRATIONS is not 1 — skipping migrations.");
+  process.exit(0);
+}
+
+if (!url) {
+  // Opted in but unusable: fail loudly rather than build an app whose schema
+  // silently does not match its code.
+  console.error(
+    "[migrate-on-build] RUN_MIGRATIONS=1 but MIGRATION_DATABASE_URL is not set.",
+  );
+  process.exit(1);
+}
+
+console.log("[migrate-on-build] Applying migrations (session-mode connection)...");
+try {
+  execFileSync("npx", ["prisma", "migrate", "deploy"], {
+    stdio: "inherit",
+    // Prisma reads DATABASE_URL; point it at the session-mode URL for the
+    // duration of this one command without disturbing the runtime value.
+    env: { ...process.env, DATABASE_URL: url },
+  });
+  console.log("[migrate-on-build] Migrations applied.");
+} catch {
+  // Never mask a migration failure — a green build on an unmigrated database
+  // is the worst possible outcome.
+  console.error("[migrate-on-build] Migration failed; failing the build.");
+  process.exit(1);
+}
