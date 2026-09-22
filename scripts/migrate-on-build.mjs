@@ -54,3 +54,30 @@ try {
   console.error("[migrate-on-build] Migration failed; failing the build.");
   process.exit(1);
 }
+
+/**
+ * Seeding is a SEPARATE opt-in from migrating.
+ *
+ * Migrations are additive and safe to re-run; the seed writes demo
+ * organizations, users and properties, which is not something anyone should
+ * be able to trigger by pushing a branch. Requiring its own flag means demo
+ * data lands only when someone deliberately asked for it.
+ *
+ * The seed itself is idempotent (it upserts), so a build that runs twice does
+ * not produce two demo organizations.
+ */
+if (process.env.RUN_SEED === "1") {
+  console.log("[migrate-on-build] RUN_SEED=1 — seeding demo data...");
+  try {
+    execFileSync("npx", ["tsx", "prisma/seed.ts"], {
+      stdio: "inherit",
+      env: { ...process.env, DATABASE_URL: url },
+    });
+    console.log("[migrate-on-build] Seed complete.");
+  } catch {
+    console.error("[migrate-on-build] Seed failed; failing the build.");
+    process.exit(1);
+  }
+} else {
+  console.log("[migrate-on-build] RUN_SEED is not 1 — not seeding.");
+}
