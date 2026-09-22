@@ -19,6 +19,10 @@ let org: { id: string };
 let otherOrg: { id: string };
 let user: { id: string };
 let property: { id: string };
+let newerCapture: { id: string };
+let olderCapture: { id: string };
+let undatedCapture: { id: string };
+let foreignCapture2: { id: string };
 let foreignProperty: { id: string };
 let region: { id: string };
 
@@ -92,9 +96,22 @@ beforeAll(async () => {
     ],
   });
 
-  // An older capture: the reported "last capture" must be the newest.
-  await prisma.droneCapture.create({
+  // An older capture with its own, smaller dataset. Switching to it must
+  // change the counts, which is the whole point of the selector.
+  olderCapture = await prisma.droneCapture.create({
     data: { propertyId: property.id, capturedAt: new Date("2025-01-01T00:00:00Z"), capturedById: user.id, status: "READY" },
+  });
+  const olderDataset = await prisma.droneDataset.create({
+    data: { captureId: olderCapture.id, provider: "MANUAL_UPLOAD" },
+  });
+  await prisma.droneImage.create({
+    data: { datasetId: olderDataset.id, storageKey: `${org.id}/old-roof.jpg`, latitude: 32.7769, longitude: -96.7972 },
+  });
+  newerCapture = capture;
+
+  // A capture with NO date: it must never be chosen as "most recent".
+  undatedCapture = await prisma.droneCapture.create({
+    data: { propertyId: property.id, capturedById: user.id, status: "CREATED" },
   });
 
   await prisma.asset.createMany({
@@ -116,6 +133,7 @@ beforeAll(async () => {
   const foreignCapture = await prisma.droneCapture.create({
     data: { propertyId: foreignProperty.id, capturedAt: new Date(), capturedById: user.id, status: "READY" },
   });
+  foreignCapture2 = foreignCapture;
   const foreignDataset = await prisma.droneDataset.create({ data: { captureId: foreignCapture.id, provider: "MANUAL_UPLOAD" } });
   await prisma.droneImage.createMany({
     data: Array.from({ length: 30 }, (_, i) => ({
@@ -220,5 +238,59 @@ describe("getSiteMapData", () => {
     const data = await getSiteMapData(scoped, property.id);
     expect(data.property.id).toBe(property.id);
     expect(layer(data, "drone-photos").count).toBe(3);
+  });
+
+  it("defaults to the newest dated capture", async () => {
+    const data = await getSiteMapData(ctxFor(org.id), property.id);
+    expect(data.selectedCaptureId).toBe(newerCapture.id);
+    expect(data.lastCaptureAt?.toISOString()).toBe("2026-03-04T00:00:00.000Z");
+  });
+
+  it("never selects an undated capture as the most recent", async () => {
+    const data = await getSiteMapData(ctxFor(org.id), property.id);
+    // The undated capture exists and is listed, but NULL must not sort first.
+    expect(data.captures.map((c) => c.id)).toContain(undatedCapture.id);
+    expect(data.selectedCaptureId).not.toBe(undatedCapture.id);
+    expect(data.captures[data.captures.length - 1].id).toBe(undatedCapture.id);
+  });
+
+  it("lists every capture for the property, newest first", async () => {
+    const data = await getSiteMapData(ctxFor(org.id), property.id);
+    expect(data.captures).toHaveLength(3);
+    expect(data.captures[0].id).toBe(newerCapture.id);
+    expect(data.captures[1].id).toBe(olderCapture.id);
+  });
+
+  it("selecting an older capture changes the counts to that capture's media", async () => {
+    const data = await getSiteMapData(ctxFor(org.id), property.id, olderCapture.id);
+    expect(data.selectedCaptureId).toBe(olderCapture.id);
+    expect(data.lastCaptureAt?.toISOString()).toBe("2025-01-01T00:00:00.000Z");
+    // The older flight has one photo and no outputs.
+    expect(layer(data, "drone-photos").count).toBe(1);
+    expect(layer(data, "3d-models").count).toBe(0);
+    expect(layer(data, "point-clouds").count).toBe(0);
+  });
+
+  it("keeps property-level layers unchanged across captures", async () => {
+    const newer = await getSiteMapData(ctxFor(org.id), property.id);
+    const older = await getSiteMapData(ctxFor(org.id), property.id, olderCapture.id);
+    // Assets, issues and evidence belong to the property, not the flight.
+    for (const key of ["assets", "issues", "evidence-photos"]) {
+      expect(layer(older, key).count).toBe(layer(newer, key).count);
+    }
+  });
+
+  it("ignores a capture id belonging to another organization", async () => {
+    // The id is real and readable by its owner. Passing it here must not
+    // reach that organization's imagery — it falls back to this property's
+    // newest capture instead.
+    const data = await getSiteMapData(ctxFor(org.id), property.id, foreignCapture2.id);
+    expect(data.selectedCaptureId).toBe(newerCapture.id);
+    expect(layer(data, "drone-photos").count).toBe(3);
+  });
+
+  it("ignores a capture id that does not exist", async () => {
+    const data = await getSiteMapData(ctxFor(org.id), property.id, "not-a-real-capture");
+    expect(data.selectedCaptureId).toBe(newerCapture.id);
   });
 });

@@ -2,8 +2,17 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { SiteLayer, SiteMarker } from "@/lib/site-map";
+
+/** Serialised across the server/client boundary — a Date does not survive it. */
+export interface SiteCaptureOption {
+  id: string;
+  capturedAt: string | null;
+  droneModel: string | null;
+  status: string;
+}
 
 export interface SiteMapProps {
   token: string | null;
@@ -20,6 +29,8 @@ export interface SiteMapProps {
   };
   /** ISO string — a Date cannot cross the server/client boundary as one. */
   lastCaptureAt: string | null;
+  captures: SiteCaptureOption[];
+  selectedCaptureId: string | null;
   totalMedia: number;
   layers: SiteLayer[];
 }
@@ -29,7 +40,27 @@ function formatCaptureDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
-export function SiteMap({ token, property, lastCaptureAt, totalMedia, layers }: SiteMapProps) {
+/** Label for one option in the capture selector. */
+function captureLabel(capture: SiteCaptureOption, isNewest: boolean): string {
+  const date = capture.capturedAt
+    ? new Date(capture.capturedAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+    : "Date not recorded";
+  const parts = [date];
+  if (isNewest) parts.push("(most recent)");
+  if (capture.status !== "READY") parts.push(`- ${capture.status.toLowerCase()}`);
+  return parts.join(" ");
+}
+
+export function SiteMap({
+  token,
+  property,
+  lastCaptureAt,
+  captures,
+  selectedCaptureId,
+  totalMedia,
+  layers,
+}: SiteMapProps) {
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("mapbox-gl").Map | null>(null);
   const markersRef = useRef<Map<string, import("mapbox-gl").Marker[]>>(new Map());
@@ -153,6 +184,38 @@ export function SiteMap({ token, property, lastCaptureAt, totalMedia, layers }: 
             </div>
           </div>
         )}
+
+        {/* Floating over the map, top-left — the position the reference
+            product gives its capture-date control. */}
+        {canRenderMap && captures.length > 0 ? (
+          <div className="absolute left-4 top-4 z-10">
+            <label className="flex items-center gap-2 rounded-full bg-surface/95 py-1.5 pl-3 pr-1.5 text-sm shadow-lg backdrop-blur">
+              <svg viewBox="0 0 20 20" className="h-4 w-4 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="3" y="4.5" width="14" height="13" rx="2" />
+                <path d="M3 8.5h14M7 2.5v4M13 2.5v4" strokeLinecap="round" />
+              </svg>
+              <span className="sr-only">Capture date</span>
+              <select
+                value={selectedCaptureId ?? ""}
+                onChange={(e) => {
+                  // The selection lives in the URL so it survives a reload and
+                  // can be linked to. The server re-scopes it to this property.
+                  const params = new URLSearchParams(window.location.search);
+                  params.set("tab", "site-map");
+                  params.set("capture", e.target.value);
+                  router.push(`/properties/${property.id}?${params.toString()}`);
+                }}
+                className="rounded-full bg-transparent py-1 pl-1 pr-2 text-sm font-medium text-foreground outline-none"
+              >
+                {captures.map((capture, index) => (
+                  <option key={capture.id} value={capture.id}>
+                    {captureLabel(capture, index === 0)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : null}
       </div>
 
       <aside className="flex w-[380px] shrink-0 flex-col overflow-y-auto border-l border-border bg-surface">
@@ -250,7 +313,12 @@ export function SiteMap({ token, property, lastCaptureAt, totalMedia, layers }: 
             })}
           </div>
 
-          <p className="mt-4 border-t border-border pt-3 text-xs leading-relaxed text-muted">
+          <p className="mt-4 space-y-2 border-t border-border pt-3 text-xs leading-relaxed text-muted">
+            Drone photos, 3D models, point clouds and orthomosaics are counted for the selected capture. Evidence,
+            assets, issues, assessments and documents belong to the property rather than to a flight, so they do not
+            change when you switch capture dates.
+          </p>
+          <p className="mt-2 text-xs leading-relaxed text-muted">
             Only drone photos and evidence photos carry coordinates in this schema, so only those can be placed on the
             map. Everything else is counted here and opens in its own tab.
           </p>

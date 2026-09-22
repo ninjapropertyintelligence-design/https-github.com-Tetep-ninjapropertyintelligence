@@ -32,13 +32,13 @@ export default async function PropertyDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; capture?: string }>;
 }) {
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
 
   const { id } = await params;
-  const { tab = "overview" } = await searchParams;
+  const { tab = "overview", capture } = await searchParams;
 
   const property = await loadProperty(id, ctx);
   if (!property) notFound();
@@ -76,12 +76,24 @@ export default async function PropertyDetailPage({
 
       <PropertyTabs propertyId={property.id} active={tab} />
 
-      <TabContent propertyId={property.id} tab={tab} propertyName={property.name} ctx={ctx} />
+      <TabContent propertyId={property.id} tab={tab} captureId={capture} propertyName={property.name} ctx={ctx} />
     </div>
   );
 }
 
-async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: string; tab: string; propertyName: string; ctx: SessionContext }) {
+async function TabContent({
+  propertyId,
+  tab,
+  captureId,
+  propertyName,
+  ctx,
+}: {
+  propertyId: string;
+  tab: string;
+  captureId?: string;
+  propertyName: string;
+  ctx: SessionContext;
+}) {
   const canViewAI = ctx.permissions.includes("canViewAI");
   switch (tab) {
     case "assets":
@@ -95,7 +107,7 @@ async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: 
     case "history":
       return <HistoryTab propertyId={propertyId} />;
     case "site-map":
-      return <SiteMapTab propertyId={propertyId} ctx={ctx} />;
+      return <SiteMapTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "interior":
       return <InteriorTab propertyId={propertyId} ctx={ctx} />;
     case "exterior":
@@ -330,12 +342,27 @@ async function HistoryTab({ propertyId }: { propertyId: string }) {
   );
 }
 
-async function SiteMapTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const data = await getSiteMapData(ctx, propertyId);
+async function SiteMapTab({
+  propertyId,
+  captureId,
+  ctx,
+}: {
+  propertyId: string;
+  captureId?: string;
+  ctx: SessionContext;
+}) {
+  const data = await getSiteMapData(ctx, propertyId, captureId);
   return (
     <SiteMap
       token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
       property={data.property}
+      captures={data.captures.map((c) => ({
+        id: c.id,
+        capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
+        droneModel: c.droneModel,
+        status: c.status,
+      }))}
+      selectedCaptureId={data.selectedCaptureId}
       // Serialised here: a Date does not survive the server/client boundary
       // as a Date, and formatting on the server would pin the output to the
       // server's locale rather than the viewer's.
