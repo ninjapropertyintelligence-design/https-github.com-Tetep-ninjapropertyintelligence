@@ -28,18 +28,40 @@ full platform specification, migrations, known risks, and next workstreams.
 
 - Node.js 22+
 - PostgreSQL 16 (local or remote)
+- **PostGIS** — required, not optional. The spatial migration runs
+  `CREATE EXTENSION postgis`, so a stock Postgres without it fails partway
+  through `db:deploy` and leaves the schema half-applied.
+
+  ```bash
+  # Debian/Ubuntu
+  sudo apt-get install postgresql-16-postgis-3
+  # macOS (Homebrew)
+  brew install postgis
+  ```
+
+  Supabase, RDS and most managed Postgres offerings already have it available;
+  the migration enables it for you.
 
 ### Setup
 
 ```bash
-npm install
+npm install            # postinstall runs `prisma generate`
 cp .env.example .env   # then fill in DATABASE_URL, NEXTAUTH_SECRET, etc.
 
-npm run db:migrate     # applies prisma/migrations to DATABASE_URL
-npm run db:seed        # feature flags, subscription plans, demo org + users + pilot property
+createdb property_intel          # or point DATABASE_URL at an existing database
+npm run db:deploy                # applies prisma/migrations to DATABASE_URL
+npm run db:seed                  # feature flags, plans, demo org + users + pilot property
 
-npm run dev             # http://localhost:3000
+npm run dev                      # http://localhost:3000
 ```
+
+`db:deploy` (`prisma migrate deploy`) is the right command for simply getting a
+working database: it applies the existing migrations and never prompts. Use
+`db:migrate` (`prisma migrate dev`) only when authoring a new migration — it is
+interactive and will try to generate one.
+
+Running the tests also needs a second database, `DATABASE_URL_TEST`, with the
+same migrations applied.
 
 Demo login (any account, password `password123` — see `prisma/seed.ts` for
 the full list and what each role can see):
