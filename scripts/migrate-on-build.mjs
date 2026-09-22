@@ -22,11 +22,17 @@
  */
 import { execFileSync } from "node:child_process";
 
-const optedIn = process.env.RUN_MIGRATIONS === "1";
+const migrateOptedIn = process.env.RUN_MIGRATIONS === "1";
+const seedOptedIn = process.env.RUN_SEED === "1";
 const url = process.env.MIGRATION_DATABASE_URL;
 
-if (!optedIn) {
-  console.log("[migrate-on-build] RUN_MIGRATIONS is not 1 — skipping migrations.");
+// Each flag is read independently. An earlier version exited the whole
+// script when RUN_MIGRATIONS was not 1, which silently made seeding
+// REQUIRE migrating — the opposite of what the comment below promises, and
+// invisible because the build still went green. RUN_SEED=1 with
+// RUN_MIGRATIONS=0 simply logged nothing and seeded nothing.
+if (!migrateOptedIn && !seedOptedIn) {
+  console.log("[migrate-on-build] RUN_MIGRATIONS and RUN_SEED are both unset — nothing to do.");
   process.exit(0);
 }
 
@@ -34,25 +40,29 @@ if (!url) {
   // Opted in but unusable: fail loudly rather than build an app whose schema
   // silently does not match its code.
   console.error(
-    "[migrate-on-build] RUN_MIGRATIONS=1 but MIGRATION_DATABASE_URL is not set.",
+    "[migrate-on-build] RUN_MIGRATIONS or RUN_SEED is 1 but MIGRATION_DATABASE_URL is not set.",
   );
   process.exit(1);
 }
 
-console.log("[migrate-on-build] Applying migrations (session-mode connection)...");
-try {
-  execFileSync("npx", ["prisma", "migrate", "deploy"], {
-    stdio: "inherit",
-    // Prisma reads DATABASE_URL; point it at the session-mode URL for the
-    // duration of this one command without disturbing the runtime value.
-    env: { ...process.env, DATABASE_URL: url },
-  });
-  console.log("[migrate-on-build] Migrations applied.");
-} catch {
-  // Never mask a migration failure — a green build on an unmigrated database
-  // is the worst possible outcome.
-  console.error("[migrate-on-build] Migration failed; failing the build.");
-  process.exit(1);
+if (migrateOptedIn) {
+  console.log("[migrate-on-build] Applying migrations (session-mode connection)...");
+  try {
+    execFileSync("npx", ["prisma", "migrate", "deploy"], {
+      stdio: "inherit",
+      // Prisma reads DATABASE_URL; point it at the session-mode URL for the
+      // duration of this one command without disturbing the runtime value.
+      env: { ...process.env, DATABASE_URL: url },
+    });
+    console.log("[migrate-on-build] Migrations applied.");
+  } catch {
+    // Never mask a migration failure — a green build on an unmigrated database
+    // is the worst possible outcome.
+    console.error("[migrate-on-build] Migration failed; failing the build.");
+    process.exit(1);
+  }
+} else {
+  console.log("[migrate-on-build] RUN_MIGRATIONS is not 1 — skipping migrations.");
 }
 
 /**
@@ -66,7 +76,7 @@ try {
  * The seed itself is idempotent (it upserts), so a build that runs twice does
  * not produce two demo organizations.
  */
-if (process.env.RUN_SEED === "1") {
+if (seedOptedIn) {
   console.log("[migrate-on-build] RUN_SEED=1 — seeding demo data...");
   try {
     execFileSync("npx", ["tsx", "prisma/seed.ts"], {
