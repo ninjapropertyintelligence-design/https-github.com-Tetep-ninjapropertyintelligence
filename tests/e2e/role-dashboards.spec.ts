@@ -69,5 +69,11 @@ test("AI degrades honestly when not configured, never fabricates an answer", asy
   await page.goto("/ai");
   await page.getByPlaceholder(/Which are/).fill("Which are my worst properties?");
   await page.getByRole("button", { name: "Ask" }).click();
-  await expect(page.getByText(/AI is not configured|worst propert/i)).toBeVisible({ timeout: 15000 });
+  // Scoped to the answer region. A page-wide text match also hits the
+  // suggestion chip and the recent-query list, both of which echo the question
+  // verbatim — so the assertion passed or failed on how many prior queries
+  // happened to be logged, not on whether an answer appeared.
+  const answer = page.getByTestId("ai-answer");
+  await expect(answer).toBeVisible({ timeout: 15000 });
+  await expect(answer).toContainText(/AI is not configured|worst propert/i);
 });
