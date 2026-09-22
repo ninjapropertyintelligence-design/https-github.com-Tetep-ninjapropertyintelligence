@@ -17,6 +17,7 @@ import { DocumentSearchBox } from "@/components/property/DocumentSearchBox";
 import { AskAiInline } from "@/components/ai/AskAiInline";
 import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
 import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
+import { NearbyProperties } from "@/components/property/NearbyProperties";
 import { recordProductEvent } from "@/lib/analytics";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
@@ -113,11 +114,11 @@ async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: 
         <EmptyState title="AI is not enabled for your role" />
       );
     default:
-      return <OverviewTabLoader propertyId={propertyId} />;
+      return <OverviewTabLoader propertyId={propertyId} ctx={ctx} />;
   }
 }
 
-async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
+async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const [property, health, openIssueCount, criticalIssueCount, assetCount, criticalAssetCount, lastAssessment, matterportLink, droneCapture, warnings] =
     await Promise.all([
       prisma.property.findUniqueOrThrow({ where: { id: propertyId } }),
@@ -133,22 +134,31 @@ async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
     ]);
 
   return (
-    <OverviewTab
-      property={property}
-      health={
-        health
-          ? {
-              ...health,
-              categoryBreakdown: health.categoryBreakdown as unknown as Record<ScoringCategory, CategoryBreakdownEntry>,
-            }
-          : null
-      }
-      counts={{ openIssues: openIssueCount, criticalIssues: criticalIssueCount, assetCount, criticalAssetCount }}
-      lastAssessment={lastAssessment?.completedAt ?? null}
-      lastInteriorCapture={matterportLink?.linkedAt ?? null}
-      lastExteriorCapture={droneCapture?.capturedAt ?? null}
-      warnings={warnings}
-    />
+    <div className="space-y-4">
+      <OverviewTab
+        property={property}
+        health={
+          health
+            ? {
+                ...health,
+                categoryBreakdown: health.categoryBreakdown as unknown as Record<ScoringCategory, CategoryBreakdownEntry>,
+              }
+            : null
+        }
+        counts={{ openIssues: openIssueCount, criticalIssues: criticalIssueCount, assetCount, criticalAssetCount }}
+        lastAssessment={lastAssessment?.completedAt ?? null}
+        lastInteriorCapture={matterportLink?.linkedAt ?? null}
+        lastExteriorCapture={droneCapture?.capturedAt ?? null}
+        warnings={warnings}
+      />
+      {/* Spatial (§11): this ordering is computed by PostGIS, not in JS. */}
+      <NearbyProperties
+        ctx={ctx}
+        propertyId={propertyId}
+        latitude={property.latitude}
+        longitude={property.longitude}
+      />
+    </div>
   );
 }
 

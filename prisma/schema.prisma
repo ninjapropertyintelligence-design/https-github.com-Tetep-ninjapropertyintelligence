@@ -576,6 +576,27 @@ model Property {
   legalHolds      LegalHold[]
   usageRecords    UsageRecord[]
 
+  /**
+   * Derived geography for spatial queries (§11). Prisma has no geography
+   * type, so this is Unsupported: it is unreadable and unwritable through the
+   * client, which is correct — it is a GENERATED column that Postgres
+   * maintains from latitude/longitude, and nothing should ever write it.
+   *
+   * It is declared here despite being unusable because omitting it makes
+   * `prisma migrate diff` emit a DROP COLUMN for it and a DROP INDEX for its
+   * GiST index on the very next migration.
+   *
+   * Spatial reads therefore go through raw SQL — see src/lib/spatial.ts.
+   */
+  geo Unsupported("geography(Point, 4326)")?
+
+  /**
+   * Declared so `migrate diff` does not drop it. Without this line every
+   * future migration emits DROP INDEX for it, and a radius search silently
+   * degrades from an index lookup to a full table scan.
+   */
+  @@index([geo], type: Gist)
+
   @@unique([organizationId, customerPropertyId])
   @@index([organizationId])
   @@index([portfolioId])
