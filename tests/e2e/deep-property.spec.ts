@@ -67,10 +67,14 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   // fabricated "Connected" without real API credentials behind it.
   await expect(interior.getByText("Status:")).toBeVisible();
 
-  // Exterior: real seeded drone dataset (two on-disk JPEGs) must render.
+  // Exterior: the seeded drone dataset must render — six generated JPEGs
+  // and an orthomosaic, which is the canvas markers are dropped onto. The
+  // orthomosaic matters: without one the tab falls back to the first raw
+  // photo, which is how the capture card ended up looking empty.
   await page.goto(`/properties/${propertyId}?tab=exterior`);
   await expect(page.getByText("Capture Summary")).toBeVisible();
-  await expect(page.getByText(/Photos \(2\)/)).toBeVisible();
+  await expect(page.getByText(/Photos \(6\)/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Add Marker" })).toBeVisible();
 
   // Assets -> open the canonical Asset detail page for RTU-04.
   await page.goto(`/properties/${propertyId}?tab=assets`);
