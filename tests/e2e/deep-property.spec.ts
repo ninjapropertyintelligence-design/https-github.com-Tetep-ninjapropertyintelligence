@@ -54,8 +54,12 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   const interior = page.locator("main");
   await expect(
     interior.getByText(
-      // no credentials            | SDK key only                  | linked space
-      /Matterport is not configured|pasting its space ID|Space ID:/,
+      // Four honest states, one per credential shape this can run under:
+      //   no credentials          -> "Matterport is not configured"
+      //   SDK key only            -> the paste-a-space-ID form
+      //   API credentials, no link -> a Connect / Retry button
+      //   a linked space          -> "Space ID:"
+      /Matterport is not configured|pasting its space ID|Connect Matterport|Retry Connection|Space ID:/,
     ).first(),
   ).toBeVisible();
 

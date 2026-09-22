@@ -1,0 +1,243 @@
+import { prisma } from "@/lib/prisma";
+import { ApiError } from "@/lib/api-error";
+import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+
+/**
+ * The per-site "what has been captured here" model behind the Site Map tab.
+ *
+ * Every layer is counted. Only some can be *placed*: `DroneImage` and
+ * `Evidence` carry latitude/longitude, and nothing else in the schema does.
+ * A layer without coordinates is reported with `mapped: false` and an empty
+ * marker list rather than being pinned at the property centroid — dropping a
+ * document or an asset on the building's coordinate would invent a position
+ * the data never recorded, and a viewer has no way to tell an invented pin
+ * from a surveyed one. The UI shows those layers as counts that link to the
+ * tab that owns them.
+ */
+
+export interface SiteMarker {
+  id: string;
+  latitude: number;
+  longitude: number;
+  label: string;
+}
+
+export interface SiteLayer {
+  key: string;
+  label: string;
+  /** Hex, used for both the legend swatch and the marker fill. */
+  color: string;
+  count: number;
+  /** True when this layer's records carry coordinates and can be drawn. */
+  mapped: boolean;
+  markers: SiteMarker[];
+  /** Tab on the property page that owns this layer, for the count to link to. */
+  href: string | null;
+}
+
+export interface SiteMapData {
+  property: {
+    id: string;
+    name: string;
+    addressLine1: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    customerPropertyId: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  };
+  lastCaptureAt: Date | null;
+  totalMedia: number;
+  layers: SiteLayer[];
+}
+
+export async function getSiteMapData(ctx: SessionContext, propertyId: string): Promise<SiteMapData> {
+  const property = await prisma.property.findFirst({
+    where: { AND: [{ id: propertyId }, propertyScopeWhere(ctx)] },
+    select: {
+      id: true,
+      name: true,
+      addressLine1: true,
+      city: true,
+      state: true,
+      postalCode: true,
+      customerPropertyId: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+  if (!property) throw new ApiError(404, "Property not found");
+
+  const tab = (key: string) => `/properties/${propertyId}?tab=${key}`;
+
+  // Drone imagery hangs off capture -> dataset -> image, so the property
+  // filter travels through the relation rather than an id list.
+  const [droneImages, evidence, outputs, vrTours, assets, openIssues, documents, assessments, latestCapture] =
+    await Promise.all([
+      prisma.droneImage.findMany({
+        where: { dataset: { capture: { propertyId } } },
+        select: { id: true, latitude: true, longitude: true, storageKey: true, capturedAt: true },
+      }),
+      prisma.evidence.findMany({
+        where: { propertyId },
+        select: { id: true, latitude: true, longitude: true, type: true, captureDate: true },
+      }),
+      prisma.droneOutput.groupBy({
+        by: ["outputType"],
+        where: { dataset: { capture: { propertyId } } },
+        _count: { _all: true },
+      }),
+      prisma.matterportPropertyLink.count({ where: { propertyId } }),
+      prisma.asset.count({ where: { propertyId } }),
+      prisma.issue.count({ where: { propertyId, status: { notIn: ["RESOLVED", "CLOSED"] } } }),
+      prisma.document.count({ where: { propertyId } }),
+      prisma.assessment.count({ where: { propertyId } }),
+      prisma.droneCapture.findFirst({
+        where: { propertyId },
+        orderBy: { capturedAt: "desc" },
+        select: { capturedAt: true },
+      }),
+    ]);
+
+  const outputCount = (type: string) => outputs.find((o) => o.outputType === type)?._count._all ?? 0;
+
+  /** Keeps a record out of the marker list unless it has BOTH coordinates. */
+  function placed<T extends { id: string; latitude: number | null; longitude: number | null }>(
+    rows: T[],
+    label: (row: T) => string,
+  ): SiteMarker[] {
+    return rows
+      .filter((r): r is T & { latitude: number; longitude: number } => r.latitude !== null && r.longitude !== null)
+      .map((r) => ({ id: r.id, latitude: r.latitude, longitude: r.longitude, label: label(r) }));
+  }
+
+  const droneMarkers = placed(droneImages, (r) => r.storageKey.split("-").slice(5).join("-") || "Drone photo");
+  const evidenceMarkers = placed(evidence, (r) => r.type.replace(/_/g, " "));
+
+  const layers: SiteLayer[] = [
+    {
+      key: "drone-photos",
+      label: "Drone Photos",
+      color: "#2453ff",
+      count: droneImages.length,
+      // A layer is only "mapped" when something in it actually landed a pin.
+      // Reporting mapped:true for a set of photos that all lack EXIF geotags
+      // would offer a toggle that visibly does nothing.
+      mapped: droneMarkers.length > 0,
+      markers: droneMarkers,
+      href: tab("exterior"),
+    },
+    {
+      key: "evidence-photos",
+      label: "Evidence Photos",
+      color: "#e2691a",
+      count: evidence.length,
+      mapped: evidenceMarkers.length > 0,
+      markers: evidenceMarkers,
+      href: tab("issues"),
+    },
+    {
+      key: "vr-tours",
+      label: "3DVR Tours",
+      color: "#12a594",
+      count: vrTours,
+      mapped: false,
+      markers: [],
+      href: tab("interior"),
+    },
+    {
+      key: "3d-models",
+      label: "3D Models",
+      color: "#1a9c5c",
+      count: outputCount("MESH_3D"),
+      mapped: false,
+      markers: [],
+      href: tab("digital-twin"),
+    },
+    {
+      key: "point-clouds",
+      label: "Point Clouds",
+      color: "#7c5cff",
+      count: outputCount("POINT_CLOUD"),
+      mapped: false,
+      markers: [],
+      href: tab("digital-twin"),
+    },
+    {
+      key: "orthomosaics",
+      label: "Orthomosaics",
+      color: "#0e7fa8",
+      count: outputCount("ORTHOMOSAIC"),
+      mapped: false,
+      markers: [],
+      href: tab("exterior"),
+    },
+    {
+      key: "elevation",
+      label: "Elevation (DSM/DTM)",
+      color: "#8a6d3b",
+      count: outputCount("DSM") + outputCount("DTM"),
+      mapped: false,
+      markers: [],
+      href: tab("exterior"),
+    },
+    {
+      key: "assets",
+      label: "Assets",
+      color: "#5b6472",
+      count: assets,
+      mapped: false,
+      markers: [],
+      href: tab("assets"),
+    },
+    {
+      key: "issues",
+      label: "Open Issues",
+      color: "#d0342c",
+      count: openIssues,
+      mapped: false,
+      markers: [],
+      href: tab("issues"),
+    },
+    {
+      key: "assessments",
+      label: "Assessments",
+      color: "#d99a12",
+      count: assessments,
+      mapped: false,
+      markers: [],
+      href: tab("assessments"),
+    },
+    {
+      key: "documents",
+      label: "Documents",
+      color: "#4c9c1a",
+      count: documents,
+      mapped: false,
+      markers: [],
+      href: tab("documents"),
+    },
+  ];
+
+  // "Media" counts captured artefacts. Assets, issues, assessments and
+  // documents are records about the site, not captures of it, so including
+  // them would inflate the headline into something that does not mean
+  // anything.
+  const MEDIA_KEYS = new Set([
+    "drone-photos",
+    "evidence-photos",
+    "vr-tours",
+    "3d-models",
+    "point-clouds",
+    "orthomosaics",
+    "elevation",
+  ]);
+
+  return {
+    property,
+    lastCaptureAt: latestCapture?.capturedAt ?? null,
+    totalMedia: layers.filter((l) => MEDIA_KEYS.has(l.key)).reduce((sum, l) => sum + l.count, 0),
+    layers,
+  };
+}

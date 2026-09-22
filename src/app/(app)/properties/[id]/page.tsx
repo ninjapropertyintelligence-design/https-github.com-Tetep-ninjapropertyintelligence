@@ -6,6 +6,7 @@ import { getLatestHealthSnapshot, getDataConfidenceWarnings, CategoryBreakdownEn
 import { ScoringCategory } from "@/lib/scoring-categories";
 import { getPropertyInteriorStatus } from "@/lib/matterport-service";
 import { getPropertyExteriorData } from "@/lib/drone-service";
+import { getSiteMapData } from "@/lib/site-map";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SeverityBadge, StatusBadge } from "@/components/ui/Badge";
@@ -17,6 +18,7 @@ import { DocumentSearchBox } from "@/components/property/DocumentSearchBox";
 import { AskAiInline } from "@/components/ai/AskAiInline";
 import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
 import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
+import { SiteMap } from "@/components/property/SiteMap";
 import { NearbyProperties } from "@/components/property/NearbyProperties";
 import { recordProductEvent } from "@/lib/analytics";
 
@@ -92,6 +94,8 @@ async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: 
       return <DocumentsTab propertyId={propertyId} />;
     case "history":
       return <HistoryTab propertyId={propertyId} />;
+    case "site-map":
+      return <SiteMapTab propertyId={propertyId} ctx={ctx} />;
     case "interior":
       return <InteriorTab propertyId={propertyId} ctx={ctx} />;
     case "exterior":
@@ -323,6 +327,22 @@ async function HistoryTab({ propertyId }: { propertyId: string }) {
         </ul>
       </CardBody>
     </Card>
+  );
+}
+
+async function SiteMapTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const data = await getSiteMapData(ctx, propertyId);
+  return (
+    <SiteMap
+      token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
+      property={data.property}
+      // Serialised here: a Date does not survive the server/client boundary
+      // as a Date, and formatting on the server would pin the output to the
+      // server's locale rather than the viewer's.
+      lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
+      totalMedia={data.totalMedia}
+      layers={data.layers}
+    />
   );
 }
 
