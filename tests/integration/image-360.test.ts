@@ -97,6 +97,22 @@ afterAll(async () => {
   await prisma.user.delete({ where: { id: user.id } });
 });
 
+/**
+ * Same org and property, a different role.
+ *
+ * Scoped roles (Facilities Manager, Inspector, Technician, Vendor) reach
+ * nothing without an explicit grant, so one is attached here. Without it
+ * these tests fail on scope and would never reach the permission check they
+ * exist to exercise — which is exactly what happened on the first run.
+ */
+function asRole(base: SessionContext, role: Role, propertyId?: string): SessionContext {
+  return {
+    ...base,
+    role,
+    grants: propertyId ? [{ scopeType: "PROPERTY", portfolioId: null, regionId: null, propertyId }] : [],
+  };
+}
+
 function panoramaInput(propertyId: string, name: string, extra: Record<string, unknown> = {}) {
   return {
     type: "IMAGE_360" as const,
@@ -157,6 +173,49 @@ describe("360 panorama capture", () => {
     // counting them here too would bill the same object twice.
     expect(usage.map((u) => u.quantity)).toEqual([1, 1]);
     expect(usage.every((u) => u.propertyId === entitledProperty.id)).toBe(true);
+  });
+
+  it("refuses a read-only viewer, who otherwise passes every scope check", async () => {
+    // VIEWER is an org-wide role, so tenant scope alone lets it reach every
+    // property in the organization. These routes used to have no permission
+    // check at all, which made the read-only role a writer everywhere.
+    const viewer = asRole(ctxFor(entitledOrg.id), Role.VIEWER);
+    await expect(
+      createEvidence(viewer, {
+        type: "PHOTO",
+        storageKey: `${entitledProperty.id}/${crypto.randomUUID()}-v.jpg`,
+        propertyId: entitledProperty.id,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(await prisma.evidence.count({ where: { organizationId: entitledOrg.id } })).toBe(0);
+  });
+
+  it("still lets a facilities manager attach a photo", async () => {
+    // The workflow that `canPerformCapture` would have broken. Attaching a
+    // picture to an issue is the floor of the product, and a facilities
+    // manager does not hold a capture permission.
+    const fm = asRole(ctxFor(entitledOrg.id), Role.FACILITIES_MANAGER, entitledProperty.id);
+    const photo = await createEvidence(fm, {
+      type: "PHOTO",
+      storageKey: `${entitledProperty.id}/${crypto.randomUUID()}-fm.jpg`,
+      propertyId: entitledProperty.id,
+    });
+    expect(photo.id).toBeTruthy();
+  });
+
+  it("does not let a facilities manager register a 360 panorama", async () => {
+    // A capture kind is sellable work, not an attachment, so it needs the
+    // capture permission on top of the write permission.
+    const fm = asRole(ctxFor(entitledOrg.id), Role.FACILITIES_MANAGER, entitledProperty.id);
+    await expect(
+      createEvidence(fm, panoramaInput(entitledProperty.id, "north.jpg")),
+    ).rejects.toThrow(/canPerformCapture/);
+  });
+
+  it("lets an inspector register a 360 panorama", async () => {
+    const inspector = asRole(ctxFor(entitledOrg.id), Role.INSPECTOR, entitledProperty.id);
+    const panorama = await createEvidence(inspector, panoramaInput(entitledProperty.id, "north.jpg"));
+    expect(panorama.id).toBeTruthy();
   });
 
   it("does not meter an ordinary photo as a 360 capture", async () => {

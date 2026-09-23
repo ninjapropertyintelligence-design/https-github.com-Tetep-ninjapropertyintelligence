@@ -16,12 +16,30 @@ describe("permission engine", () => {
     // `propertyScopeWhere`), so the permission reads "may capture, on the
     // sites they were sent to, while the job is open".
     const perms = permissionsForRole(Role.VENDOR);
-    expect(perms).toEqual(["canCreateIssues", "canPerformCapture"]);
+    expect(perms).toEqual(["canCreateIssues", "canUploadEvidence", "canPerformCapture"]);
     expect(hasPermission(Role.VENDOR, "canViewFinancialExposure")).toBe(false);
     expect(hasPermission(Role.VENDOR, "canManageBilling")).toBe(false);
     // The two that would turn a subcontractor into a tenant administrator.
     expect(hasPermission(Role.VENDOR, "canManageProperties")).toBe(false);
     expect(hasPermission(Role.VENDOR, "canManageTeam")).toBe(false);
+  });
+
+  it("is the only non-platform role that cannot write evidence", () => {
+    // The evidence endpoints had no permission check at all, and VIEWER is an
+    // org-wide role, so the read-only role passed tenant scope for every
+    // property and could write anywhere in the organization.
+    expect(hasPermission(Role.VIEWER, "canUploadEvidence")).toBe(false);
+    for (const role of [
+      Role.OWNER,
+      Role.PORTFOLIO_ADMIN,
+      Role.REGIONAL_MANAGER,
+      Role.FACILITIES_MANAGER,
+      Role.INSPECTOR,
+      Role.TECHNICIAN,
+      Role.VENDOR,
+    ]) {
+      expect(hasPermission(role, "canUploadEvidence"), `${role} should be able to write evidence`).toBe(true);
+    }
   });
 
   it("gives VIEWER read-only access with no mutation permissions", () => {

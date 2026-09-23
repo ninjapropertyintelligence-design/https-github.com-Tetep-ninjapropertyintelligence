@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { withApiHandler } from "@/lib/api-utils";
+import { requirePermission, withApiHandler } from "@/lib/api-utils";
 import { getStorageProvider } from "@/lib/storage";
 import { z } from "zod";
 
@@ -12,6 +12,10 @@ const schema = z.object({
 // bytes directly to storage, then calls POST /api/v1/evidence with the
 // returned key to register the Evidence record (spec §18).
 export const POST = withApiHandler(async (ctx, req) => {
+  // A signed URL is a write to the bucket. Gating only the registration step
+  // would still let a read-only account fill the customer's storage with
+  // objects no row ever points at.
+  requirePermission(ctx, "canUploadEvidence");
   const body = await req.json();
   const input = schema.parse(body);
   const signed = await getStorageProvider().createUploadUrl({

@@ -6,6 +6,7 @@ import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recordUsage } from "@/lib/cost-metering";
 import { FEATURE_FLAGS, requireFeature } from "@/lib/feature-flags";
+import { hasPermission } from "@/lib/permissions";
 
 /**
  * Evidence registration.
@@ -43,14 +44,48 @@ export interface CreateEvidenceInput {
  * alongside Matterport and drone, priced separately, and it is uploaded
  * through this same endpoint.
  */
+/**
+ * Authorization for writing evidence, as opposed to the entitlement below.
+ *
+ * These routes carried NO permission check at all — tenant scope was the only
+ * gate. VIEWER is an org-wide role, so it passes scope for every property in
+ * the organization: the read-only role could write evidence anywhere in the
+ * tenant. Not a cross-tenant leak, but "read-only that writes" is exactly
+ * what a customer's security review finds.
+ *
+ * `canPerformCapture` would have been the wrong fix. A facilities manager
+ * attaching a photo to an issue is the floor of the product and does not hold
+ * it, so requiring it here would trade an authorization hole for a broken
+ * core workflow. Hence a permission of its own, held by every role that can
+ * act on a property and by no read-only role.
+ *
+ * Capture kinds need BOTH: anyone who can act may attach a photo, but a 360
+ * panorama or a drone image is sellable capture work.
+ */
+function assertMayWriteEvidence(ctx: SessionContext, types: Iterable<EvidenceType>): void {
+  if (!hasPermission(ctx.role, "canUploadEvidence")) {
+    throw new ApiError(403, "Missing permission: canUploadEvidence");
+  }
+  for (const type of types) {
+    if (CAPTURE_KIND_FLAG[type] && !hasPermission(ctx.role, "canPerformCapture")) {
+      throw new ApiError(403, "Missing permission: canPerformCapture");
+    }
+  }
+}
+
 const CAPTURE_KIND_FLAG: Partial<Record<EvidenceType, (typeof FEATURE_FLAGS)[keyof typeof FEATURE_FLAGS]>> = {
   IMAGE_360: FEATURE_FLAGS.IMAGE_360,
 };
 
 export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
-  // Gate BEFORE the property lookup so an organization that has not bought
-  // 360 capture is told that, rather than being told its own property is
-  // invalid.
+  // Permission first: "you may not do this at all" is a truer answer than
+  // "your organization has not bought this" for someone who could never do
+  // it whatever the plan says.
+  assertMayWriteEvidence(ctx, [input.type]);
+
+  // Then the entitlement, still BEFORE the property lookup, so an
+  // organization that has not bought 360 capture is told that rather than
+  // being told its own property is invalid.
   const flag = CAPTURE_KIND_FLAG[input.type];
   if (flag) await requireFeature(ctx, flag);
 
@@ -149,8 +184,11 @@ export async function createEvidenceBatch(
     throw new ApiError(400, `A batch may carry at most ${MAX_EVIDENCE_BATCH} files; this one has ${items.length}`);
   }
 
+  const types = new Set(items.map((i) => i.type));
+  assertMayWriteEvidence(ctx, types);
+
   // Gate once, on the distinct capture kinds present.
-  for (const type of new Set(items.map((i) => i.type))) {
+  for (const type of types) {
     const flag = CAPTURE_KIND_FLAG[type];
     if (flag) await requireFeature(ctx, flag);
   }

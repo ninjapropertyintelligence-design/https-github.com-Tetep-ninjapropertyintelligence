@@ -22,6 +22,7 @@ export const PERMISSIONS = [
   "canManageIntegrations",
   "canManageBilling",
   "canExportData",
+  "canUploadEvidence",
   "canPerformCapture",
   "canManageDroneJobs",
   "canManageVendors",
@@ -69,6 +70,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.PORTFOLIO_ADMIN]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageProperties",
     "canManageAssets",
     "canCreateIssues",
@@ -87,6 +89,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.REGIONAL_MANAGER]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageAssets",
     "canCreateIssues",
     "canResolveIssues",
@@ -99,6 +102,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.FACILITIES_MANAGER]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageAssets",
     "canCreateIssues",
     "canResolveIssues",
@@ -110,6 +114,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.INSPECTOR]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canCreateIssues",
     "canPerformAssessments",
     "canPerformCapture",
@@ -117,6 +122,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.TECHNICIAN]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageAssets",
     "canCreateIssues",
     "canPerformAssessments",
@@ -127,7 +133,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   // no property access unless a capture job is open on that site (see
   // `propertyScopeWhere`), so this composes to "may capture, on the sites they
   // were sent to, while the job is open".
-  [Role.VENDOR]: ["canCreateIssues", "canPerformCapture"],
+  [Role.VENDOR]: ["canCreateIssues", "canUploadEvidence", "canPerformCapture"],
 
   [Role.VIEWER]: ["canViewPortfolio", "canViewFinancialExposure"],
 };

@@ -416,6 +416,15 @@ describe("bulk upload", () => {
     expect(await prisma.evidence.count({ where: { organizationId: org.id } })).toBe(before);
   });
 
+  it("refuses a batch from a read-only viewer", async () => {
+    const viewer: SessionContext = { ...staffCtx(), role: Role.VIEWER };
+    await expect(
+      createEvidenceBatch(viewer, [
+        { type: "PHOTO", storageKey: `${siteA.id}/${crypto.randomUUID()}-v.jpg`, propertyId: siteA.id },
+      ]),
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
   it("refuses a batch over the bind-parameter ceiling", async () => {
     await expect(
       createEvidenceBatch(
