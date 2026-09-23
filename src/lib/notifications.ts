@@ -84,3 +84,47 @@ export async function notifyUser(params: {
     },
   });
 }
+
+/**
+ * Notifies every user who belongs to a vendor company.
+ *
+ * A vendor is a company, not a person — the subcontractor who walked the site
+ * and the office manager who chases rejections are usually different people,
+ * and either of them fixing a returned site is a good outcome. So this goes
+ * to the company's whole membership rather than to whoever happened to press
+ * submit.
+ *
+ * Scoped by organization as well as vendor id: the same contracting firm can
+ * hold memberships in two customer organizations, and one customer's review
+ * decision must not surface in the other's.
+ */
+export async function notifyVendorUsers(params: {
+  organizationId: string;
+  vendorId: string;
+  type: NotificationType;
+  title: string;
+  body?: string;
+  link?: string;
+}) {
+  const memberships = await prisma.membership.findMany({
+    where: {
+      organizationId: params.organizationId,
+      vendorId: params.vendorId,
+      role: Role.VENDOR,
+    },
+    select: { userId: true },
+  });
+  if (memberships.length === 0) return;
+
+  const userIds = [...new Set(memberships.map((m) => m.userId))];
+  await prisma.notification.createMany({
+    data: userIds.map((userId) => ({
+      organizationId: params.organizationId,
+      userId,
+      type: params.type,
+      title: params.title,
+      body: params.body,
+      link: params.link,
+    })),
+  });
+}

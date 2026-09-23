@@ -84,6 +84,17 @@ beforeAll(async () => {
     data: { email: `vendor-${suffix}@example.com`, passwordHash: "x", name: "Vendor" },
   });
 
+  // Real memberships, because notification delivery is resolved from them:
+  // `notifyPropertyStakeholders` looks up org-wide roles and
+  // `notifyVendorUsers` looks up the vendor's own. A context object alone
+  // reaches nobody.
+  await prisma.membership.create({
+    data: { userId: staff.id, organizationId: org.id, role: Role.OWNER },
+  });
+  await prisma.membership.create({
+    data: { userId: vendorUser.id, organizationId: org.id, role: Role.VENDOR, vendorId: vendor.id },
+  });
+
   const pf = await prisma.portfolio.create({ data: { organizationId: org.id, name: "PF" } });
   const makeSite = (name: string) =>
     prisma.property.create({
@@ -124,6 +135,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await prisma.captureJob.deleteMany({ where: { organizationId: org.id } });
+  await prisma.notification.deleteMany({ where: { organizationId: org.id } });
   // Drone captures too: `resolveDroneTargetForSite` deliberately REUSES an
   // in-flight capture, so without this each test inherits the previous
   // test's dataset and its images. That coupling made a batch assertion
@@ -808,5 +820,137 @@ describe("linking a Matterport space from the job", () => {
     }
     await prisma.captureJob.update({ where: { id: job.id }, data: { status: "ACCEPTED" } });
     await expect(linkSpaceByIdDirect(vendorCtx(), siteA.id, `sp-late-${suffix}`)).rejects.toThrow();
+  });
+});
+
+describe("telling people", () => {
+  /** Satisfies a PHOTOS deliverable so the site can actually be submitted. */
+  async function deliverPhotos(propertyId: string) {
+    await prisma.evidence.create({
+      data: {
+        organizationId: org.id,
+        propertyId,
+        type: "PHOTO",
+        storageKey: `${propertyId}/${crypto.randomUUID()}-x.jpg`,
+        uploadedById: vendorUser.id,
+      },
+    });
+  }
+
+  it("tells the ordering organization when a vendor submits a site", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites[0];
+    await deliverPhotos(site.propertyId);
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+
+    const notes = await prisma.notification.findMany({ where: { organizationId: org.id } });
+    expect(notes).toHaveLength(1);
+    expect(notes[0].userId).toBe(staff.id);
+    expect(notes[0].type).toBe("CAPTURE_SUBMITTED");
+    // The site has to be named. "A capture was submitted" across a 40-site
+    // sweep tells a reviewer nothing about where to go.
+    expect(notes[0].title).toContain(site.property.name);
+    expect(notes[0].link).toBe(`/capture-jobs/${job.id}`);
+    // And it must NOT go back to the vendor who just pressed submit.
+    expect(notes.some((n) => n.userId === vendorUser.id)).toBe(false);
+  });
+
+  it("carries the rejection reason to the vendor, not just the fact of it", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites[0];
+    await deliverPhotos(site.propertyId);
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+    await prisma.notification.deleteMany({ where: { organizationId: org.id } });
+
+    await reviewCaptureSite(staffCtx(), job.id, site.id, {
+      accept: false,
+      reason: "North elevation is out of focus — reshoot it.",
+    });
+
+    const notes = await prisma.notification.findMany({ where: { organizationId: org.id } });
+    expect(notes).toHaveLength(1);
+    expect(notes[0].userId).toBe(vendorUser.id);
+    expect(notes[0].type).toBe("CAPTURE_REJECTED");
+    // The reason IS the instruction. A notification that says only
+    // "returned" sends the vendor back to the job page to hunt for why.
+    expect(notes[0].body).toContain("out of focus");
+    expect(notes[0].link).toBe(`/capture-jobs/${job.id}`);
+  });
+
+  it("does not link a vendor to a job that closing has just hidden from them", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    for (const site of job.sites) {
+      await deliverPhotos(site.propertyId);
+      await submitCaptureSite(vendorCtx(), job.id, site.id);
+      await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    }
+
+    const accepted = await prisma.notification.findMany({
+      where: { organizationId: org.id, type: "CAPTURE_ACCEPTED" },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(accepted).toHaveLength(job.sites.length);
+
+    // The last one closes the job, and a closed job is refused by
+    // `getCaptureJob` for a vendor — so linking there would land them on a
+    // 404 at the moment they are told the work is finished.
+    const last = accepted[accepted.length - 1];
+    expect(last.link).toBe("/capture-jobs");
+    expect(last.body).toMatch(/closed/i);
+    expect(await getCaptureJob(vendorCtx(), job.id).then(() => true, () => false)).toBe(false);
+
+    // The earlier ones still point at a job the vendor can open.
+    expect(accepted[0].link).toBe(`/capture-jobs/${job.id}`);
+  });
+
+  it("does not leak a review decision to a different vendor in the same organization", async () => {
+    const otherVendor = await prisma.vendor.create({
+      data: { organizationId: org.id, name: `Other Co ${suffix}`, trade: "Capture" },
+    });
+    const otherUser = await prisma.user.create({
+      data: { email: `other-${suffix}@example.com`, passwordHash: "x", name: "Other" },
+    });
+    await prisma.membership.create({
+      data: { userId: otherUser.id, organizationId: org.id, role: Role.VENDOR, vendorId: otherVendor.id },
+    });
+
+    try {
+      const job = await issuedJob(["PHOTOS"]);
+      const site = job.sites[0];
+      await deliverPhotos(site.propertyId);
+      await submitCaptureSite(vendorCtx(), job.id, site.id);
+      await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+
+      const theirs = await prisma.notification.findMany({ where: { userId: otherUser.id } });
+      expect(theirs).toHaveLength(0);
+      const ours = await prisma.notification.findMany({
+        where: { userId: vendorUser.id, type: "CAPTURE_ACCEPTED" },
+      });
+      expect(ours).toHaveLength(1);
+    } finally {
+      await prisma.user.delete({ where: { id: otherUser.id } });
+    }
+  });
+
+  it("does not undo a submission when notifying fails", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites[0];
+    await deliverPhotos(site.propertyId);
+
+    // A property row the notification lookup cannot resolve is the closest
+    // honest stand-in for the delivery layer being down. The submission is
+    // the thing of record; a failed notification must not roll it back.
+    const original = prisma.notification.createMany;
+    (prisma as unknown as { notification: { createMany: unknown } }).notification.createMany = () => {
+      throw new Error("notification store unavailable");
+    };
+    try {
+      await submitCaptureSite(vendorCtx(), job.id, site.id);
+    } finally {
+      (prisma as unknown as { notification: { createMany: unknown } }).notification.createMany = original;
+    }
+
+    const after = await prisma.captureJobSite.findUniqueOrThrow({ where: { id: site.id } });
+    expect(after.status).toBe("SUBMITTED");
   });
 });

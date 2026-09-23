@@ -6,12 +6,14 @@ import {
   CaptureJobStatus,
   CaptureShotKind,
   IssueSource,
+  NotificationType,
   Role,
 } from "@/generated/prisma/client";
 import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { recordAssetConditionChange } from "@/lib/asset-condition";
 import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
+import { notifyPropertyStakeholders, notifyVendorUsers } from "@/lib/notifications";
 
 /**
  * Capture jobs — work ordered from a subcontractor.
@@ -364,10 +366,30 @@ export async function submitCaptureSite(ctx: SessionContext, jobId: string, site
     );
   }
 
-  return prisma.captureJobSite.update({
+  const submitted = await prisma.captureJobSite.update({
     where: { id: siteId },
     data: { status: CaptureJobSiteStatus.SUBMITTED, submittedAt: new Date(), rejectionReason: null },
   });
+
+  // Nothing else tells the reviewers. Without this the work sits SUBMITTED
+  // until someone happens to open the job page, which on a 40-site sweep is
+  // how a subcontractor waits a week to be paid for work already delivered.
+  //
+  // Best-effort: a notification failure must not undo a submission that has
+  // already been accepted and recorded. The site is submitted either way.
+  try {
+    await notifyPropertyStakeholders({
+      propertyId: site.propertyId,
+      type: NotificationType.CAPTURE_SUBMITTED,
+      title: `Capture ready for review: ${site.property.name}`,
+      body: `${job.vendor?.name ?? "A vendor"} submitted this site for "${job.title}".`,
+      link: `/capture-jobs/${job.id}`,
+    });
+  } catch {
+    // Swallowed deliberately — see above.
+  }
+
+  return submitted;
 }
 
 /** Acceptance or rejection by the ordering organization. */
@@ -378,7 +400,7 @@ export async function reviewCaptureSite(
   decision: { accept: boolean; reason?: string | null },
 ) {
   if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot review its own submission");
-  const { site } = await siteForAction(ctx, jobId, siteId);
+  const { job, site } = await siteForAction(ctx, jobId, siteId);
   if (site.status !== CaptureJobSiteStatus.SUBMITTED) {
     throw new ApiError(409, "Only a submitted site can be reviewed");
   }
@@ -403,11 +425,43 @@ export async function reviewCaptureSite(
   const remaining = await prisma.captureJobSite.count({
     where: { jobId, status: { not: CaptureJobSiteStatus.ACCEPTED } },
   });
-  if (remaining === 0) {
+  const jobClosed = remaining === 0;
+  if (jobClosed) {
     await prisma.captureJob.update({
       where: { id: jobId },
       data: { status: CaptureJobStatus.ACCEPTED, closedAt: new Date() },
     });
+  }
+
+  // The vendor is the one who has to act on a rejection, and until now they
+  // had no way of learning about it short of re-opening a job they believed
+  // was finished.
+  //
+  // The reason is carried in the body, not just the fact of rejection: the
+  // reason IS the instruction, and this notification is the only place most
+  // vendors will read it.
+  if (job.vendorId) {
+    try {
+      await notifyVendorUsers({
+        organizationId: ctx.organizationId,
+        vendorId: job.vendorId,
+        type: decision.accept ? NotificationType.CAPTURE_ACCEPTED : NotificationType.CAPTURE_REJECTED,
+        title: decision.accept
+          ? `Capture accepted: ${site.property.name}`
+          : `Capture returned: ${site.property.name}`,
+        body: decision.accept
+          ? jobClosed
+            ? `All sites on "${job.title}" are accepted. This job is now closed and its site access has ended.`
+            : `Accepted for "${job.title}".`
+          : (decision.reason?.trim() ?? undefined),
+        // A closed job is refused by `getCaptureJob` for a vendor, so linking
+        // there would land them on a 404 at the exact moment they are being
+        // told the work is done. Their job list is somewhere that still exists.
+        link: jobClosed && decision.accept ? "/capture-jobs" : `/capture-jobs/${jobId}`,
+      });
+    } catch {
+      // Best-effort, as with submission: the review decision is recorded.
+    }
   }
 
   return updated;
