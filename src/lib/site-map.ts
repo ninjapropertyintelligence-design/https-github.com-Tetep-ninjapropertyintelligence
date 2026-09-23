@@ -149,7 +149,17 @@ export async function getSiteMapData(
   }
 
   const droneMarkers = placed(droneImages, (r) => r.storageKey.split("-").slice(5).join("-") || "Drone photo");
-  const evidenceMarkers = placed(evidence, (r) => r.type.replace(/_/g, " "));
+
+  // 360 panoramas are split out of the evidence layer rather than counted
+  // with it. They are a sellable capture kind in their own right — the third
+  // one, alongside Matterport and drone — and a site that has been shot in
+  // 360 should say so instead of folding those shots into a generic photo
+  // count. They are the only capture kind with BOTH coordinates and a viewer,
+  // so their pins open the thing they point at.
+  const panoramas = evidence.filter((e) => e.type === "IMAGE_360");
+  const otherEvidence = evidence.filter((e) => e.type !== "IMAGE_360");
+  const panoramaMarkers = placed(panoramas, () => "360° panorama");
+  const evidenceMarkers = placed(otherEvidence, (r) => r.type.replace(/_/g, " "));
 
   const layers: SiteLayer[] = [
     {
@@ -168,10 +178,19 @@ export async function getSiteMapData(
       key: "evidence-photos",
       label: "Evidence Photos",
       color: "#e2691a",
-      count: evidence.length,
+      count: otherEvidence.length,
       mapped: evidenceMarkers.length > 0,
       markers: evidenceMarkers,
       href: tab("issues"),
+    },
+    {
+      key: "360-images",
+      label: "360° Panoramas",
+      color: "#c026d3",
+      count: panoramas.length,
+      mapped: panoramaMarkers.length > 0,
+      markers: panoramaMarkers,
+      href: tab("360"),
     },
     {
       key: "vr-tours",
@@ -263,6 +282,7 @@ export async function getSiteMapData(
   const MEDIA_KEYS = new Set([
     "drone-photos",
     "evidence-photos",
+    "360-images",
     "vr-tours",
     "3d-models",
     "point-clouds",

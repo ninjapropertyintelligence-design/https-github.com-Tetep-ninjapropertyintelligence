@@ -76,6 +76,17 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   await expect(page.getByText(/Photos \(6\)/)).toBeVisible();
   await expect(page.getByRole("button", { name: "+ Add Marker" })).toBeVisible();
 
+  // 360: the two seeded panoramas must be listed and selectable. The
+  // assertion is on the list, not on the canvas — WebGL availability varies
+  // by machine, and a headless runner without it would turn a real feature
+  // regression into a test that only ever proved the GPU was present.
+  await page.goto(`/properties/${propertyId}?tab=360`);
+  await expect(page.getByRole("button", { name: /north-lot-360\.jpg/ })).toBeVisible();
+  const southPanorama = page.getByRole("button", { name: /south-entrance-360\.jpg/ });
+  await expect(southPanorama).toBeVisible();
+  await southPanorama.click();
+  await expect(southPanorama).toHaveAttribute("aria-current", "true");
+
   // Assets -> open the canonical Asset detail page for RTU-04.
   await page.goto(`/properties/${propertyId}?tab=assets`);
   await page.getByRole("link", { name: "RTU-04" }).click();

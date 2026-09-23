@@ -1,0 +1,11 @@
+-- Adds IMAGE_360_CAPTURE to UsageMetricType.
+--
+-- Written by hand rather than by `prisma migrate dev`, which wanted to reset
+-- the development database: two earlier migrations had been edited after
+-- being applied, so their checksums no longer match. Resetting would have
+-- destroyed local data to add one enum value.
+--
+-- BEFORE 'GEOCODING_REQUEST' keeps the declared order in schema.prisma and
+-- the physical order in the type identical. They do not have to match, but a
+-- divergence is confusing to anyone reading both.
+ALTER TYPE "UsageMetricType" ADD VALUE IF NOT EXISTS 'IMAGE_360_CAPTURE' BEFORE 'GEOCODING_REQUEST';

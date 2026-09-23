@@ -319,8 +319,8 @@ export function SiteMap({
             change when you switch capture dates.
           </p>
           <p className="mt-2 text-xs leading-relaxed text-muted">
-            Only drone photos and evidence photos carry coordinates in this schema, so only those can be placed on the
-            map. Everything else is counted here and opens in its own tab.
+            Only drone photos, 360° panoramas and evidence photos carry coordinates in this schema, so only those can be
+            placed on the map. Everything else is counted here and opens in its own tab.
           </p>
         </div>
       </aside>

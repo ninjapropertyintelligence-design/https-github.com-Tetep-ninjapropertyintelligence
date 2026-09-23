@@ -467,3 +467,145 @@ export function sitePointCloudXyz(): string {
 
   return lines.join("\n") + "\n";
 }
+
+/**
+ * An equirectangular 360 panorama, ray-traced rather than painted.
+ *
+ * A panorama cannot be drawn the way the other rasters here are. The format
+ * is a projection: x is longitude over a full turn, y is latitude from zenith
+ * to nadir, and everything it shows is stretched by that mapping — the ground
+ * fans out enormously towards the bottom row, and a straight line on a wall
+ * bends. A hand-painted 2:1 image would look plausible as a thumbnail and
+ * come apart the moment the viewer wraps it onto a sphere, which is the only
+ * place it is ever actually seen.
+ *
+ * So each pixel is traced instead: turn (x, y) into a direction, intersect it
+ * with a ground plane and a building box, and shade what it hit. The
+ * distortion then comes out of the projection for free and is correct by
+ * construction — including the seam, where longitude -pi and +pi meet the
+ * same geometry.
+ *
+ * Still synthetic. It is a box on a car park, not a photograph of anywhere.
+ */
+export async function renderPanorama360(seed: number): Promise<Buffer> {
+  const W = 2048;
+  const H = 1024;
+  const random = rng(seed);
+  const r = new Raster(W, H);
+
+  /** Camera height above the ground plane, in metres — eye level on a tripod. */
+  const EYE = 1.6;
+  /** Seed-driven so two panoramas of the same site are visibly different shots. */
+  const near = 9 + random() * 6;
+  const box = { x0: -15 - random() * 6, x1: 13 + random() * 6, z0: near, z1: near + 26, top: 6.5 + random() * 3 };
+  const wall: RGB = [148 + random() * 14, 144 + random() * 12, 136 + random() * 10];
+  const glass: RGB = [62, 78, 96];
+  const ZENITH: RGB = [88, 130, 190];
+  const HAZE: RGB = [198, 208, 218];
+
+  function mix(a: RGB, b: RGB, t: number): RGB {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  }
+
+  /**
+   * Slab intersection against the building box, returning the nearest
+   * positive hit distance and which axis was crossed (so the two visible wall
+   * faces can be shaded differently — without that the box reads as a flat
+   * silhouette rather than a solid).
+   */
+  function hitBox(dx: number, dy: number, dz: number): { t: number; axis: "x" | "y" | "z" } | null {
+    const origin = [0, EYE, 0];
+    const lo = [box.x0, 0, box.z0];
+    const hi = [box.x1, box.top, box.z1];
+    const dir = [dx, dy, dz];
+    let tMin = 0;
+    let tMax = Infinity;
+    let axis: "x" | "y" | "z" = "z";
+    const names: Array<"x" | "y" | "z"> = ["x", "y", "z"];
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(dir[i]) < 1e-9) {
+        if (origin[i] < lo[i] || origin[i] > hi[i]) return null;
+        continue;
+      }
+      let t0 = (lo[i] - origin[i]) / dir[i];
+      let t1 = (hi[i] - origin[i]) / dir[i];
+      if (t0 > t1) [t0, t1] = [t1, t0];
+      if (t0 > tMin) {
+        tMin = t0;
+        axis = names[i];
+      }
+      tMax = Math.min(tMax, t1);
+      if (tMin > tMax) return null;
+    }
+    return tMin > 0 ? { t: tMin, axis } : null;
+  }
+
+  /** Colour of whatever one ray direction lands on. */
+  function shade(dx: number, dy: number, dz: number): RGB {
+    // Sky is the fallback every miss falls back to.
+    let color: RGB = mix(HAZE, ZENITH, Math.pow(Math.max(0, dy), 0.55));
+    let distance = Infinity;
+
+    // Ground plane at y = 0. Only rays pointing below the horizon reach it.
+    if (dy < -1e-4) {
+      const t = EYE / -dy;
+      // The tripod stands in the middle of a bay rather than on a line.
+      // Standing on the intersection of two stripes puts them directly under
+      // the nadir, where the projection stretches them across the whole
+      // bottom of the frame.
+      const px = dx * t + 1.35;
+      const pz = dz * t + 2.75;
+      // Bay lines every 2.7 m, with an aisle line every 5.5 m across them,
+      // and only inside the marked lot — beyond it the asphalt is plain.
+      const inLot = Math.abs(px) < 34 && Math.abs(pz) < 34;
+      const onStripe =
+        inLot && (Math.abs(((px % 2.7) + 2.7) % 2.7) < 0.06 || Math.abs(((pz % 5.5) + 5.5) % 5.5) < 0.06);
+      color = onStripe ? STRIPE : ASPHALT;
+      distance = t;
+    }
+
+    const hit = hitBox(dx, dy, dz);
+    if (hit && hit.t < distance) {
+      const py = EYE + dy * hit.t;
+      // Two glazing bands, broken into bays. The mullions are what make the
+      // facade read as a building rather than a coloured slab.
+      const along = hit.axis === "x" ? dz * hit.t : dx * hit.t;
+      const inBand = (py > 2.2 && py < 3.5) || (py > 4.3 && py < 5.5);
+      const inBay = Math.abs(((along % 3.2) + 3.2) % 3.2) > 0.55;
+      color = inBand && inBay ? glass : hit.axis === "x" ? mix(wall, [0, 0, 0], 0.16) : wall;
+      distance = hit.t;
+    }
+
+    // Aerial perspective: everything fades into the horizon haze with
+    // distance, which is also what stops the parking stripes from marching to
+    // the seam as hard black-and-white lines.
+    return distance < Infinity ? mix(color, HAZE, Math.min(0.85, distance / 90)) : color;
+  }
+
+  // 2x2 supersampling. Without it the stripe grid aliases into a field of
+  // dashes near the horizon, where one pixel spans many metres of asphalt.
+  const OFFSETS = [0.25, 0.75];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      let r0 = 0;
+      let g0 = 0;
+      let b0 = 0;
+      for (const oy of OFFSETS) {
+        const lat = Math.PI / 2 - (y + oy) * (Math.PI / H);
+        const sinLat = Math.sin(lat);
+        const cosLat = Math.cos(lat);
+        for (const ox of OFFSETS) {
+          const lon = (x + ox) * ((2 * Math.PI) / W) - Math.PI;
+          const [sr, sg, sb] = shade(cosLat * Math.sin(lon), sinLat, cosLat * Math.cos(lon));
+          r0 += sr;
+          g0 += sg;
+          b0 += sb;
+        }
+      }
+      r.set(x, y, [r0 / 4, g0 / 4, b0 / 4]);
+    }
+  }
+
+  r.grain(random, 9);
+  return r.toJpeg(80);
+}

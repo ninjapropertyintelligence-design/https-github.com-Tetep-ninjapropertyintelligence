@@ -5,6 +5,7 @@ const TABS = [
   { key: "site-map", label: "Site Map" },
   { key: "exterior", label: "Exterior" },
   { key: "interior", label: "Interior" },
+  { key: "360", label: "360° Views" },
   { key: "digital-twin", label: "Digital Twin" },
   { key: "assets", label: "Assets" },
   { key: "assessments", label: "Assessments" },

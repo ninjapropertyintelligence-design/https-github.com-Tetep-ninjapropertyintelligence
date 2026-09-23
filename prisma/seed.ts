@@ -9,6 +9,7 @@ import {
   renderRoofDetail,
   renderFacade,
   renderDefectEvidence,
+  renderPanorama360,
   buildingMeshPly,
   sitePointCloudXyz,
 } from "./seed-media";
@@ -28,6 +29,7 @@ async function main() {
   const flags: Array<{ key: string; description: string; defaultEnabled: boolean }> = [
     { key: "matterport", description: "Matterport interior capture integration", defaultEnabled: true },
     { key: "drone_processing", description: "Drone/photogrammetry capture + processing", defaultEnabled: true },
+    { key: "image_360", description: "360° panorama capture (handheld/tripod 360 cameras)", defaultEnabled: true },
     { key: "point_cloud", description: "Point cloud / mesh 3D viewer", defaultEnabled: true },
     { key: "offline_mobile", description: "Offline-capable field app", defaultEnabled: false },
     { key: "owner_ai", description: "Executive/Owner AI ('Ask My Portfolio')", defaultEnabled: true },
@@ -621,6 +623,43 @@ async function main() {
       });
     }
     console.log(`  Wrote ${evidenceSpecs.length} geotagged evidence photo(s)`);
+  }
+
+  // 360 panoramas — the third capture kind, alongside Matterport interiors
+  // and drone exteriors. Seeded as geotagged IMAGE_360 evidence, which is
+  // what the 360 tab reads and what puts a real pin on the Site Map's 360
+  // layer rather than an empty toggle.
+  const existingPanoramas = await prisma.evidence.count({ where: { propertyId: pilot.id, type: "IMAGE_360" } });
+  if (existingPanoramas === 0) {
+    const panoramaSpecs = [
+      { label: "north-lot-360.jpg", lat: 39.09992, lng: -94.57869, seed: 4101 },
+      { label: "south-entrance-360.jpg", lat: 39.09963, lng: -94.57833, seed: 4207 },
+    ];
+    for (const spec of panoramaSpecs) {
+      const bytes = await renderPanorama360(spec.seed);
+      const key = `${org.id}/${crypto.randomUUID()}-${spec.label}`;
+      await storage.writeBytes(key, bytes);
+      await prisma.evidence.create({
+        data: {
+          organizationId: org.id,
+          propertyId: pilot.id,
+          type: "IMAGE_360",
+          source: "MANUAL",
+          captureDate: capture.capturedAt,
+          uploadedById: technician.id,
+          latitude: spec.lat,
+          longitude: spec.lng,
+          storageKey: key,
+          mimeType: "image/jpeg",
+          sizeBytes: bytes.byteLength,
+          // projection is recorded because a 2:1 JPEG is not self-describing:
+          // nothing in the file says whether it is equirectangular, and the
+          // viewer would happily wrap a flat photo onto a sphere.
+          metadata: { source: "seed", synthetic: true, projection: "equirectangular" },
+        },
+      });
+    }
+    console.log(`  Wrote ${panoramaSpecs.length} geotagged 360 panorama(s)`);
   }
 
   // A completed processing job for the dataset above. Without one, the

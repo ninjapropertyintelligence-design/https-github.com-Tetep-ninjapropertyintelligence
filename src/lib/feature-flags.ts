@@ -27,6 +27,7 @@ import { SessionContext } from "@/lib/tenant-scope";
 export const FEATURE_FLAGS = {
   MATTERPORT: "matterport",
   DRONE_PROCESSING: "drone_processing",
+  IMAGE_360: "image_360",
   POINT_CLOUD: "point_cloud",
   OFFLINE_MOBILE: "offline_mobile",
   OWNER_AI: "owner_ai",
@@ -41,6 +42,7 @@ export type FeatureFlagKey = (typeof FEATURE_FLAGS)[keyof typeof FEATURE_FLAGS];
 const FLAG_LABELS: Record<FeatureFlagKey, string> = {
   matterport: "Matterport interior capture",
   drone_processing: "Drone capture and processing",
+  image_360: "360° panorama capture",
   point_cloud: "Point cloud / 3D mesh viewer",
   offline_mobile: "Offline-capable field app",
   owner_ai: "Executive AI",

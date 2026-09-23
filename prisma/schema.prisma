@@ -266,6 +266,10 @@ enum UsageMetricType {
   AI_INPUT_TOKENS
   AI_OUTPUT_TOKENS
   MATTERPORT_ALLOCATION
+  /// One 360 panorama registered. Counted per image, not per byte: storage is
+  /// already metered separately, and what a customer buys with a 360 plan is
+  /// the right to capture panoramas, not the gigabytes they happen to occupy.
+  IMAGE_360_CAPTURE
   GEOCODING_REQUEST
   DOCUMENT_INDEX_JOB
   REPORT_GENERATION

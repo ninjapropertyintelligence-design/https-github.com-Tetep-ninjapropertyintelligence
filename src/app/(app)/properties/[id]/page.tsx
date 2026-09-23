@@ -7,6 +7,7 @@ import { ScoringCategory } from "@/lib/scoring-categories";
 import { getPropertyInteriorStatus } from "@/lib/matterport-service";
 import { getPropertyExteriorData } from "@/lib/drone-service";
 import { getSiteMapData } from "@/lib/site-map";
+import { getProperty360Data } from "@/lib/image-360-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SeverityBadge, StatusBadge } from "@/components/ui/Badge";
@@ -19,6 +20,7 @@ import { AskAiInline } from "@/components/ai/AskAiInline";
 import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
 import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
 import { SiteMap } from "@/components/property/SiteMap";
+import { Photo360Gallery } from "@/components/media/Photo360Gallery";
 import { NearbyProperties } from "@/components/property/NearbyProperties";
 import { recordProductEvent } from "@/lib/analytics";
 
@@ -110,6 +112,8 @@ async function TabContent({
       return <SiteMapTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "interior":
       return <InteriorTab propertyId={propertyId} ctx={ctx} />;
+    case "360":
+      return <Photo360Tab propertyId={propertyId} ctx={ctx} />;
     case "exterior":
       return <ExteriorTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "digital-twin":
@@ -381,6 +385,22 @@ async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
       data={status as unknown as InteriorStatusData}
       canManageIntegrations={can(ctx, "canManageIntegrations")}
       canPerformCapture={can(ctx, "canPerformCapture")}
+    />
+  );
+}
+
+async function Photo360Tab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const { panoramas, enabled } = await getProperty360Data(ctx, propertyId);
+  return (
+    <Photo360Gallery
+      enabled={enabled}
+      panoramas={panoramas.map((p) => ({
+        ...p,
+        // Serialised here: a Date does not cross the server/client boundary as
+        // a Date, and formatting it on the server would pin the output to the
+        // server's locale rather than the viewer's.
+        capturedAt: p.capturedAt ? p.capturedAt.toISOString() : null,
+      }))}
     />
   );
 }
