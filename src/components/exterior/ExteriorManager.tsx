@@ -67,6 +67,7 @@ async function sha256Hex(file: File): Promise<string> {
 export function ExteriorManager({
   propertyId,
   captures,
+  selectedCaptureId,
   markers,
   canPerformCapture,
   canManageAssets,
@@ -75,6 +76,8 @@ export function ExteriorManager({
 }: {
   propertyId: string;
   captures: DroneCaptureData[];
+  /** Resolved on the server, which owns the selection rule. */
+  selectedCaptureId: string | null;
   markers: MarkerData[];
   canPerformCapture: boolean;
   canManageAssets: boolean;
@@ -91,7 +94,10 @@ export function ExteriorManager({
   const [expandedOutputId, setExpandedOutputId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeCapture = captures.find((c) => c.status !== "READY" && c.status !== "FAILED") ?? captures[0];
+  // The server resolves which capture is active (URL choice, else work in
+  // flight, else newest). Re-deriving it here would give two rules that can
+  // disagree — the panel showing one capture while the uploads target another.
+  const activeCapture = captures.find((c) => c.id === selectedCaptureId) ?? captures[0];
   const activeDataset = activeCapture?.datasets[0];
   const primaryImage = activeDataset?.images[0];
   const orthomosaic = activeDataset?.outputs.find((o) => o.outputType === "ORTHOMOSAIC");
@@ -239,6 +245,36 @@ export function ExteriorManager({
         />
         <CardBody className="space-y-3">
           {error ? <p className="text-sm text-[var(--band-critical)]">{error}</p> : null}
+
+          {/* Capture switching. Only shown with something to switch between —
+              a single-option dropdown is noise. The choice lives in the URL so
+              it survives a reload and matches the Site Map tab's control. */}
+          {captures.length > 1 ? (
+            <label className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted">Capture:</span>
+              <select
+                value={activeCapture?.id ?? ""}
+                onChange={(e) => {
+                  const params = new URLSearchParams(window.location.search);
+                  params.set("tab", "exterior");
+                  params.set("capture", e.target.value);
+                  router.push(`/properties/${propertyId}?${params.toString()}`);
+                }}
+                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground outline-none focus:border-brand"
+              >
+                {captures.map((capture, index) => (
+                  <option key={capture.id} value={capture.id}>
+                    {formatDate(capture.capturedAt)}
+                    {index === 0 ? " (most recent)" : ""}
+                    {capture.status !== "READY" ? ` — ${capture.status.toLowerCase()}` : ""}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-muted">
+                {captures.length} captures on this property
+              </span>
+            </label>
+          ) : null}
 
           {displayImage ? (
             <div className="relative inline-block">

@@ -111,7 +111,7 @@ async function TabContent({
     case "interior":
       return <InteriorTab propertyId={propertyId} ctx={ctx} />;
     case "exterior":
-      return <ExteriorTab propertyId={propertyId} ctx={ctx} />;
+      return <ExteriorTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "digital-twin":
       return <DigitalTwinTab propertyId={propertyId} />;
     case "projects":
@@ -385,9 +385,17 @@ async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
   );
 }
 
-async function ExteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const [{ captures, markers }, assets, issues] = await Promise.all([
-    getPropertyExteriorData(ctx, propertyId),
+async function ExteriorTab({
+  propertyId,
+  captureId,
+  ctx,
+}: {
+  propertyId: string;
+  captureId?: string;
+  ctx: SessionContext;
+}) {
+  const [{ captures, markers, selectedCaptureId }, assets, issues] = await Promise.all([
+    getPropertyExteriorData(ctx, propertyId, captureId),
     prisma.asset.findMany({ where: { propertyId, status: "ACTIVE" }, select: { id: true, name: true }, take: 200 }),
     prisma.issue.findMany({
       where: { propertyId, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } },
@@ -399,6 +407,7 @@ async function ExteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
     <ExteriorManager
       propertyId={propertyId}
       captures={captures as unknown as DroneCaptureData[]}
+      selectedCaptureId={selectedCaptureId}
       markers={markers as unknown as MarkerData[]}
       canPerformCapture={can(ctx, "canPerformCapture")}
       canManageAssets={can(ctx, "canManageAssets")}

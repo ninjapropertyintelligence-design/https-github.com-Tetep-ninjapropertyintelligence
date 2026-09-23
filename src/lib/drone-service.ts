@@ -320,11 +320,25 @@ export async function markCaptureFailed(ctx: SessionContext, captureId: string, 
 }
 
 /** Full exterior dataset for the Exterior tab: captures, datasets, images, outputs, markers. */
-export async function getPropertyExteriorData(ctx: SessionContext, propertyId: string) {
+export async function getPropertyExteriorData(
+  ctx: SessionContext,
+  propertyId: string,
+  /**
+   * Which capture to work on. Re-scoped below against this property's own
+   * capture list, never trusted as a lookup key: it arrives as a URL
+   * parameter, and honouring an id from elsewhere would show one property's
+   * imagery under another's page.
+   */
+  requestedCaptureId?: string | null,
+) {
   const property = await assertPropertyInScope(ctx, propertyId);
   const captures = await prisma.droneCapture.findMany({
     where: { propertyId: property.id },
-    orderBy: { createdAt: "desc" },
+    // By flight date, not row-creation time. A backfilled capture of a flight
+    // from last year is created today; ordering by createdAt would present it
+    // as the most recent survey of the building, which it is not. Nulls last
+    // so an undated capture cannot claim to be the newest.
+    orderBy: { capturedAt: { sort: "desc", nulls: "last" } },
     include: {
       datasets: {
         include: {
@@ -357,5 +371,19 @@ export async function getPropertyExteriorData(ctx: SessionContext, propertyId: s
       evidence: { select: { id: true, type: true } },
     },
   });
-  return { captures: capturesWithUrls, markers };
+  /**
+   * Selection order, and why:
+   *   1. What the URL asked for, if it belongs to this property.
+   *   2. Any capture still in flight — this tab is where uploads and
+   *      processing happen, so work in progress outranks history. This was
+   *      the tab's original (only) behaviour and is deliberately kept.
+   *   3. Otherwise the most recent flight.
+   */
+  const requested = requestedCaptureId
+    ? capturesWithUrls.find((c) => c.id === requestedCaptureId)
+    : undefined;
+  const inFlight = capturesWithUrls.find((c) => c.status !== "READY" && c.status !== "FAILED");
+  const selectedCaptureId = (requested ?? inFlight ?? capturesWithUrls[0])?.id ?? null;
+
+  return { captures: capturesWithUrls, markers, selectedCaptureId };
 }
