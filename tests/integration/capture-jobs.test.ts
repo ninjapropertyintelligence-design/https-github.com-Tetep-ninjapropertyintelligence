@@ -12,7 +12,10 @@ import {
   submitConditionScores,
 } from "@/lib/capture-job-service";
 import { createEvidenceBatch, MAX_EVIDENCE_BATCH } from "@/lib/evidence-service";
-import { canAccessProperty } from "@/lib/tenant-scope";
+import { resolveDroneTargetForSite } from "@/lib/capture-job-service";
+import { MAX_DRONE_IMAGE_BATCH, registerDroneImagesBatch } from "@/lib/drone-service";
+import { getStorageProvider } from "@/lib/storage";
+import { canAccessProperty, evidenceScopeWhere } from "@/lib/tenant-scope";
 import { computePropertyHealth } from "@/lib/scoring";
 import type { SessionContext } from "@/lib/tenant-scope";
 
@@ -119,6 +122,13 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await prisma.captureJob.deleteMany({ where: { organizationId: org.id } });
+  // Drone captures too: `resolveDroneTargetForSite` deliberately REUSES an
+  // in-flight capture, so without this each test inherits the previous
+  // test's dataset and its images. That coupling made a batch assertion
+  // count twelve rows a later test never wrote.
+  await prisma.droneCapture.deleteMany({
+    where: { propertyId: { in: [siteA.id, siteB.id, untouchedSite.id] } },
+  });
 });
 
 afterAll(async () => {
@@ -454,5 +464,159 @@ describe("bulk upload", () => {
         { type: "PHOTO", storageKey: `${untouchedSite.id}/${crypto.randomUUID()}-v.jpg`, propertyId: untouchedSite.id },
       ]),
     ).rejects.toThrow(/can't access/i);
+  });
+});
+
+
+describe("the upload panel's server side", () => {
+  it("resolves a drone target the vendor never has to think about", async () => {
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const target = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+    expect(target.captureId).toBeTruthy();
+    expect(target.datasetId).toBeTruthy();
+  });
+
+  it("reuses an in-flight capture instead of creating one per upload", async () => {
+    // A vendor uploading in three sittings would otherwise produce three
+    // captures of the same flight, and the Exterior tab's date selector
+    // fills with duplicates each holding a third of the photos.
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const first = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+    const second = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+    expect(second.captureId).toBe(first.captureId);
+    expect(second.datasetId).toBe(first.datasetId);
+    expect(await prisma.droneCapture.count({ where: { propertyId: siteA.id } })).toBe(1);
+  });
+
+  it("refuses a drone target once the job is closed", async () => {
+    // Deliberately as STAFF, not as the vendor. A vendor's job lookup already
+    // filters to open jobs, so a vendor would be refused even with this check
+    // removed — the test would pass for the wrong reason and prove nothing.
+    // Staff can see a cancelled job, so staff is the path where the status
+    // check is the only thing standing there.
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    await prisma.captureJob.update({ where: { id: job.id }, data: { status: "CANCELLED" } });
+    await expect(resolveDroneTargetForSite(staffCtx(), job.id, site.id)).rejects.toThrow(
+      /no longer accepts uploads/i,
+    );
+  });
+
+  it("registers a whole flight in one call", async () => {
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const { datasetId } = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+
+    // The bytes go to storage first, because registration verifies that the
+    // object actually exists — metadata for a file nobody uploaded is how a
+    // dataset ends up full of rows pointing at nothing.
+    const storage = getStorageProvider();
+    const images = await Promise.all(
+      Array.from({ length: 12 }, async (_, i) => {
+        const storageKey = `${siteA.id}/${crypto.randomUUID()}-DJI_${i}.jpg`;
+        await storage.writeBytes(storageKey, Buffer.from(`fake-jpeg-${i}`));
+        return { storageKey, mimeType: "image/jpeg" };
+      }),
+    );
+
+    const result = await registerDroneImagesBatch(vendorCtx(), datasetId, images);
+    expect(result.registered).toBe(12);
+    expect(await prisma.droneImage.count({ where: { datasetId } })).toBe(12);
+  });
+
+  it("rejects the whole batch on an unsupported file, before writing anything", async () => {
+    // Failing on image 300 would leave a half-registered dataset with no way
+    // for the caller to tell which files landed.
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const { datasetId } = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+
+    await expect(
+      registerDroneImagesBatch(vendorCtx(), datasetId, [
+        { storageKey: `${siteA.id}/${crypto.randomUUID()}-ok.jpg` },
+        { storageKey: `${siteA.id}/${crypto.randomUUID()}-notes.pdf` },
+      ]),
+    ).rejects.toThrow(/unsupported image file type/i);
+    expect(await prisma.droneImage.count({ where: { datasetId } })).toBe(0);
+  });
+
+  it("refuses a drone batch over the ceiling", async () => {
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const { datasetId } = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+    await expect(
+      registerDroneImagesBatch(
+        vendorCtx(),
+        datasetId,
+        Array.from({ length: MAX_DRONE_IMAGE_BATCH + 1 }, () => ({
+          storageKey: `${siteA.id}/${crypto.randomUUID()}-x.jpg`,
+        })),
+      ),
+    ).rejects.toThrow(/at most/i);
+  });
+
+  it("does not let a vendor register images against another site's dataset", async () => {
+    // The dataset id is a client-supplied value, so it is re-scoped.
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const { datasetId } = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+
+    // Close the job, which ends the vendor's access to the site.
+    for (const s2 of job.sites) {
+      await prisma.captureJobSite.update({ where: { id: s2.id }, data: { status: "ACCEPTED" } });
+    }
+    await prisma.captureJob.update({ where: { id: job.id }, data: { status: "ACCEPTED" } });
+
+    await expect(
+      registerDroneImagesBatch(vendorCtx(), datasetId, [
+        { storageKey: `${siteA.id}/${crypto.randomUUID()}-late.jpg` },
+      ]),
+    ).rejects.toThrow();
+    void site;
+  });
+});
+
+
+describe("reading evidence is scoped too", () => {
+  it("does not let a vendor list a site they were never sent to", async () => {
+    // The list endpoint takes propertyId from the query string, so naming a
+    // site must not be enough to read it.
+    await prisma.evidence.create({
+      data: {
+        organizationId: org.id,
+        propertyId: untouchedSite.id,
+        type: "PHOTO",
+        storageKey: `${untouchedSite.id}/${crypto.randomUUID()}-private.jpg`,
+        uploadedById: staff.id,
+      },
+    });
+    await issuedJob(["PHOTOS"]);
+
+    const visible = await prisma.evidence.findMany({
+      where: { ...evidenceScopeWhere(vendorCtx()), propertyId: untouchedSite.id },
+    });
+    expect(visible).toHaveLength(0);
+
+    // And the site they WERE sent to stays readable.
+    await prisma.evidence.create({
+      data: {
+        organizationId: org.id,
+        propertyId: siteA.id,
+        type: "PHOTO",
+        storageKey: `${siteA.id}/${crypto.randomUUID()}-theirs.jpg`,
+        uploadedById: vendorUser.id,
+      },
+    });
+    const own = await prisma.evidence.findMany({
+      where: { ...evidenceScopeWhere(vendorCtx()), propertyId: siteA.id },
+    });
+    expect(own.length).toBeGreaterThan(0);
+  });
+
+  it("still shows an owner everything in the organization", async () => {
+    const all = await prisma.evidence.findMany({ where: evidenceScopeWhere(staffCtx()) });
+    expect(all.length).toBeGreaterThan(0);
   });
 });

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { withApiHandler } from "@/lib/api-utils";
+import { evidenceScopeWhere } from "@/lib/tenant-scope";
 import { createEvidence } from "@/lib/evidence-service";
 import { z } from "zod";
 
@@ -40,7 +41,10 @@ export const GET = withApiHandler(async (ctx, req) => {
 
   const items = await prisma.evidence.findMany({
     where: {
-      organizationId: ctx.organizationId,
+      // Scoped, not just tenant-filtered: `propertyId` arrives from the query
+      // string, so without this a member could read any property's evidence
+      // by naming it.
+      ...evidenceScopeWhere(ctx),
       ...(propertyId ? { propertyId } : {}),
       ...(assetId ? { assetId } : {}),
       ...(issueId ? { issueId } : {}),

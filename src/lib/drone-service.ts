@@ -403,3 +403,108 @@ export async function getPropertyExteriorData(
 
   return { captures: capturesWithUrls, markers, selectedCaptureId };
 }
+
+/**
+ * The most images one batch may register.
+ *
+ * Each image costs a HEAD against the object store for the integrity check,
+ * so a batch is bounded by time rather than by bind parameters. 250 at ten
+ * at a time is well inside a serverless function's budget, and a real flight
+ * of 600 images arrives as three calls instead of 600.
+ */
+export const MAX_DRONE_IMAGE_BATCH = 250;
+
+/** How many integrity checks run at once. Sequential is too slow; unbounded
+ *  opens hundreds of sockets and the store starts refusing them. */
+const VERIFY_CONCURRENCY = 10;
+
+/**
+ * Registers many drone images against one dataset.
+ *
+ * Not a loop over `registerDroneImage`: the entitlement check and the dataset
+ * scope lookup happen once for the batch rather than once per file, and every
+ * filename is validated BEFORE anything is written — a batch that fails on
+ * image 300 would otherwise leave a half-registered dataset with no way for
+ * the caller to tell which files landed.
+ */
+export async function registerDroneImagesBatch(
+  ctx: SessionContext,
+  datasetId: string,
+  images: Array<{
+    storageKey: string;
+    thumbnailKey?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    checksum?: string;
+    latitude?: number;
+    longitude?: number;
+    altitude?: number;
+    capturedAt?: Date;
+  }>,
+) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+  if (images.length === 0) throw new ApiError(400, "No images to register");
+  if (images.length > MAX_DRONE_IMAGE_BATCH) {
+    throw new ApiError(
+      400,
+      `A batch may carry at most ${MAX_DRONE_IMAGE_BATCH} images; this one has ${images.length}`,
+    );
+  }
+
+  const dataset = await loadScopedDataset(ctx, datasetId);
+
+  const rejected = images
+    .map((i) => ({ key: i.storageKey, ext: extensionOf(i.storageKey) }))
+    .filter((i) => !ALLOWED_IMAGE_EXTENSIONS.includes(i.ext));
+  if (rejected.length > 0) {
+    throw new ApiError(
+      400,
+      `Unsupported image file type "${rejected[0].ext || "unknown"}" — allowed: ${ALLOWED_IMAGE_EXTENSIONS.join(", ")}`,
+    );
+  }
+
+  const created: Array<{ id: string; storageKey: string }> = [];
+  for (let i = 0; i < images.length; i += VERIFY_CONCURRENCY) {
+    const chunk = images.slice(i, i + VERIFY_CONCURRENCY);
+    const verified = await Promise.all(
+      chunk.map(async (input) => ({
+        input,
+        verification: await verifyUploadedFile(ctx, {
+          storageKey: input.storageKey,
+          clientSizeBytes: input.sizeBytes,
+          clientChecksum: input.checksum,
+        }),
+      })),
+    );
+
+    for (const { input, verification } of verified) {
+      const image = await prisma.droneImage.create({
+        data: {
+          datasetId: dataset.id,
+          storageKey: input.storageKey,
+          thumbnailKey: input.thumbnailKey,
+          mimeType: input.mimeType ?? null,
+          sizeBytes: verification.actualSizeBytes,
+          checksum: verification.actualChecksumSha256,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          altitude: input.altitude,
+          capturedAt: input.capturedAt,
+        },
+      });
+      created.push({ id: image.id, storageKey: image.storageKey });
+
+      // Age for tiering runs from when the object landed in the store, not
+      // from `capturedAt` — same rule as the single-image path.
+      await registerStorageObjectBestEffort({
+        organizationId: ctx.organizationId,
+        storageKey: image.storageKey,
+        kind: StorageObjectKind.DRONE_IMAGE,
+        sizeBytes: image.sizeBytes === null ? null : Number(image.sizeBytes),
+        objectCreatedAt: image.createdAt,
+      });
+    }
+  }
+
+  return { registered: created.length, ids: created.map((c) => c.id) };
+}

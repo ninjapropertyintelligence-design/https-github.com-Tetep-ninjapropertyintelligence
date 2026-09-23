@@ -5,6 +5,7 @@ import { getCaptureJob, outstandingDeliverables } from "@/lib/capture-job-servic
 import { ApiError } from "@/lib/api-error";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { CaptureSiteActions } from "@/components/capture/CaptureSiteActions";
+import { CaptureUploadPanel } from "@/components/capture/CaptureUploadPanel";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
 
@@ -112,6 +113,15 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                       Sent back: {site.rejectionReason}
                     </p>
+                  ) : null}
+
+                  {isVendor ? (
+                    <CaptureUploadPanel
+                      jobId={job.id}
+                      siteId={site.id}
+                      propertyId={site.propertyId}
+                      disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
+                    />
                   ) : null}
 
                   <CaptureSiteActions

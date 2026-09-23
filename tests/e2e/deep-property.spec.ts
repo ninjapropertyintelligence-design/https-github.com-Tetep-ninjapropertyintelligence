@@ -95,8 +95,16 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   // the storage object proves neither the content type nor the origin.
   const evidenceList = await page.request.get(`/api/v1/evidence?propertyId=${propertyId}`);
   expect(evidenceList.ok()).toBe(true);
-  const items = (await evidenceList.json()).data.items as Array<{ id: string; type: string }>;
-  const panoramaRow = items.find((i) => i.type === "IMAGE_360");
+  const items = (await evidenceList.json()).data.items as Array<{
+    id: string;
+    type: string;
+    storageKey: string;
+  }>;
+  // One of the SEEDED panoramas specifically, not merely the newest. The
+  // capture-job spec uploads tiny fixture panoramas to this same property,
+  // and the list comes back newest first — picking the first IMAGE_360 meant
+  // this asserted against a 160-byte test file and failed on its size.
+  const panoramaRow = items.find((i) => i.type === "IMAGE_360" && /360\.jpg$/.test(i.storageKey));
   expect(panoramaRow, "the seed must have registered a 360 panorama").toBeTruthy();
 
   const bytes = await page.request.get(`/api/v1/evidence/${panoramaRow!.id}/content`);

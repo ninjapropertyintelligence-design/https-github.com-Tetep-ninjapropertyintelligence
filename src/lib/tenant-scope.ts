@@ -136,6 +136,24 @@ export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInp
  * without being granted general property access. Every other role scopes
  * through the property graph like everything else.
  */
+/**
+ * Builds an `Evidence.where` fragment.
+ *
+ * The list endpoint filtered on `organizationId` alone and took `propertyId`
+ * straight from the query string, so any member could read any property's
+ * evidence by naming it — a regional manager outside their region, or a
+ * capture subcontractor reading a site they were never sent to. Same class
+ * of mistake as the write path, on the read side.
+ *
+ * Evidence with no property (organization-level attachments) stays visible
+ * to org-wide roles only. A scoped role's access is defined by the properties
+ * it can reach, and a row attached to none of them is not theirs.
+ */
+export function evidenceScopeWhere(ctx: SessionContext): Prisma.EvidenceWhereInput {
+  if (isOrgWideRole(ctx.role)) return { organizationId: ctx.organizationId };
+  return { organizationId: ctx.organizationId, property: propertyScopeWhere(ctx) };
+}
+
 export function issueScopeWhere(ctx: SessionContext): Prisma.IssueWhereInput {
   if (ctx.role === Role.VENDOR) {
     if (!ctx.vendorId) return { organizationId: ctx.organizationId, id: "__no_access__" };

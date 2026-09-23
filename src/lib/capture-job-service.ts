@@ -9,6 +9,7 @@ import {
 } from "@/generated/prisma/client";
 import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { recordAssetConditionChange } from "@/lib/asset-condition";
+import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 
 /**
@@ -351,4 +352,42 @@ export async function reviewCaptureSite(
   }
 
   return updated;
+}
+
+
+/**
+ * Where drone files for this site should go.
+ *
+ * A subcontractor should not have to understand that drone imagery hangs off
+ * a capture, which hangs off a dataset. They picked "drone imagery" and
+ * dropped 400 files; this resolves that into a dataset id.
+ *
+ * An in-flight capture is REUSED rather than a new one created per upload.
+ * Without that, a vendor who uploads in three sittings produces three
+ * captures of the same flight, and the Exterior tab's date selector fills
+ * with duplicates that each hold a third of the photos.
+ */
+export async function resolveDroneTargetForSite(
+  ctx: SessionContext,
+  jobId: string,
+  siteId: string,
+): Promise<{ captureId: string; datasetId: string }> {
+  const { job, site } = await siteForAction(ctx, jobId, siteId);
+  if (!OPEN_STATUSES.includes(job.status)) {
+    throw new ApiError(409, `This job is ${job.status.toLowerCase()} and no longer accepts uploads`);
+  }
+
+  const existing = await prisma.droneCapture.findFirst({
+    where: { propertyId: site.propertyId, status: { in: ["CREATED", "UPLOADING", "PROCESSING"] } },
+    orderBy: { createdAt: "desc" },
+    include: { datasets: { orderBy: { createdAt: "desc" }, take: 1 } },
+  });
+
+  if (existing?.datasets[0]) {
+    return { captureId: existing.id, datasetId: existing.datasets[0].id };
+  }
+
+  const capture = existing ?? (await createDroneCapture(ctx, site.propertyId, { capturedAt: new Date() }));
+  const dataset = await createDroneDataset(ctx, capture.id);
+  return { captureId: capture.id, datasetId: dataset.id };
 }
