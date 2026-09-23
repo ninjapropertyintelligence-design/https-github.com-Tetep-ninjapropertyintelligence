@@ -122,6 +122,39 @@ enum AssessmentStatus {
   COMPLETED
 }
 
+/// Lifecycle of a capture job. DRAFT is invisible to the vendor: a job being
+/// assembled must not appear as work they owe. ACCEPTED and CANCELLED end the
+/// vendor's access to the sites, which is why access is derived from this
+/// status rather than from a standing grant someone has to remember to revoke.
+enum CaptureJobStatus {
+  DRAFT
+  ISSUED
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+enum CaptureJobSiteStatus {
+  PENDING
+  IN_PROGRESS
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+}
+
+/// What a site owes before it can be submitted. CONDITION_SCORES is the one
+/// that matters most: imagery alone never moves a property's health score,
+/// because the score is computed from asset condition. A capture job that
+/// does not ask for condition scores buys pictures and changes no number.
+enum CaptureDeliverable {
+  DRONE
+  MATTERPORT
+  IMAGE_360
+  PHOTOS
+  CONDITION_SCORES
+}
+
 enum ValidationStatus {
   AUTO_CALCULATED
   HUMAN_OBSERVED
@@ -350,6 +383,8 @@ model User {
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
   mfaRecoveryCodes       MfaRecoveryCode[]
+  createdCaptureJobs     CaptureJob[]            @relation("CaptureJobCreatedBy")
+  reviewedCaptureSites   CaptureJobSite[]        @relation("CaptureJobSiteReviewedBy")
   impersonationSessions  ImpersonationSession[]  @relation("ImpersonationAdmin")
   legalHoldsPlaced       LegalHold[]             @relation("LegalHoldPlacedBy")
   deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
@@ -494,6 +529,7 @@ model Organization {
   deletionRequests     DeletionRequest[]
   storageTieringPolicy StorageTieringPolicy?
   storageObjects       StorageObject[]
+  captureJobs          CaptureJob[]
 
   @@index([slug])
 }
@@ -574,6 +610,7 @@ model Property {
   healthSnapshots PropertyHealthSnapshot[]
   matterportLinks MatterportPropertyLink[]
   droneCaptures   DroneCapture[]
+  captureJobSites CaptureJobSite[]
   accessGrants    AccessGrant[]
   exteriorMarkers ExteriorMarker[]
   documentChunks  DocumentChunk[]
@@ -860,6 +897,7 @@ model Vendor {
 
   issues      Issue[]
   memberships Membership[]
+  captureJobs CaptureJob[]
 
   @@index([organizationId])
 }
@@ -1982,4 +2020,67 @@ model StorageObject {
   @@index([organizationId, currentTier])
   // Drives the "what is due for transition" scan.
   @@index([organizationId, objectCreatedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Capture jobs
+// ---------------------------------------------------------------------------
+
+/// Work ordered from a capture subcontractor: go to these sites, produce these
+/// deliverables, by this date.
+///
+/// This model is also the subcontractor's AUTHORIZATION. A vendor has no
+/// property access of its own — `propertyScopeWhere` grants access to exactly
+/// the sites on their open jobs, so access begins when the job is issued and
+/// ends when it is accepted or cancelled. Nobody has to remember to revoke a
+/// grant, which is the failure mode of handing contractors standing accounts.
+model CaptureJob {
+  id             String           @id @default(cuid())
+  organizationId String
+  /// Null while a job is being drafted before a vendor is chosen.
+  vendorId       String?
+  title          String
+  instructions   String?
+  status         CaptureJobStatus @default(DRAFT)
+  dueDate        DateTime?
+  issuedAt       DateTime?
+  submittedAt    DateTime?
+  closedAt       DateTime?
+  createdById    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor       Vendor?          @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  createdBy    User?            @relation("CaptureJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  sites        CaptureJobSite[]
+
+  @@index([organizationId, status])
+  @@index([vendorId, status])
+}
+
+/// One property on a capture job, with its own status so a 40-site job can be
+/// delivered and reviewed site by site rather than all-or-nothing.
+model CaptureJobSite {
+  id              String               @id @default(cuid())
+  jobId           String
+  propertyId      String
+  deliverables    CaptureDeliverable[]
+  status          CaptureJobSiteStatus @default(PENDING)
+  notes           String?
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  rejectionReason String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  job        CaptureJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  property   Property   @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  reviewedBy User?      @relation("CaptureJobSiteReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  /// A site appears on a job once. Two rows would let one submission satisfy
+  /// the other and make the completion count wrong.
+  @@unique([jobId, propertyId])
+  @@index([propertyId])
 }

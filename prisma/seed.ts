@@ -744,6 +744,34 @@ async function main() {
   console.log("Seeding vendor membership scope + assignment...");
   await ensureGrant(vendorMembership.id, { scopeType: "PROPERTY", propertyId: pilot.id });
 
+  // An open capture job, so the Capture Jobs page shows the real shape of
+  // subcontractor work rather than an empty state. Issued, because a draft is
+  // invisible to the vendor and would make the demo look broken when signed
+  // in as vendor@demo.com.
+  const existingCaptureJob = await prisma.captureJob.findFirst({ where: { organizationId: org.id } });
+  if (!existingCaptureJob) {
+    const job = await prisma.captureJob.create({
+      data: {
+        organizationId: org.id,
+        vendorId: vendor.id,
+        title: "Q4 condition sweep — Midwest",
+        instructions:
+          "Fly the roof and parking areas, shoot a 360 at each entrance, and score every rooftop unit. " +
+          "Condition scores are the deliverable: imagery alone does not move the site's health score.",
+        status: "ISSUED",
+        issuedAt: new Date(),
+        dueDate: new Date(Date.now() + 21 * 86400000),
+        createdById: owner.id,
+        sites: {
+          create: [
+            { propertyId: pilot.id, deliverables: ["DRONE", "IMAGE_360", "CONDITION_SCORES"] },
+          ],
+        },
+      },
+    });
+    console.log(`  Created capture job "${job.title}" (1 site, issued to ${vendor.name})`);
+  }
+
   console.log("\nSeed complete. Demo login credentials (password: 'password123'):");
   console.log("  Owner:              owner@demo.com");
   console.log("  Portfolio Admin:    portfolioadmin@demo.com");

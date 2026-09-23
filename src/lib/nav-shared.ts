@@ -26,6 +26,7 @@ export type NavIconKey =
   | "issue"
   | "assessment"
   | "import"
+  | "capture"
   | "report"
   | "cost"
   | "ai"

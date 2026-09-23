@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { Prisma, Role } from "@/generated/prisma/client";
+import { CaptureJobStatus as JobStatus, Prisma, Role } from "@/generated/prisma/client";
 import { Permission, isOrgWideRole } from "@/lib/permissions";
 
 /**
@@ -76,6 +76,9 @@ export function mfaPolicySatisfied(ctx: SessionContext): boolean {
  * ALWAYS combine API list/detail queries through this — never take
  * organizationId/propertyId from the request body/query as the sole filter.
  */
+/** Job states in which a subcontractor still needs to reach the site. */
+const OPEN_CAPTURE_JOB_STATUSES = [JobStatus.ISSUED, JobStatus.SUBMITTED, JobStatus.REJECTED] as const;
+
 export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInput {
   const base: Prisma.PropertyWhereInput = { organizationId: ctx.organizationId };
 
@@ -101,6 +104,27 @@ export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInp
   if (portfolioIds.length) or.push({ portfolioId: { in: portfolioIds } });
   if (regionIds.length) or.push({ regionId: { in: regionIds } });
   if (propertyIds.length) or.push({ id: { in: propertyIds } });
+
+  // A capture subcontractor's access comes from the work, not from a standing
+  // grant. They reach exactly the sites on their OPEN jobs: access starts when
+  // the job is issued and ends when it is accepted or cancelled, with nobody
+  // having to remember to revoke anything. Leaving contractor accounts live
+  // after the work is done is the usual way this goes wrong.
+  //
+  // SUBMITTED and REJECTED stay open deliberately — a vendor has to be able to
+  // see what they delivered, and to fix a site that was sent back.
+  if (ctx.vendorId) {
+    or.push({
+      captureJobSites: {
+        some: {
+          job: {
+            vendorId: ctx.vendorId,
+            status: { in: [...OPEN_CAPTURE_JOB_STATUSES] },
+          },
+        },
+      },
+    });
+  }
 
   return { ...base, OR: or.length ? or : [{ id: "__no_access__" }] };
 }

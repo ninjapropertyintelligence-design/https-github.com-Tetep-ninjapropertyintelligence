@@ -49,6 +49,16 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
       <path d="M8.5 11.5l2.5 2.5 4.5-5" strokeLinecap="round" strokeLinejoin="round" />
     </>
   ),
+  capture: (
+    <>
+      {/* A clipboard with a checked line: a work order, not a camera — the
+          page is about what a subcontractor owes, not about the lens. */}
+      <rect x="5" y="4" width="14" height="17" rx="2" />
+      <path d="M9 4h6v2.5H9z" strokeLinejoin="round" />
+      <path d="M8.5 12l2 2 4-4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 17.5h6" strokeLinecap="round" />
+    </>
+  ),
   import: (
     <>
       <path d="M12 3v11" strokeLinecap="round" />

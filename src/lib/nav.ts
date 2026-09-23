@@ -37,6 +37,12 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canManageProperties")) {
     items.push({ label: "Import", href: "/imports", section: "Manage", icon: "import" });
   }
+  // Capture subcontractors reach the product through this one page and
+  // nothing else, so it is offered on `canPerformCapture` rather than on a
+  // management permission they will never hold.
+  if (can(ctx, "canPerformCapture")) {
+    items.push({ label: "Capture Jobs", href: "/capture-jobs", section: "Manage", icon: "capture" });
+  }
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Reports", href: "/reports", section: "Insights", icon: "report" });
     items.push({ label: "Cost to Serve", href: "/reports/cogs", section: "Insights", icon: "cost" });

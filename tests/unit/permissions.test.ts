@@ -9,11 +9,19 @@ describe("permission engine", () => {
     expect(hasPermission(Role.OWNER, "canAccessPlatformAdmin")).toBe(false);
   });
 
-  it("gives VENDOR only issue creation, nothing else", () => {
+  it("gives VENDOR issue creation and capture, and nothing else", () => {
+    // Capture was added when capture jobs arrived. It is safe to hold because
+    // it composes with scope rather than standing alone: a vendor has no
+    // property access at all unless a capture job is open on that site (see
+    // `propertyScopeWhere`), so the permission reads "may capture, on the
+    // sites they were sent to, while the job is open".
     const perms = permissionsForRole(Role.VENDOR);
-    expect(perms).toEqual(["canCreateIssues"]);
+    expect(perms).toEqual(["canCreateIssues", "canPerformCapture"]);
     expect(hasPermission(Role.VENDOR, "canViewFinancialExposure")).toBe(false);
     expect(hasPermission(Role.VENDOR, "canManageBilling")).toBe(false);
+    // The two that would turn a subcontractor into a tenant administrator.
+    expect(hasPermission(Role.VENDOR, "canManageProperties")).toBe(false);
+    expect(hasPermission(Role.VENDOR, "canManageTeam")).toBe(false);
   });
 
   it("gives VIEWER read-only access with no mutation permissions", () => {
@@ -38,12 +46,15 @@ describe("permission engine", () => {
 });
 
 describe("Phase 2 integration permissions", () => {
-  it("canPerformCapture is granted to Inspector, Technician, Owner, Portfolio Admin, but not Vendor/Viewer", () => {
+  it("canPerformCapture covers the capture roles and the vendor, never the viewer", () => {
     expect(hasPermission(Role.INSPECTOR, "canPerformCapture")).toBe(true);
     expect(hasPermission(Role.TECHNICIAN, "canPerformCapture")).toBe(true);
     expect(hasPermission(Role.OWNER, "canPerformCapture")).toBe(true);
     expect(hasPermission(Role.PORTFOLIO_ADMIN, "canPerformCapture")).toBe(true);
-    expect(hasPermission(Role.VENDOR, "canPerformCapture")).toBe(false);
+    // A capture subcontractor, gated by an open capture job rather than by
+    // the permission — see the VENDOR test above.
+    expect(hasPermission(Role.VENDOR, "canPerformCapture")).toBe(true);
+    // A viewer is read-only and must never gain a write path.
     expect(hasPermission(Role.VIEWER, "canPerformCapture")).toBe(false);
   });
 

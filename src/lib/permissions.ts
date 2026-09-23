@@ -123,7 +123,11 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canPerformCapture",
   ],
 
-  [Role.VENDOR]: ["canCreateIssues"],
+  // A capture subcontractor. The permission alone grants nothing: a vendor has
+  // no property access unless a capture job is open on that site (see
+  // `propertyScopeWhere`), so this composes to "may capture, on the sites they
+  // were sent to, while the job is open".
+  [Role.VENDOR]: ["canCreateIssues", "canPerformCapture"],
 
   [Role.VIEWER]: ["canViewPortfolio", "canViewFinancialExposure"],
 };
