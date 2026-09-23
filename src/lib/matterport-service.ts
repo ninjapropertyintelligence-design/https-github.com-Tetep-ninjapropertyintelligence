@@ -165,6 +165,20 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
 }
 
 /**
+ * Pulls the space ID out of a Showcase URL, or returns the input unchanged.
+ *
+ * Lives here rather than in the route because normalisation is part of what
+ * "link a space" means, not part of one HTTP handler: the capture-job panel
+ * and the Interior tab both hand over whatever the vendor pasted, and that is
+ * almost always the URL rather than the handle buried in it.
+ */
+export function normalizeSpaceId(input: string): string {
+  const trimmed = input.trim();
+  const match = trimmed.match(/[?&]m=([A-Za-z0-9]+)/);
+  return match ? match[1] : trimmed;
+}
+
+/**
  * Link a Matterport Space by ID with no Model API call (spec §2, viewer-only
  * path). Matterport issues SDK keys self-serve but gates the Model API behind
  * a partner account, so a customer often has a working 3D tour and its space
@@ -181,11 +195,13 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
 export async function linkSpaceByIdDirect(
   ctx: SessionContext,
   propertyId: string,
-  externalSpaceId: string,
+  /** A bare space ID or a full Showcase URL — normalised here, not by callers. */
+  spaceRef: string,
   name?: string,
 ) {
   await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
   const property = await assertPropertyInScope(ctx, propertyId);
+  const externalSpaceId = normalizeSpaceId(spaceRef);
 
   const provider = getMatterportProvider();
   if (!provider.isViewerConfigured() && !provider.isConfigured()) {

@@ -79,7 +79,14 @@ test("a capture vendor uploads panoramas from the job page", async ({ page }) =>
   const propertyId = href!.split("/").pop()!;
   const before = await countPanoramas(page, propertyId);
 
+  // Matterport swaps the file picker for a space field, because it is a link
+  // and not an upload — the scan lives on Matterport's cloud.
+  await page.locator("select[id^='kind-']").first().selectOption("MATTERPORT");
+  await expect(page.getByPlaceholder(/Space ID or https/)).toBeVisible();
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+
   await page.locator("select[id^='kind-']").first().selectOption("IMAGE_360");
+  await expect(page.locator('input[type="file"]')).toHaveCount(1);
 
   // The route is rendered, and the position selector defaults to the first
   // one still outstanding so a technician walking it does not re-pick at

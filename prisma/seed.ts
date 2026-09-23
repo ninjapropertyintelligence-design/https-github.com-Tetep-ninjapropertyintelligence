@@ -767,11 +767,22 @@ async function main() {
   // the "create once" guard below would never revisit it.
   if (existingCaptureJob) {
     for (const site of existingCaptureJob.sites) {
-      if (site._count.shots > 0) continue;
-      await prisma.captureShot.createMany({
-        data: DEMO_SHOTS.map((shot, index) => ({ ...shot, siteId: site.id, sequence: index + 1 })),
-      });
-      console.log(`  Backfilled ${DEMO_SHOTS.length} shot positions onto an existing capture job`);
+      if (site._count.shots === 0) {
+        await prisma.captureShot.createMany({
+          data: DEMO_SHOTS.map((shot, index) => ({ ...shot, siteId: site.id, sequence: index + 1 })),
+        });
+        console.log(`  Backfilled ${DEMO_SHOTS.length} shot positions onto an existing capture job`);
+      }
+      // Same reason as the shots: a job seeded before Matterport was a
+      // deliverable would show the demo without it, and the create-once guard
+      // below never revisits an existing job.
+      if (!site.deliverables.includes("MATTERPORT")) {
+        await prisma.captureJobSite.update({
+          where: { id: site.id },
+          data: { deliverables: { set: [...site.deliverables, "MATTERPORT"] } },
+        });
+        console.log("  Backfilled the MATTERPORT deliverable onto an existing capture job site");
+      }
     }
   }
 
@@ -782,7 +793,8 @@ async function main() {
         vendorId: vendor.id,
         title: "Q4 condition sweep — Midwest",
         instructions:
-          "Fly the roof and parking areas, shoot a 360 at each entrance, and score every rooftop unit. " +
+          "Fly the roof and parking areas, shoot a 360 at each entrance, scan the interior with Matterport, " +
+          "and score every rooftop unit. " +
           "Condition scores are the deliverable: imagery alone does not move the site's health score.",
         status: "ISSUED",
         issuedAt: new Date(),
@@ -792,7 +804,7 @@ async function main() {
           create: [
             {
               propertyId: pilot.id,
-              deliverables: ["DRONE", "IMAGE_360", "CONDITION_SCORES"],
+              deliverables: ["DRONE", "IMAGE_360", "MATTERPORT", "CONDITION_SCORES"],
               // The route. Named positions are what make this visit
               // comparable with the next one — shoot the same six places
               // every time and you have a time series instead of a folder.

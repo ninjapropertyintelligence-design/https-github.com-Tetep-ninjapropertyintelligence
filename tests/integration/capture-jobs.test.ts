@@ -15,6 +15,7 @@ import {
 import { createEvidenceBatch, MAX_EVIDENCE_BATCH } from "@/lib/evidence-service";
 import { resolveDroneTargetForSite } from "@/lib/capture-job-service";
 import { MAX_DRONE_IMAGE_BATCH, registerDroneImagesBatch } from "@/lib/drone-service";
+import { linkSpaceByIdDirect, normalizeSpaceId } from "@/lib/matterport-service";
 import { getStorageProvider } from "@/lib/storage";
 import { canAccessProperty, evidenceScopeWhere } from "@/lib/tenant-scope";
 import { computePropertyHealth } from "@/lib/scoring";
@@ -138,7 +139,9 @@ afterAll(async () => {
   await prisma.user.delete({ where: { id: vendorUser.id } });
 });
 
-async function issuedJob(deliverables: Array<"DRONE" | "PHOTOS" | "CONDITION_SCORES" | "IMAGE_360"> = ["CONDITION_SCORES"]) {
+async function issuedJob(
+  deliverables: Array<"DRONE" | "PHOTOS" | "CONDITION_SCORES" | "IMAGE_360" | "MATTERPORT"> = ["CONDITION_SCORES"],
+) {
   const job = await createCaptureJob(staffCtx(), {
     title: `Q3 sweep ${suffix}`,
     vendorId: vendor.id,
@@ -741,5 +744,69 @@ describe("the shot list", () => {
       { type: "PHOTO", storageKey: `${siteA.id}/${crypto.randomUUID()}-x.jpg`, propertyId: siteA.id },
     ]);
     expect((await submitCaptureSite(vendorCtx(), job.id, site.id)).status).toBe("SUBMITTED");
+  });
+});
+
+
+describe("linking a Matterport space from the job", () => {
+  beforeEach(async () => {
+    // The flag has to exist as a platform definition; a test database may
+    // never have been seeded.
+    await prisma.featureFlag.upsert({
+      where: { key: "matterport" },
+      create: { key: "matterport", description: "matterport (test)", defaultEnabled: true },
+      update: {},
+    });
+    await prisma.matterportConnection.deleteMany({ where: { organizationId: org.id } });
+  });
+
+  it("lets a vendor link a space on a site they were sent to", async () => {
+    // Matterport is not an upload — the scan lives on Matterport's cloud and
+    // what this product holds is a link. The vendor still has to be able to
+    // hand it over from the job.
+    const job = await issuedJob(["MATTERPORT"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+
+    expect((await outstandingDeliverables(site.id)).missing).toContain("MATTERPORT");
+    await linkSpaceByIdDirect(vendorCtx(), siteA.id, `sp-${suffix}`, "Store interior");
+    expect((await outstandingDeliverables(site.id)).missing).not.toContain("MATTERPORT");
+  });
+
+  it("stores the space id when the vendor pastes a full Showcase URL", async () => {
+    // What a vendor has in front of them is the URL, not the handle buried
+    // inside it. Pasting the URL must not create a space whose id is the
+    // whole link — the viewer would then never load and nothing would say why.
+    const job = await issuedJob(["MATTERPORT"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const spaceId = `Url${suffix.replace(/[^A-Za-z0-9]/g, "")}`;
+
+    const link = await linkSpaceByIdDirect(
+      vendorCtx(),
+      siteA.id,
+      `https://my.matterport.com/show/?m=${spaceId}&play=1`,
+    );
+    expect(link.space.externalSpaceId).toBe(spaceId);
+    expect((await outstandingDeliverables(site.id)).missing).not.toContain("MATTERPORT");
+  });
+
+  it("normalises a bare id unchanged", () => {
+    expect(normalizeSpaceId("  AbC123xyz  ")).toBe("AbC123xyz");
+    expect(normalizeSpaceId("https://my.matterport.com/show/?m=AbC123xyz")).toBe("AbC123xyz");
+  });
+
+  it("does not let a vendor link a space to a site not on their job", async () => {
+    await issuedJob(["MATTERPORT"]);
+    await expect(
+      linkSpaceByIdDirect(vendorCtx(), untouchedSite.id, `sp-bad-${suffix}`),
+    ).rejects.toThrow();
+  });
+
+  it("does not let a vendor link once the job is closed", async () => {
+    const job = await issuedJob(["MATTERPORT"]);
+    for (const s2 of job.sites) {
+      await prisma.captureJobSite.update({ where: { id: s2.id }, data: { status: "ACCEPTED" } });
+    }
+    await prisma.captureJob.update({ where: { id: job.id }, data: { status: "ACCEPTED" } });
+    await expect(linkSpaceByIdDirect(vendorCtx(), siteA.id, `sp-late-${suffix}`)).rejects.toThrow();
   });
 });

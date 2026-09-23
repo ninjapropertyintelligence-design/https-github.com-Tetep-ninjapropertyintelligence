@@ -20,9 +20,26 @@ const KINDS = [
   { key: "IMAGE_360", label: "360° panoramas", hint: "Equirectangular JPEGs from a 360 camera" },
   { key: "PHOTOS", label: "Photos", hint: "Ordinary site photos and defect evidence" },
   { key: "DRONE_IMAGERY", label: "Drone imagery", hint: "Raw flight images, straight off the card" },
+  {
+    key: "MATTERPORT",
+    label: "Matterport space",
+    hint: "Paste the Space ID or Showcase link — the scan itself stays on Matterport",
+  },
 ] as const;
 
 type Kind = (typeof KINDS)[number]["key"];
+
+/**
+ * Matterport is not an upload and pretending otherwise would be a lie about
+ * where the data lives. The Pro camera uploads to Matterport's cloud; what
+ * this product holds is a link to the space. So this kind swaps the file
+ * picker for a text field rather than trying to look like the others.
+ */
+const LINK_ONLY: Kind = "MATTERPORT";
+
+/** Kinds that are taken from a position on a route. A Matterport walkthrough
+ *  is not a position, and neither is a drone flight. */
+const ROUTED_KINDS: Kind[] = ["IMAGE_360", "PHOTOS"];
 
 /** Registration batch size. The server caps evidence at 500 and drone images
  *  at 250; staying under both keeps one code path for every kind. */
@@ -66,6 +83,7 @@ export function CaptureUploadPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [spaceRef, setSpaceRef] = useState("");
 
   /** Unwraps this API's envelope, whose `error` is a string, not an object. */
   async function call<T>(url: string, body: unknown): Promise<T> {
@@ -79,6 +97,29 @@ export function CaptureUploadPanel({
       throw new Error(typeof payload?.error === "string" ? payload.error : `Request failed (${res.status})`);
     }
     return payload?.data as T;
+  }
+
+  /**
+   * Links a Matterport space to this site.
+   *
+   * The server accepts a bare ID or a full Showcase URL and extracts the ID,
+   * so whatever the vendor has in front of them is pasted straight in — which
+   * is usually the URL, not the handle buried inside it.
+   */
+  async function linkMatterportSpace() {
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      await call(`/api/v1/properties/${propertyId}/interior/link-direct`, { externalSpaceId: spaceRef });
+      setSpaceRef("");
+      setDone("Matterport space linked.");
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not link that space.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function upload(selected: File[]) {
@@ -233,21 +274,41 @@ export function CaptureUploadPanel({
           ))}
         </select>
 
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          disabled={busy}
-          accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
-          onChange={(e) => {
-            const chosen = Array.from(e.target.files ?? []);
-            if (chosen.length > 0) upload(chosen);
-          }}
-          className="max-w-full text-sm text-foreground file:mr-2 file:rounded-lg file:border file:border-border file:bg-surface file:px-2.5 file:py-1.5 file:text-sm file:text-foreground"
-        />
+        {kind === LINK_ONLY ? (
+          <>
+            <input
+              value={spaceRef}
+              disabled={busy}
+              onChange={(e) => setSpaceRef(e.target.value)}
+              placeholder="Space ID or https://my.matterport.com/show/?m=..."
+              className="min-w-64 flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm text-foreground outline-none focus:border-brand"
+            />
+            <button
+              type="button"
+              disabled={busy || spaceRef.trim().length === 0}
+              onClick={linkMatterportSpace}
+              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+            >
+              {busy ? "Linking…" : "Link space"}
+            </button>
+          </>
+        ) : (
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            disabled={busy}
+            accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
+            onChange={(e) => {
+              const chosen = Array.from(e.target.files ?? []);
+              if (chosen.length > 0) upload(chosen);
+            }}
+            className="max-w-full text-sm text-foreground file:mr-2 file:rounded-lg file:border file:border-border file:bg-surface file:px-2.5 file:py-1.5 file:text-sm file:text-foreground"
+          />
+        )}
       </div>
 
-      {shots.length > 0 && kind !== "DRONE_IMAGERY" ? (
+      {shots.length > 0 && ROUTED_KINDS.includes(kind) ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label className="text-xs text-muted" htmlFor={`shot-${siteId}`}>
             Position
