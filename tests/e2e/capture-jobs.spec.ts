@@ -37,6 +37,17 @@ test("a capture vendor sees their job and is told what the site still owes", asy
 });
 
 
+/** How many route positions are ticked off, from the "Route (n/m)" heading. */
+async function routeProgress(page: Page): Promise<{ done: number; total: number }> {
+  // textContent, not innerText: the heading is styled `uppercase`, and
+  // innerText applies CSS text-transform, so it comes back as "ROUTE (0/6)"
+  // and a case-sensitive match silently finds nothing.
+  const text = await page.getByText(/Route \(\d+\/\d+\)/).first().textContent();
+  const match = text?.match(/Route \((\d+)\/(\d+)\)/);
+  if (!match) throw new Error(`Could not read route progress from ${JSON.stringify(text)}`);
+  return { done: Number(match[1]), total: Number(match[2]) };
+}
+
 /** How many panoramas this property already has, read through the API. */
 async function countPanoramas(page: Page, propertyId: string): Promise<number> {
   const res = await page.request.get(`/api/v1/evidence?propertyId=${propertyId}`);
@@ -70,6 +81,20 @@ test("a capture vendor uploads panoramas from the job page", async ({ page }) =>
 
   await page.locator("select[id^='kind-']").first().selectOption("IMAGE_360");
 
+  // The route is rendered, and the position selector defaults to the first
+  // one still outstanding so a technician walking it does not re-pick at
+  // every stop.
+  await expect(page.getByText(/Route \(\d+\/\d+\)/)).toBeVisible();
+  const routeBefore = await routeProgress(page);
+  const positions = page.locator("select[id^='shot-']").first();
+  await expect(positions).toBeVisible();
+  const chosen = await positions.inputValue();
+  // This spec writes to seeded data that survives the run, so it ticks off a
+  // position each time. Once the route is complete there is nothing left to
+  // preselect and the assertion below cannot mean anything — say so rather
+  // than failing obscurely six runs later.
+  test.skip(chosen === "", "every route position is already captured — run `npm run db:seed` to reset");
+
   // A tiny but real JPEG: the smallest thing the server will accept as bytes.
   const jpeg = Buffer.from(
     "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==",
@@ -93,4 +118,12 @@ test("a capture vendor uploads panoramas from the job page", async ({ page }) =>
   // upload did anything. A delta is true on every run.
   const after = await countPanoramas(page, propertyId);
   expect(after).toBe(before + 2);
+
+  // And one more position is ticked off. This is what the shot list is for:
+  // not that imagery exists somewhere on the site, but that this particular
+  // place was captured. A delta rather than a fixed count, because the
+  // previous run already ticked one.
+  await expect
+    .poll(async () => (await routeProgress(page)).done, { timeout: 15000 })
+    .toBe(routeBefore.done + 1);
 });

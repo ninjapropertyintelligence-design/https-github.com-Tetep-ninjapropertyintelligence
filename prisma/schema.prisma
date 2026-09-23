@@ -122,6 +122,17 @@ enum AssessmentStatus {
   COMPLETED
 }
 
+/// What kind of capture a shot position expects.
+///
+/// Only the kinds a person stands somewhere to take. A drone flight is not a
+/// position and a Matterport walkthrough is not a position, so neither gets a
+/// shot — trying to route them would be pretending the model knows something
+/// it does not.
+enum CaptureShotKind {
+  PHOTO
+  IMAGE_360
+}
+
 /// Lifecycle of a capture job. DRAFT is invisible to the vendor: a job being
 /// assembled must not appear as work they owe. ACCEPTED and CANCELLED end the
 /// vendor's access to the sites, which is why access is derived from this
@@ -1014,6 +1025,8 @@ model Evidence {
   source       IssueSource  @default(MANUAL)
   captureDate  DateTime?
   uploadedById String
+  /// The shot position this satisfies, when it was taken against a route.
+  captureShotId String?
   latitude     Float?
   longitude    Float?
 
@@ -1033,6 +1046,7 @@ model Evidence {
   assessment       Assessment?       @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
   assessmentAnswer AssessmentAnswer? @relation(fields: [assessmentAnswerId], references: [id], onDelete: SetNull)
   uploadedBy       User              @relation("EvidenceUploadedBy", fields: [uploadedById], references: [id])
+  captureShot      CaptureShot?      @relation(fields: [captureShotId], references: [id], onDelete: SetNull)
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
@@ -1042,6 +1056,7 @@ model Evidence {
   @@index([propertyId])
   @@index([assetId])
   @@index([issueId])
+  @@index([captureShotId])
   @@index([type])
 }
 
@@ -2075,12 +2090,43 @@ model CaptureJobSite {
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
 
-  job        CaptureJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  property   Property   @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  reviewedBy User?      @relation("CaptureJobSiteReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  job        CaptureJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  property   Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  reviewedBy User?         @relation("CaptureJobSiteReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  shots      CaptureShot[]
 
   /// A site appears on a job once. Two rows would let one submission satisfy
   /// the other and make the completion count wrong.
   @@unique([jobId, propertyId])
   @@index([propertyId])
+}
+
+/// One position on a site that must be captured — "north lot", "main
+/// entrance", "roof north-east".
+///
+/// This is what makes a portfolio comparable over time. A technician who
+/// stands in the same six places at every visit produces a time series; one
+/// who shoots wherever they like produces pictures. A capital plan is built
+/// on the former.
+///
+/// A shot is satisfied by evidence actually attached to it, never by a
+/// checkbox — same rule as the job's deliverables, for the same reason.
+model CaptureShot {
+  id        String          @id @default(cuid())
+  siteId    String
+  label     String
+  kind      CaptureShotKind @default(IMAGE_360)
+  /// Walking order. The list is a route, so the order is part of the data.
+  sequence  Int
+  required  Boolean         @default(true)
+  notes     String?
+  createdAt DateTime        @default(now())
+
+  site     CaptureJobSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  evidence Evidence[]
+
+  /// Two shots at the same position in one route would make the count wrong
+  /// and the order ambiguous.
+  @@unique([siteId, sequence])
+  @@index([siteId])
 }

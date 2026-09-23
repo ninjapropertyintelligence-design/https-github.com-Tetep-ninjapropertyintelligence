@@ -28,6 +28,7 @@ const schema = z.object({
         issueId: z.string().nullish(),
         assessmentId: z.string().nullish(),
         captureDate: z.coerce.date().nullish(),
+        captureShotId: z.string().nullish(),
         latitude: z.number().nullish(),
         longitude: z.number().nullish(),
         metadata: z.record(z.string(), z.unknown()).default({}),

@@ -744,11 +744,37 @@ async function main() {
   console.log("Seeding vendor membership scope + assignment...");
   await ensureGrant(vendorMembership.id, { scopeType: "PROPERTY", propertyId: pilot.id });
 
+  const DEMO_SHOTS: Array<{ label: string; kind: "PHOTO" | "IMAGE_360" }> = [
+    { label: "North lot", kind: "IMAGE_360" },
+    { label: "Main entrance", kind: "IMAGE_360" },
+    { label: "South entrance", kind: "IMAGE_360" },
+    { label: "Loading dock", kind: "IMAGE_360" },
+    { label: "Roof — RTU row", kind: "PHOTO" },
+    { label: "Roof — east wing membrane", kind: "PHOTO" },
+  ];
+
   // An open capture job, so the Capture Jobs page shows the real shape of
   // subcontractor work rather than an empty state. Issued, because a draft is
   // invisible to the vendor and would make the demo look broken when signed
   // in as vendor@demo.com.
-  const existingCaptureJob = await prisma.captureJob.findFirst({ where: { organizationId: org.id } });
+  const existingCaptureJob = await prisma.captureJob.findFirst({
+    where: { organizationId: org.id },
+    include: { sites: { include: { _count: { select: { shots: true } } } } },
+  });
+
+  // A job seeded before shot lists existed has no route. Backfilling it is
+  // not cosmetic: without a route the demo shows the feature as absent, and
+  // the "create once" guard below would never revisit it.
+  if (existingCaptureJob) {
+    for (const site of existingCaptureJob.sites) {
+      if (site._count.shots > 0) continue;
+      await prisma.captureShot.createMany({
+        data: DEMO_SHOTS.map((shot, index) => ({ ...shot, siteId: site.id, sequence: index + 1 })),
+      });
+      console.log(`  Backfilled ${DEMO_SHOTS.length} shot positions onto an existing capture job`);
+    }
+  }
+
   if (!existingCaptureJob) {
     const job = await prisma.captureJob.create({
       data: {
@@ -764,12 +790,21 @@ async function main() {
         createdById: owner.id,
         sites: {
           create: [
-            { propertyId: pilot.id, deliverables: ["DRONE", "IMAGE_360", "CONDITION_SCORES"] },
+            {
+              propertyId: pilot.id,
+              deliverables: ["DRONE", "IMAGE_360", "CONDITION_SCORES"],
+              // The route. Named positions are what make this visit
+              // comparable with the next one — shoot the same six places
+              // every time and you have a time series instead of a folder.
+              shots: {
+                create: DEMO_SHOTS.map((shot, index) => ({ ...shot, sequence: index + 1 })),
+              },
+            },
           ],
         },
       },
     });
-    console.log(`  Created capture job "${job.title}" (1 site, issued to ${vendor.name})`);
+    console.log(`  Created capture job "${job.title}" (1 site, 6 shot positions, issued to ${vendor.name})`);
   }
 
   console.log("\nSeed complete. Demo login credentials (password: 'password123'):");

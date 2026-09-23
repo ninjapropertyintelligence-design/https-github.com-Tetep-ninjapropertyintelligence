@@ -12,6 +12,18 @@ const createSchema = z.object({
   dueDate: z.coerce.date().nullish(),
   propertyIds: z.array(z.string()).min(1).max(1000),
   deliverables: z.array(z.enum(DELIVERABLES)).min(1),
+  // The route, applied to every site on the job. Order is the walking order.
+  shots: z
+    .array(
+      z.object({
+        label: z.string().min(1).max(120),
+        kind: z.enum(["PHOTO", "IMAGE_360"]).optional(),
+        required: z.boolean().optional(),
+        notes: z.string().max(500).optional(),
+      }),
+    )
+    .max(50)
+    .optional(),
 });
 
 // GET /api/v1/capture-jobs — scoped in the service: a vendor sees only their

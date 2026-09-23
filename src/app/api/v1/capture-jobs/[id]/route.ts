@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { withApiHandler, ApiError } from "@/lib/api-utils";
-import { getCaptureJob, issueCaptureJob, outstandingDeliverables } from "@/lib/capture-job-service";
+import {
+  getCaptureJob,
+  issueCaptureJob,
+  outstandingDeliverables,
+  outstandingShots,
+} from "@/lib/capture-job-service";
 import { z } from "zod";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -14,7 +19,11 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { 
   const { id } = await params;
   const job = await getCaptureJob(ctx, id);
   const outstanding = await Promise.all(
-    job.sites.map(async (site) => ({ siteId: site.id, ...(await outstandingDeliverables(site.id)) })),
+    job.sites.map(async (site) => ({
+      siteId: site.id,
+      ...(await outstandingDeliverables(site.id)),
+      unshot: await outstandingShots(site.id),
+    })),
   );
   return NextResponse.json({ job, outstanding });
 });

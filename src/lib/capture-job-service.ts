@@ -4,6 +4,7 @@ import {
   CaptureDeliverable,
   CaptureJobSiteStatus,
   CaptureJobStatus,
+  CaptureShotKind,
   IssueSource,
   Role,
 } from "@/generated/prisma/client";
@@ -46,6 +47,15 @@ export interface CreateCaptureJobInput {
   dueDate?: Date | null;
   propertyIds: string[];
   deliverables: CaptureDeliverable[];
+  /**
+   * The route, applied to every site on the job.
+   *
+   * Defined once and instantiated per site, so the positions are named
+   * identically across a 400-store portfolio while completion is tracked per
+   * store. Identical naming is the whole point: it is what lets this year's
+   * "north lot" be compared with last year's.
+   */
+  shots?: Array<{ label: string; kind?: CaptureShotKind; required?: boolean; notes?: string }>;
 }
 
 /**
@@ -86,7 +96,24 @@ export async function createCaptureJob(ctx: SessionContext, input: CreateCapture
       dueDate: input.dueDate ?? null,
       createdById: ctx.userId,
       sites: {
-        create: properties.map((p) => ({ propertyId: p.id, deliverables: input.deliverables })),
+        create: properties.map((p) => ({
+          propertyId: p.id,
+          deliverables: input.deliverables,
+          shots: input.shots?.length
+            ? {
+                // Sequence is the walking order, assigned from the order the
+                // positions were given rather than sorted later — a route is
+                // not alphabetical.
+                create: input.shots.map((shot, index) => ({
+                  label: shot.label,
+                  kind: shot.kind ?? CaptureShotKind.IMAGE_360,
+                  required: shot.required ?? true,
+                  notes: shot.notes ?? null,
+                  sequence: index + 1,
+                })),
+              }
+            : undefined,
+        })),
       },
     },
     include: { sites: true },
@@ -115,6 +142,10 @@ export async function getCaptureJob(ctx: SessionContext, jobId: string) {
       sites: {
         include: {
           property: { select: { id: true, name: true, addressLine1: true, city: true, state: true } },
+          shots: {
+            orderBy: { sequence: "asc" },
+            include: { _count: { select: { evidence: true } } },
+          },
         },
         orderBy: { createdAt: "asc" },
       },
@@ -210,6 +241,22 @@ export async function outstandingDeliverables(
   return { propertyId, missing: site.deliverables.filter((d) => !satisfied[d]) };
 }
 
+/**
+ * Required positions on this site that nothing has been captured against.
+ *
+ * Counted from linked evidence, never from a flag on the shot — the same rule
+ * as the deliverables, because a route someone can tick off without walking
+ * it is worth nothing.
+ */
+export async function outstandingShots(siteId: string): Promise<Array<{ id: string; label: string }>> {
+  const shots = await prisma.captureShot.findMany({
+    where: { siteId, required: true },
+    orderBy: { sequence: "asc" },
+    select: { id: true, label: true, _count: { select: { evidence: true } } },
+  });
+  return shots.filter((s) => s._count.evidence === 0).map((s) => ({ id: s.id, label: s.label }));
+}
+
 /** Loads a site the caller may act on, with the job's state already checked. */
 async function siteForAction(ctx: SessionContext, jobId: string, siteId: string) {
   const job = await getCaptureJob(ctx, jobId);
@@ -302,6 +349,18 @@ export async function submitCaptureSite(ctx: SessionContext, jobId: string, site
     throw new ApiError(
       400,
       `This site still owes: ${missing.map((d) => d.replace(/_/g, " ").toLowerCase()).join(", ")}`,
+    );
+  }
+
+  // And the route. A site can hold every deliverable and still be missing
+  // half its positions — which is exactly the failure the shot list exists to
+  // prevent, because it is invisible until someone tries to compare this
+  // visit with the last one.
+  const unshot = await outstandingShots(siteId);
+  if (unshot.length > 0) {
+    throw new ApiError(
+      400,
+      `These positions have not been captured: ${unshot.map((s) => s.label).join(", ")}`,
     );
   }
 

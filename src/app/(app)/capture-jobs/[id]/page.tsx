@@ -109,6 +109,41 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     })}
                   </div>
 
+                  {site.shots.length > 0 ? (
+                    <div className="mt-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                        Route ({site.shots.filter((s) => s._count.evidence > 0).length}/{site.shots.length})
+                      </p>
+                      <ol className="mt-1.5 space-y-1">
+                        {site.shots.map((shot) => {
+                          const captured = shot._count.evidence > 0;
+                          return (
+                            <li key={shot.id} className="flex items-start gap-2 text-sm">
+                              <span
+                                aria-hidden
+                                className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[10px] ${
+                                  captured
+                                    ? "border-green-300 bg-green-50 text-green-700"
+                                    : "border-border text-muted"
+                                }`}
+                              >
+                                {captured ? "✓" : shot.sequence}
+                              </span>
+                              <span className={captured ? "text-foreground" : "text-muted"}>
+                                {shot.label}
+                                <span className="ml-1.5 text-xs text-muted">
+                                  {shot.kind === "IMAGE_360" ? "360°" : "photo"}
+                                  {shot.required ? "" : " · optional"}
+                                  {captured ? ` · ${shot._count.evidence}` : ""}
+                                </span>
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    </div>
+                  ) : null}
+
                   {site.rejectionReason ? (
                     <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                       Sent back: {site.rejectionReason}
@@ -120,6 +155,12 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                       jobId={job.id}
                       siteId={site.id}
                       propertyId={site.propertyId}
+                      shots={site.shots.map((shot) => ({
+                        id: shot.id,
+                        label: shot.label,
+                        kind: shot.kind,
+                        captured: shot._count.evidence > 0,
+                      }))}
                       disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
                     />
                   ) : null}

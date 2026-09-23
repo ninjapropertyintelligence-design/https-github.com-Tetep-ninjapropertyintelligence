@@ -34,21 +34,34 @@ interface FileState {
   error?: string;
 }
 
+export interface ShotOption {
+  id: string;
+  label: string;
+  kind: "PHOTO" | "IMAGE_360";
+  captured: boolean;
+}
+
 export function CaptureUploadPanel({
   jobId,
   siteId,
   propertyId,
+  shots,
   disabled,
 }: {
   jobId: string;
   siteId: string;
   propertyId: string;
+  /** The route for this site, in walking order. Empty when the job has none. */
+  shots: ShotOption[];
   /** True once the site is accepted or the job is closed. */
   disabled: boolean;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [kind, setKind] = useState<Kind>("PHOTOS");
+  const [kind, setKind] = useState<Kind>(shots.length > 0 ? "IMAGE_360" : "PHOTOS");
+  // Defaults to the first position still outstanding, so a technician walking
+  // the route does not have to re-pick it at every stop.
+  const [shotId, setShotId] = useState<string>(() => shots.find((s) => !s.captured)?.id ?? "");
   const [files, setFiles] = useState<FileState[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,6 +182,9 @@ export function CaptureUploadPanel({
               type: kind === "IMAGE_360" ? "IMAGE_360" : "PHOTO",
               storageKey: u.key,
               propertyId,
+              // Drone imagery is a flight, not a position, so it never
+              // carries a shot.
+              captureShotId: shotId || undefined,
               mimeType: u.file.type || undefined,
               sizeBytes: u.file.size,
             })),
@@ -230,6 +246,32 @@ export function CaptureUploadPanel({
           className="max-w-full text-sm text-foreground file:mr-2 file:rounded-lg file:border file:border-border file:bg-surface file:px-2.5 file:py-1.5 file:text-sm file:text-foreground"
         />
       </div>
+
+      {shots.length > 0 && kind !== "DRONE_IMAGERY" ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="text-xs text-muted" htmlFor={`shot-${siteId}`}>
+            Position
+          </label>
+          <select
+            id={`shot-${siteId}`}
+            value={shotId}
+            disabled={busy}
+            onChange={(e) => setShotId(e.target.value)}
+            className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-brand"
+          >
+            {/* Kept as an option rather than forced: a technician who finds a
+                defect between positions still needs somewhere to put the
+                photo, and refusing it would push them to mislabel it. */}
+            <option value="">Not a listed position</option>
+            {shots.map((shot) => (
+              <option key={shot.id} value={shot.id}>
+                {shot.captured ? "\u2713 " : ""}
+                {shot.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
 
       <p className="mt-1.5 text-xs text-muted">{KINDS.find((k) => k.key === kind)!.hint}</p>
 

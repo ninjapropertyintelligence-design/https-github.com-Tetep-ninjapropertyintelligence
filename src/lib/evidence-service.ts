@@ -29,6 +29,8 @@ export interface CreateEvidenceInput {
   issueId?: string | null;
   assessmentId?: string | null;
   captureDate?: Date | null;
+  /** The shot position this file was taken from, when it was taken on a route. */
+  captureShotId?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   metadata?: Record<string, unknown>;
@@ -96,6 +98,13 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     if (!property) throw new ApiError(400, "Invalid propertyId, or you don't have access to it");
   }
 
+  // A shot id from another site would otherwise mark that site's route
+  // complete with imagery taken somewhere else.
+  if (input.captureShotId) {
+    if (!input.propertyId) throw new ApiError(400, "A shot position needs the site it belongs to");
+    await assertShotBelongsToProperty(input.captureShotId, input.propertyId);
+  }
+
   const evidence = await prisma.evidence.create({
     data: {
       organizationId: ctx.organizationId,
@@ -109,6 +118,7 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       mimeType: input.mimeType ?? null,
       sizeBytes: input.sizeBytes ?? null,
       captureDate: input.captureDate ?? null,
+      captureShotId: input.captureShotId ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -165,6 +175,22 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
 export const MAX_EVIDENCE_BATCH = 500;
 
 /**
+ * Checks a shot position belongs to the site the file is being filed under.
+ *
+ * Deliberately a local query rather than an import from the capture-job
+ * service: this is five lines, and importing it would pull that module's
+ * whole graph — the drone service, the scoring engine — into every evidence
+ * upload for no benefit, and make a cycle between the two services.
+ */
+async function assertShotBelongsToProperty(shotId: string, propertyId: string): Promise<void> {
+  const shot = await prisma.captureShot.findFirst({
+    where: { id: shotId, site: { propertyId } },
+    select: { id: true },
+  });
+  if (!shot) throw new ApiError(400, "That shot position does not belong to this site");
+}
+
+/**
  * Registers many evidence files in one call.
  *
  * Not a loop over `createEvidence`: the entitlement check and the property
@@ -205,6 +231,12 @@ export async function createEvidenceBatch(
     }
   }
 
+  for (const item of items) {
+    if (!item.captureShotId) continue;
+    if (!item.propertyId) throw new ApiError(400, "A shot position needs the site it belongs to");
+    await assertShotBelongsToProperty(item.captureShotId, item.propertyId);
+  }
+
   const createdAt = new Date();
   await prisma.evidence.createMany({
     data: items.map((input) => ({
@@ -219,6 +251,7 @@ export async function createEvidenceBatch(
       mimeType: input.mimeType ?? null,
       sizeBytes: input.sizeBytes ?? null,
       captureDate: input.captureDate ?? null,
+      captureShotId: input.captureShotId ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,

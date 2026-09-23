@@ -7,6 +7,7 @@ import {
   issueCaptureJob,
   listCaptureJobs,
   outstandingDeliverables,
+  outstandingShots,
   reviewCaptureSite,
   submitCaptureSite,
   submitConditionScores,
@@ -618,5 +619,127 @@ describe("reading evidence is scoped too", () => {
   it("still shows an owner everything in the organization", async () => {
     const all = await prisma.evidence.findMany({ where: evidenceScopeWhere(staffCtx()) });
     expect(all.length).toBeGreaterThan(0);
+  });
+});
+
+
+describe("the shot list", () => {
+  async function jobWithRoute() {
+    const job = await createCaptureJob(staffCtx(), {
+      title: `Routed ${suffix}`,
+      vendorId: vendor.id,
+      propertyIds: [siteA.id, siteB.id],
+      deliverables: ["IMAGE_360"],
+      shots: [
+        { label: "North lot" },
+        { label: "Main entrance" },
+        { label: "Roof — RTU row", kind: "PHOTO", required: false },
+      ],
+    });
+    await issueCaptureJob(staffCtx(), job.id);
+    return getCaptureJob(staffCtx(), job.id);
+  }
+
+  it("applies the same route to every site, in walking order", async () => {
+    // Identical naming across sites is the whole point: it is what lets this
+    // year's "North lot" be compared with last year's.
+    const job = await jobWithRoute();
+    expect(job.sites).toHaveLength(2);
+    for (const site of job.sites) {
+      expect(site.shots.map((s) => s.label)).toEqual(["North lot", "Main entrance", "Roof — RTU row"]);
+      // A route is not alphabetical — the order it was given is the order it
+      // is walked.
+      expect(site.shots.map((s) => s.sequence)).toEqual([1, 2, 3]);
+    }
+  });
+
+  it("counts a position as captured only when evidence is attached to it", async () => {
+    const job = await jobWithRoute();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const northLot = site.shots.find((s) => s.label === "North lot")!;
+
+    expect((await outstandingShots(site.id)).map((s) => s.label)).toEqual(["North lot", "Main entrance"]);
+
+    // Evidence on the property but NOT on the position must not satisfy it:
+    // otherwise any photo anywhere ticks off the whole route.
+    await createEvidenceBatch(vendorCtx(), [
+      { type: "IMAGE_360", storageKey: `${siteA.id}/${crypto.randomUUID()}-loose.jpg`, propertyId: siteA.id },
+    ]);
+    expect((await outstandingShots(site.id)).map((s) => s.label)).toEqual(["North lot", "Main entrance"]);
+
+    await createEvidenceBatch(vendorCtx(), [
+      {
+        type: "IMAGE_360",
+        storageKey: `${siteA.id}/${crypto.randomUUID()}-north.jpg`,
+        propertyId: siteA.id,
+        captureShotId: northLot.id,
+      },
+    ]);
+    expect((await outstandingShots(site.id)).map((s) => s.label)).toEqual(["Main entrance"]);
+  });
+
+  it("ignores optional positions when deciding what is outstanding", async () => {
+    const job = await jobWithRoute();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    expect((await outstandingShots(site.id)).map((s) => s.label)).not.toContain("Roof — RTU row");
+  });
+
+  it("refuses to submit a site with an uncaptured position, and names it", async () => {
+    // A site can hold every deliverable and still be missing half its route —
+    // invisible until someone tries to compare this visit with the last one.
+    const job = await jobWithRoute();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    await createEvidenceBatch(vendorCtx(), [
+      { type: "IMAGE_360", storageKey: `${siteA.id}/${crypto.randomUUID()}-any.jpg`, propertyId: siteA.id },
+    ]);
+    // The IMAGE_360 deliverable is now satisfied, so only the route is short.
+    expect((await outstandingDeliverables(site.id)).missing).toHaveLength(0);
+    await expect(submitCaptureSite(vendorCtx(), job.id, site.id)).rejects.toThrow(/North lot/);
+  });
+
+  it("accepts the submission once every required position is captured", async () => {
+    const job = await jobWithRoute();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    for (const shot of site.shots.filter((s) => s.required)) {
+      await createEvidenceBatch(vendorCtx(), [
+        {
+          type: "IMAGE_360",
+          storageKey: `${siteA.id}/${crypto.randomUUID()}-${shot.sequence}.jpg`,
+          propertyId: siteA.id,
+          captureShotId: shot.id,
+        },
+      ]);
+    }
+    expect((await submitCaptureSite(vendorCtx(), job.id, site.id)).status).toBe("SUBMITTED");
+  });
+
+  it("refuses a shot position belonging to a different site", async () => {
+    // A real shot id from the vendor's OTHER site would otherwise mark that
+    // site's route complete with imagery from somewhere else entirely.
+    const job = await jobWithRoute();
+    const siteARow = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const siteBRow = job.sites.find((s) => s.propertyId === siteB.id)!;
+    await expect(
+      createEvidenceBatch(vendorCtx(), [
+        {
+          type: "IMAGE_360",
+          storageKey: `${siteA.id}/${crypto.randomUUID()}-wrong.jpg`,
+          propertyId: siteA.id,
+          captureShotId: siteBRow.shots[0].id,
+        },
+      ]),
+    ).rejects.toThrow(/does not belong to this site/i);
+    expect((await outstandingShots(siteBRow.id)).length).toBeGreaterThan(0);
+    void siteARow;
+  });
+
+  it("leaves a job with no route behaving exactly as before", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    expect(await outstandingShots(site.id)).toHaveLength(0);
+    await createEvidenceBatch(vendorCtx(), [
+      { type: "PHOTO", storageKey: `${siteA.id}/${crypto.randomUUID()}-x.jpg`, propertyId: siteA.id },
+    ]);
+    expect((await submitCaptureSite(vendorCtx(), job.id, site.id)).status).toBe("SUBMITTED");
   });
 });
