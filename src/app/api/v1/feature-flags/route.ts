@@ -1,24 +1,18 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { withApiHandler } from "@/lib/api-utils";
+import { resolveFeatureFlags } from "@/lib/feature-flags";
 
 /**
  * Effective feature flags for the caller's organization: platform default
  * (`FeatureFlag.defaultEnabled`) unless a per-org `FeatureFlagOverride`
- * exists. This is the single place flags are resolved — UI and API code
- * should call this (or the equivalent server helper) rather than hard-coding
- * flag checks.
+ * exists.
+ *
+ * Resolution lives in `lib/feature-flags.ts`, which is also what the services
+ * enforce with. This route used to resolve them itself and claim in a comment
+ * to be "the single place flags are resolved" — which was true only because
+ * nothing else read them at all. Two copies of the rule would be worse than
+ * one: the UI could show a feature as available while the service refused it.
  */
 export const GET = withApiHandler(async (ctx) => {
-  const [flags, overrides] = await Promise.all([
-    prisma.featureFlag.findMany(),
-    ctx.organizationId
-      ? prisma.featureFlagOverride.findMany({ where: { organizationId: ctx.organizationId } })
-      : Promise.resolve([]),
-  ]);
-  const overrideByKey = new Map(overrides.map((o) => [o.flagKey, o.enabled]));
-  const effective = Object.fromEntries(
-    flags.map((f) => [f.key, overrideByKey.get(f.key) ?? f.defaultEnabled]),
-  );
-  return NextResponse.json({ flags: effective });
+  return NextResponse.json({ flags: await resolveFeatureFlags(ctx.organizationId || null) });
 });

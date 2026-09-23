@@ -6,7 +6,16 @@ import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 import { ApiError } from "@/lib/api-error";
+import { requireFeature, FEATURE_FLAGS } from "@/lib/feature-flags";
 import { logEvent } from "@/lib/observability";
+
+/**
+ * Entitlement: the MATTERPORT flag gates connecting, browsing, linking and
+ * syncing. It deliberately does NOT gate status reads or either disconnect
+ * path — the UI must be able to say "not enabled", and a customer who stops
+ * paying must still be able to unlink. Trapping someone's data behind an
+ * expired entitlement is not a business model.
+ */
 
 /**
  * Ties the InteriorCaptureProvider abstraction to the domain model. The
@@ -27,6 +36,8 @@ export async function getOrgMatterportStatus(organizationId: string) {
 
 /** Org-level connect (spec §2: "connect Matterport account/configuration"). Requires canManageIntegrations. */
 export async function connectMatterportForOrg(ctx: SessionContext) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const provider = getMatterportProvider();
   if (!provider.isConfigured()) {
     const connection = await prisma.matterportConnection.upsert({
@@ -80,6 +91,8 @@ export async function disconnectMatterportForOrg(ctx: SessionContext) {
 }
 
 export async function listAvailableSpaces(ctx: SessionContext) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const connection = await prisma.matterportConnection.findUnique({ where: { organizationId: ctx.organizationId } });
   if (!connection || connection.status !== "CONNECTED") {
     throw new ApiError(400, "Matterport is not connected for this organization");
@@ -96,6 +109,8 @@ async function assertPropertyInScope(ctx: SessionContext, propertyId: string) {
 
 /** Link a Matterport Space to a Property (spec §2: "link Matterport Space to a Property"). */
 export async function linkSpaceToProperty(ctx: SessionContext, propertyId: string, externalSpaceId: string) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const property = await assertPropertyInScope(ctx, propertyId);
 
   const connection = await prisma.matterportConnection.findUnique({ where: { organizationId: ctx.organizationId } });
@@ -169,6 +184,7 @@ export async function linkSpaceByIdDirect(
   externalSpaceId: string,
   name?: string,
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
   const property = await assertPropertyInScope(ctx, propertyId);
 
   const provider = getMatterportProvider();
@@ -229,6 +245,8 @@ export async function linkSpaceByIdDirect(
 
 /** Re-sync a property's linked Matterport space metadata. */
 export async function syncPropertyInterior(ctx: SessionContext, propertyId: string) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const property = await assertPropertyInScope(ctx, propertyId);
   const link = await prisma.matterportPropertyLink.findFirst({
     where: { propertyId: property.id },

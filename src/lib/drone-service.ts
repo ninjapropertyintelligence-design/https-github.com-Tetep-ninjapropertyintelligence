@@ -3,6 +3,7 @@ import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { recordUsage } from "@/lib/cost-metering";
 import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
 import { ApiError } from "@/lib/api-error";
+import { requireFeature, FEATURE_FLAGS } from "@/lib/feature-flags";
 import { getStorageProvider } from "@/lib/storage";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
@@ -12,6 +13,14 @@ import { logEvent } from "@/lib/observability";
 import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogrammetry-provider";
 
 /**
+ * Entitlement: the DRONE_PROCESSING flag gates every path that brings new
+ * capture data in — creating a capture or dataset, registering images and
+ * outputs. It deliberately does NOT gate reads, nor markCaptureReady /
+ * markCaptureFailed: an organization whose entitlement lapses mid-flight
+ * must still be able to finish and see the work it already paid for, and
+ * blocking the terminal transitions would strand captures in PROCESSING
+ * forever.
+ *
  * Manual drone dataset import pipeline (spec Phase 2 §4-§6). No PIX4D
  * automation yet — this is the "make manual import perfect" workflow:
  * create a capture, upload raw images/outputs via signed direct-upload
@@ -62,6 +71,7 @@ export async function createDroneCapture(
   propertyId: string,
   input: { capturedAt?: Date; droneModel?: string; notes?: string },
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
   const property = await assertPropertyInScope(ctx, propertyId);
   const capture = await prisma.droneCapture.create({
     data: {
@@ -93,6 +103,8 @@ export async function createDroneCapture(
 }
 
 export async function createDroneDataset(ctx: SessionContext, captureId: string) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+
   const capture = await loadScopedCapture(ctx, captureId);
   await prisma.droneCapture.update({ where: { id: capture.id }, data: { status: "UPLOADING" } });
   const dataset = await prisma.droneDataset.create({ data: { captureId: capture.id, provider: "MANUAL" } });
@@ -191,6 +203,8 @@ export async function registerDroneImage(
     capturedAt?: Date;
   },
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+
   const dataset = await loadScopedDataset(ctx, datasetId);
 
   const ext = extensionOf(input.storageKey);
@@ -245,6 +259,8 @@ export async function registerDroneOutput(
     metadata?: Record<string, unknown>;
   },
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+
   const dataset = await loadScopedDataset(ctx, datasetId);
 
   const ext = extensionOf(input.storageKey);
