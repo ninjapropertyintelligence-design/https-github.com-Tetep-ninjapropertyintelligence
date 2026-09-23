@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
 import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
-import { getStorageProvider } from "@/lib/storage";
 import { FEATURE_FLAGS, isFeatureEnabled } from "@/lib/feature-flags";
 
 /**
@@ -27,7 +26,14 @@ export interface Panorama360 {
   capturedAt: Date | null;
   latitude: number | null;
   longitude: number | null;
-  /** Signed, time-limited. Regenerated on every read rather than stored. */
+  /**
+   * Same-origin, not a presigned storage URL. WebGL will not texture a
+   * cross-origin image that carries no CORS headers, and the object store's
+   * presigned responses carry none — so a panorama served straight from
+   * storage fails in the viewer while rendering fine in an <img>. The route
+   * behind this path streams the bytes from this origin and sets the
+   * recorded content type.
+   */
   imageUrl: string;
 }
 
@@ -71,17 +77,14 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
     take: 200,
   });
 
-  const storage = getStorageProvider();
-  const panoramas = await Promise.all(
-    rows.map(async (row, index) => ({
-      id: row.id,
-      label: labelFor(row.storageKey, index),
-      capturedAt: row.captureDate,
-      latitude: row.latitude,
-      longitude: row.longitude,
-      imageUrl: await storage.getDownloadUrl(row.storageKey),
-    })),
-  );
+  const panoramas = rows.map((row, index) => ({
+    id: row.id,
+    label: labelFor(row.storageKey, index),
+    capturedAt: row.captureDate,
+    latitude: row.latitude,
+    longitude: row.longitude,
+    imageUrl: `/api/v1/evidence/${row.id}/content`,
+  }));
 
   return {
     propertyId,

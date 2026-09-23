@@ -186,6 +186,18 @@ describe("reading 360 panoramas", () => {
     expect(panoramas[0].imageUrl).toBeTruthy();
   });
 
+  it("serves panoramas from this origin, not from a presigned storage URL", async () => {
+    // This is not a style preference. WebGL refuses to build a texture from a
+    // cross-origin image with no CORS headers, and the object store's
+    // presigned responses carry none — so a presigned URL here renders in an
+    // <img> and fails in the viewer, which is exactly how it shipped broken
+    // the first time.
+    const panorama = await createEvidence(ctxFor(entitledOrg.id), panoramaInput(entitledProperty.id, "north.jpg"));
+    const { panoramas } = await getProperty360Data(ctxFor(entitledOrg.id), entitledProperty.id);
+    expect(panoramas[0].imageUrl).toBe(`/api/v1/evidence/${panorama.id}/content`);
+    expect(panoramas[0].imageUrl).not.toMatch(/^https?:\/\//);
+  });
+
   it("orders by capture date, newest first, with undated panoramas last", async () => {
     // Two separate traps, so these are uploaded in an order that trips both.
     //

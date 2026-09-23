@@ -122,6 +122,26 @@ export function withApiHandler<T, Extra = unknown>(
 
       const result = await handler(ctx, req, extra);
 
+      // Binary and redirect responses are not envelope endpoints.
+      //
+      // §63's {data, error, meta} shape describes the JSON API. A file's
+      // bytes cannot travel inside it, and the code below used to try anyway:
+      // it parsed the response body as JSON, got null for a JPEG, and
+      // returned an envelope with the file silently dropped — a 200 carrying
+      // {"data":null}. Passing a non-JSON response through untouched is what
+      // lets a route serve a file while still getting the session, MFA and
+      // impersonation checks above, instead of hand-rolling them.
+      if (result instanceof NextResponse && !isJsonResponse(result)) {
+        // A read-only request never claims a key, so this is only reachable
+        // for a keyed mutation that answers with a file. Recording the status
+        // with no body keeps the claim from being left in progress forever;
+        // a replay of such a key returns the status, not the bytes.
+        if (idempotencyRecordId) {
+          await completeIdempotentRequest(idempotencyRecordId, { status: result.status, body: null });
+        }
+        return result;
+      }
+
       let status = 200;
       let envelope: ApiEnvelope<unknown>;
       if (result instanceof NextResponse) {
@@ -201,6 +221,14 @@ export function enforceRateLimit(
     const wait = Math.max(result.retryAfterSeconds, byIp.retryAfterSeconds);
     throw new ApiError(429, `Too many attempts. Try again in ${wait} second${wait === 1 ? "" : "s"}.`);
   }
+}
+
+/**
+ * Whether a response carries the JSON envelope. Absent or non-JSON means the
+ * route is deliberately serving something else — a file, or a redirect.
+ */
+function isJsonResponse(res: NextResponse): boolean {
+  return (res.headers.get("content-type") ?? "").includes("application/json");
 }
 
 function isReadOnlyRequest(req: Request): boolean {

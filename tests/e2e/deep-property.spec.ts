@@ -87,6 +87,27 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   await southPanorama.click();
   await expect(southPanorama).toHaveAttribute("aria-current", "true");
 
+  // The bytes themselves, over HTTP, as this logged-in user. This is the
+  // check that would have caught the first 360 deploy: the panoramas were in
+  // the database and in the bucket, and the viewer still could not draw them,
+  // because a presigned storage URL is cross-origin and carries no CORS
+  // headers, which WebGL will not texture from. Asserting on the row or on
+  // the storage object proves neither the content type nor the origin.
+  const evidenceList = await page.request.get(`/api/v1/evidence?propertyId=${propertyId}`);
+  expect(evidenceList.ok()).toBe(true);
+  const items = (await evidenceList.json()).data.items as Array<{ id: string; type: string }>;
+  const panoramaRow = items.find((i) => i.type === "IMAGE_360");
+  expect(panoramaRow, "the seed must have registered a 360 panorama").toBeTruthy();
+
+  const bytes = await page.request.get(`/api/v1/evidence/${panoramaRow!.id}/content`);
+  expect(bytes.status()).toBe(200);
+  expect(bytes.headers()["content-type"]).toBe("image/jpeg");
+  const body = await bytes.body();
+  // A real JPEG, not an error page rendered with a 200.
+  expect(body.length).toBeGreaterThan(10000);
+  expect(body[0]).toBe(0xff);
+  expect(body[1]).toBe(0xd8);
+
   // Assets -> open the canonical Asset detail page for RTU-04.
   await page.goto(`/properties/${propertyId}?tab=assets`);
   await page.getByRole("link", { name: "RTU-04" }).click();
