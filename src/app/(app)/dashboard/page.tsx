@@ -1,20 +1,36 @@
 import { redirect } from "next/navigation";
 import { getSessionContext, can } from "@/lib/session-context";
 import { getPortfolioDashboard } from "@/lib/dashboard";
-import { getFacilitiesActionQueue, getMyFieldWork, getVendorWork } from "@/lib/dashboard-views";
+import { getVendorWork } from "@/lib/dashboard-views";
+import { getOperationsDashboard } from "@/lib/ops-dashboard";
 import { PortfolioOverview } from "@/components/dashboard/PortfolioOverview";
-import { FacilitiesActionDashboard } from "@/components/dashboard/FacilitiesActionDashboard";
-import { FieldWorkDashboard } from "@/components/dashboard/FieldWorkDashboard";
+import { OperationsDashboard } from "@/components/dashboard/OperationsDashboard";
 import { VendorDashboard } from "@/components/dashboard/VendorDashboard";
 import { prisma } from "@/lib/prisma";
 import { recordProductEvent } from "@/lib/analytics";
 
 /**
  * Role-based home routing (spec §2, §46 final requirement): the same login
- * flow lands on a completely different dashboard depending on role. All of
- * it reads from the same underlying services (`getPortfolioDashboard`,
- * `getFacilitiesActionQueue`, etc.) — this file only decides which view to
- * render, never recomputes numbers itself.
+ * flow lands on a different dashboard depending on role. This file only
+ * decides which view to render, never recomputes numbers itself.
+ *
+ * THREE dashboards, not eight. There were four components under eight
+ * headings, which sounds like tailoring and behaved like fragmentation:
+ * nobody could answer "is the Midwest sweep going to land on time" without
+ * opening three of them, and each one had to be maintained separately.
+ *
+ * The three are the three parties to the work:
+ *
+ *   OPERATIONS  — the staff running capture. Jobs in flight, who is on each,
+ *                 how far through the route, what is waiting to be reviewed,
+ *                 and which subcontractors are free.
+ *   VENDOR      — the subcontractor. Their jobs and nothing else.
+ *   PROPERTY    — the read-only stakeholder (lender, insurer, board). Health,
+ *                 risk and capital exposure; no sight of the crew roster.
+ *
+ * Roles are untouched: what changed is where they land. Scoping still comes
+ * from `propertyScopeWhere`, so a Facilities Manager on the operations screen
+ * sees only their own sites' jobs.
  */
 export default async function DashboardPage() {
   const ctx = await getSessionContext();
@@ -31,46 +47,43 @@ export default async function DashboardPage() {
   await recordProductEvent(ctx, "dashboard.viewed");
 
   switch (ctx.role) {
-    case "OWNER": {
-      const data = await getPortfolioDashboard(ctx);
-      return <PortfolioOverview data={data} heading="Executive Dashboard" subheading="What is happening across my business?" showAI={can(ctx, "canViewAI")} />;
-    }
-    case "PORTFOLIO_ADMIN": {
-      const data = await getPortfolioDashboard(ctx);
-      return <PortfolioOverview data={data} heading="Portfolio Operations" subheading="Portfolio-wide operational status" showAI={can(ctx, "canViewAI")} />;
-    }
-    case "REGIONAL_MANAGER": {
+    // The property-owner view: condition, risk and capital exposure — the
+    // numbers the building is judged on. Deliberately NOT the crew roster;
+    // an owner asks "what is this portfolio worth and what will it cost me",
+    // not "which subcontractor is at Store #1052".
+    //
+    // VIEWER is the same view sold to a lender, insurer or board member.
+    case "OWNER":
+    case "VIEWER": {
       const data = await getPortfolioDashboard(ctx);
       return (
         <PortfolioOverview
           data={data}
-          heading="Regional Dashboard"
-          subheading="What is happening in my region?"
+          heading="Portfolio"
+          subheading="Condition, risk and capital exposure"
           showAI={can(ctx, "canViewAI")}
         />
       );
     }
-    case "VIEWER": {
-      const data = await getPortfolioDashboard(ctx);
-      return <PortfolioOverview data={data} heading="Portfolio Summary" subheading="Read-only view" showAI={can(ctx, "canViewAI")} />;
-    }
-    case "FACILITIES_MANAGER": {
-      const data = await getFacilitiesActionQueue(ctx);
-      return <FacilitiesActionDashboard data={data} showAI={can(ctx, "canViewAI")} />;
-    }
-    case "INSPECTOR": {
-      const data = await getMyFieldWork(ctx);
-      return <FieldWorkDashboard data={data} isInspector />;
-    }
-    case "TECHNICIAN": {
-      const data = await getMyFieldWork(ctx);
-      return <FieldWorkDashboard data={data} isInspector={false} />;
-    }
+
     case "VENDOR": {
       const data = await getVendorWork(ctx);
       const vendor = ctx.vendorId ? await prisma.vendor.findUnique({ where: { id: ctx.vendorId } }) : null;
       return <VendorDashboard data={data} vendorName={vendor?.name ?? "Vendor Portal"} />;
     }
+
+    // Everyone who runs the work. One screen, scoped per role — a Portfolio
+    // Admin sees every job in the org, a Facilities Manager only their own
+    // sites' jobs, and both are asking the same question.
+    case "PORTFOLIO_ADMIN":
+    case "REGIONAL_MANAGER":
+    case "FACILITIES_MANAGER":
+    case "INSPECTOR":
+    case "TECHNICIAN": {
+      const data = await getOperationsDashboard(ctx);
+      return <OperationsDashboard data={data} canReview={can(ctx, "canManageVendors")} />;
+    }
+
     default:
       redirect("/properties");
   }

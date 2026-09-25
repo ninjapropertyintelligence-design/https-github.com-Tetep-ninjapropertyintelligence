@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, issueScopeWhere, propertyScopeWhere } from "@/lib/session-context";
+// From tenant-scope, not session-context. These are the same values —
+// session-context only re-exports them — but that module reaches next-auth
+// and `next/headers`, so importing it here drags the whole auth graph into
+// every caller. The service layer depends on the pure scope logic.
+import { issueScopeWhere, propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 
 /** Facilities Manager dashboard (spec §6): "what needs action?" */
 export async function getFacilitiesActionQueue(ctx: SessionContext) {
@@ -61,8 +65,37 @@ export async function getMyFieldWork(ctx: SessionContext) {
   return { myAssessments, myIssues, propertyCount: propertyIds.size };
 }
 
-/** Vendor "assigned work" dashboard (spec §17). Vendor sees only their assignments. */
+/**
+ * Vendor "assigned work" dashboard (spec §17). Vendor sees only their assignments.
+ *
+ * Capture jobs are listed FIRST and issues second, because since capture jobs
+ * exist the job is the vendor's actual work — this view showed only issues,
+ * so a subcontractor sent on a 40-site sweep logged in to an empty page.
+ */
 export async function getVendorWork(ctx: SessionContext) {
+  const captureJobs = ctx.vendorId
+    ? await prisma.captureJob.findMany({
+        where: {
+          organizationId: ctx.organizationId,
+          vendorId: ctx.vendorId,
+          // The same open set the capture-job service uses. A closed job must
+          // not appear as outstanding work.
+          status: { in: ["ISSUED", "SUBMITTED", "REJECTED"] },
+        },
+        include: {
+          sites: {
+            include: {
+              property: { select: { id: true, name: true, city: true, state: true } },
+              shots: { select: { id: true, _count: { select: { evidence: true } } } },
+            },
+            orderBy: { createdAt: "asc" },
+          },
+        },
+        orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
+        take: 50,
+      })
+    : [];
+
   const issues = await prisma.issue.findMany({
     where: issueScopeWhere(ctx),
     include: { property: { select: { id: true, name: true, city: true, state: true } }, asset: { select: { id: true, name: true } } },
@@ -72,5 +105,39 @@ export async function getVendorWork(ctx: SessionContext) {
   const propertyIds = new Set(issues.map((i) => i.propertyId));
   const dueThisWeek = issues.filter((i) => i.dueDate && new Date(i.dueDate).getTime() - Date.now() < 7 * 86400000).length;
 
-  return { issues, propertyCount: propertyIds.size, dueThisWeek };
+  // Sites still to deliver: anything not yet accepted. What a subcontractor
+  // wants on their home screen is how many stops are left, not how many they
+  // were given.
+  const sitesOutstanding = captureJobs.reduce(
+    (total, job) => total + job.sites.filter((s) => s.status !== "ACCEPTED").length,
+    0,
+  );
+  const sitesReturned = captureJobs.reduce(
+    (total, job) => total + job.sites.filter((s) => s.status === "REJECTED").length,
+    0,
+  );
+
+  return {
+    captureJobs: captureJobs.map((job) => ({
+      id: job.id,
+      title: job.title,
+      dueDate: job.dueDate,
+      sites: job.sites.map((site) => ({
+        id: site.id,
+        propertyId: site.propertyId,
+        propertyName: site.property.name,
+        city: site.property.city,
+        state: site.property.state,
+        status: site.status,
+        shotsTotal: site.shots.length,
+        shotsCaptured: site.shots.filter((s) => s._count.evidence > 0).length,
+        rejectionReason: site.rejectionReason,
+      })),
+    })),
+    sitesOutstanding,
+    sitesReturned,
+    issues,
+    propertyCount: propertyIds.size,
+    dueThisWeek,
+  };
 }

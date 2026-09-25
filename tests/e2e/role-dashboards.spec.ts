@@ -15,22 +15,55 @@ async function loginAs(page: import("@playwright/test").Page, email: string) {
   await page.waitForURL(/dashboard|admin/, { timeout: 15000 });
 }
 
-test("Owner sees the Executive Dashboard with real portfolio numbers", async ({ page }) => {
+/**
+ * Three dashboards, not eight. These assertions changed with the design: the
+ * Executive / Portfolio Operations / Regional / Facilities / Field Work
+ * variants collapsed into one Operations screen, and the owner-facing view
+ * kept the portfolio numbers.
+ */
+test("Property owner sees condition and exposure, not the crew roster", async ({ page }) => {
   await loginAs(page, "owner@demo.com");
-  await expect(page.getByText("Executive Dashboard")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Portfolio" })).toBeVisible();
   await expect(page.getByText("TOTAL PROPERTIES")).toBeVisible();
+  // The separation that matters: an owner is not shown who was hired, what
+  // they were paid to do, or where they last uploaded from.
+  await expect(page.getByText("Subcontractors")).toHaveCount(0);
+  await expect(page.getByText("Jobs in flight")).toHaveCount(0);
 });
 
-test("Facilities Manager sees the action-queue dashboard, not the executive one", async ({ page }) => {
+test("Internal staff land on Operations with jobs and the subcontractor roster", async ({ page }) => {
   await loginAs(page, "facilitiesmanager@demo.com");
-  await expect(page.getByText("What needs action")).toBeVisible();
-  await expect(page.getByText("Executive Dashboard")).not.toBeVisible();
+  await expect(page.getByRole("heading", { name: "Operations" })).toBeVisible();
+  await expect(page.getByText("Capture work in flight, and who is on it")).toBeVisible();
+  await expect(page.getByText("Subcontractors")).toBeVisible();
+  // The seeded demo job is issued to ABC Roofing, and the vendor's name has
+  // to appear in both places for the page to do its job: on the job line
+  // ("who is on this") and on the roster ("who have we got"). Asserted
+  // separately because a bare text match is ambiguous across the two.
+  await expect(page.getByText(/ABC Roofing · \d+ of \d+ sites/)).toBeVisible();
+  await expect(page.getByText("ABC Roofing", { exact: true })).toBeVisible();
+  await expect(page.getByText("Executive Dashboard")).toHaveCount(0);
+});
+
+test("Operations shows the route progress for a seeded job's site", async ({ page }) => {
+  await loginAs(page, "portfolioadmin@demo.com");
+  await expect(page.getByRole("heading", { name: "Operations" })).toBeVisible();
+  // The demo job carries six positions on Store #1052. Progress is rendered
+  // from linked evidence, so the denominator proves the shot list reached
+  // this screen rather than just the job detail page.
+  await expect(page.getByText(/route \d+\/6/)).toBeVisible();
 });
 
 test("Vendor sees only assigned work, no portfolio/finance nav", async ({ page }) => {
   await loginAs(page, "vendor@demo.com");
   await expect(page.getByText("Assigned work only")).toBeVisible();
   await expect(page.getByRole("link", { name: "Reports" })).toHaveCount(0);
+  // Their capture job, which is their actual work — this dashboard listed
+  // only issues before, so a subcontractor on a capture sweep saw nothing.
+  await expect(page.getByText("Q4 condition sweep — Midwest")).toBeVisible();
+  await expect(page.getByText("Sites to deliver")).toBeVisible();
+  // And never the roster: a subcontractor must not see who else is engaged.
+  await expect(page.getByText("Subcontractors")).toHaveCount(0);
 });
 
 test("Regional Manager's property list is scoped to their region only", async ({ page }) => {
