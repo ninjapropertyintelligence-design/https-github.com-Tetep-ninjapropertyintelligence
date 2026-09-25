@@ -52,8 +52,10 @@ export default async function DashboardPage() {
     // an owner asks "what is this portfolio worth and what will it cost me",
     // not "which subcontractor is at Store #1052".
     //
-    // VIEWER is the same view sold to a lender, insurer or board member.
-    case "OWNER":
+    // VIEWER is the read-only role sold to a lender, insurer or board member.
+    // An OWNER is NOT this: they run the business as well as owning the
+    // buildings, so they land on Operations, which carries the portfolio
+    // roll-up at the top for exactly that reason.
     case "VIEWER": {
       const data = await getPortfolioDashboard(ctx);
       return (
@@ -72,9 +74,13 @@ export default async function DashboardPage() {
       return <VendorDashboard data={data} vendorName={vendor?.name ?? "Vendor Portal"} />;
     }
 
-    // Everyone who runs the work. One screen, scoped per role — a Portfolio
-    // Admin sees every job in the org, a Facilities Manager only their own
-    // sites' jobs, and both are asking the same question.
+    // Everyone who runs the work. One screen, scoped per role — an Owner and
+    // a Portfolio Admin see every job in the org, a Facilities Manager only
+    // their own sites' jobs, and all of them are asking the same question.
+    // The portfolio roll-up at the top appears for whoever may see the money,
+    // so an Owner gets condition and exposure here too rather than losing
+    // them to a second page.
+    case "OWNER":
     case "PORTFOLIO_ADMIN":
     case "REGIONAL_MANAGER":
     case "FACILITIES_MANAGER":

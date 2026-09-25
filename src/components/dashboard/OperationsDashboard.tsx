@@ -25,6 +25,16 @@ function ago(at: Date | string | null): string | null {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/** Compact money. A portfolio's capital exposure is millions; the cents are noise. */
+function currency(amount: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(amount);
+}
+
 function DueLabel({ days }: { days: number | null }) {
   if (days === null) return <span className="text-xs text-muted">No due date</span>;
   if (days < 0) {
@@ -48,7 +58,7 @@ export function OperationsDashboard({
   /** Whether this viewer may accept or reject — hides the queue's framing if not. */
   canReview: boolean;
 }) {
-  const { counts, openJobs, draftJobs, crews, awaitingReview, mine, attention } = data;
+  const { counts, openJobs, draftJobs, crews, awaitingReview, mine, attention, portfolio } = data;
   const myWorkCount = mine.assessments.length + mine.issues.length;
   const attentionCount = attention.criticalIssues + attention.highIssues + attention.overdueAssessments;
 
@@ -58,6 +68,33 @@ export function OperationsDashboard({
         <h1 className="text-xl font-semibold text-foreground">Operations</h1>
         <p className="text-sm text-muted">Capture work in flight, and who is on it</p>
       </div>
+
+      {/* The portfolio it is all in service of, for whoever may see the money.
+          An owner's home screen has to answer "what is this worth" as well as
+          "what is running" — that is the whole point of one screen. */}
+      {portfolio ? (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <StatTile label="Properties" value={portfolio.totalProperties} href="/properties" />
+          <StatTile
+            label="Portfolio health"
+            value={portfolio.healthScore}
+            href="/reports"
+            tone={portfolio.healthScore < 50 ? "critical" : portfolio.healthScore < 70 ? "warning" : "good"}
+          />
+          <StatTile
+            label="Critical issues"
+            value={portfolio.criticalIssues}
+            href="/issues?severity=CRITICAL"
+            tone={portfolio.criticalIssues > 0 ? "critical" : "default"}
+          />
+          <StatTile
+            label="12-month exposure"
+            value={currency(portfolio.exposure12mo)}
+            href="/reports"
+            sublabel="Capital at risk"
+          />
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         <StatTile label="Jobs running" value={counts.openJobs} href="/capture-jobs" />

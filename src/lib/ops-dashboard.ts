@@ -2,6 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { CaptureJobSiteStatus, CaptureJobStatus } from "@/generated/prisma/client";
 import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { getFacilitiesActionQueue, getMyFieldWork } from "@/lib/dashboard-views";
+import { getPortfolioDashboard } from "@/lib/dashboard";
+import { hasPermission } from "@/lib/permissions";
 
 /**
  * THE OPERATIONS DASHBOARD.
@@ -211,7 +213,30 @@ export async function getOperationsDashboard(ctx: SessionContext) {
     getFacilitiesActionQueue(ctx),
   ]);
 
+  // The portfolio roll-up, for whoever is allowed to see the money.
+  //
+  // An owner runs the business AND owns the buildings, so their home screen
+  // has to answer both questions — what the portfolio is worth and what is
+  // running against it. Splitting those across two pages is what made this a
+  // consolidation in the first place.
+  //
+  // Gated on `canViewFinancialExposure` rather than always fetched: an
+  // Inspector has no use for a portfolio roll-up and this is the most
+  // expensive query on the page, so it is not run for them at all. Health per
+  // property is still theirs via /properties — this is the org-wide total.
+  const portfolio = hasPermission(ctx.role, "canViewFinancialExposure")
+    ? await getPortfolioDashboard(ctx)
+    : null;
+
   return {
+    portfolio: portfolio
+      ? {
+          totalProperties: portfolio.totalProperties,
+          healthScore: portfolio.portfolioHealthScore,
+          criticalIssues: portfolio.criticalIssues,
+          exposure12mo: portfolio.capitalExposure.next12mo,
+        }
+      : null,
     mine: {
       assessments: mine.myAssessments,
       issues: mine.myIssues,

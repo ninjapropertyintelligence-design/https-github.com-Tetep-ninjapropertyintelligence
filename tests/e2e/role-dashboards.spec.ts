@@ -21,14 +21,34 @@ async function loginAs(page: import("@playwright/test").Page, email: string) {
  * variants collapsed into one Operations screen, and the owner-facing view
  * kept the portfolio numbers.
  */
-test("Property owner sees condition and exposure, not the crew roster", async ({ page }) => {
+test("Owner sees the portfolio numbers AND the operations half on one screen", async ({ page }) => {
   await loginAs(page, "owner@demo.com");
+  await expect(page.getByRole("heading", { name: "Operations" })).toBeVisible();
+  // Both halves, which is the point of the consolidation: what the portfolio
+  // is worth, and what is running against it.
+  await expect(page.getByText("PORTFOLIO HEALTH")).toBeVisible();
+  await expect(page.getByText("12-MONTH EXPOSURE")).toBeVisible();
+  await expect(page.getByText("Subcontractors")).toBeVisible();
+  await expect(page.getByText("Jobs in flight")).toBeVisible();
+});
+
+test("Read-only stakeholder sees condition and exposure, never the crew roster", async ({ page }) => {
+  await loginAs(page, "viewer@demo.com");
   await expect(page.getByRole("heading", { name: "Portfolio" })).toBeVisible();
   await expect(page.getByText("TOTAL PROPERTIES")).toBeVisible();
-  // The separation that matters: an owner is not shown who was hired, what
-  // they were paid to do, or where they last uploaded from.
+  // The separation that matters: a lender or insurer is not shown who was
+  // hired, what they were paid to do, or where they last uploaded from.
   await expect(page.getByText("Subcontractors")).toHaveCount(0);
   await expect(page.getByText("Jobs in flight")).toHaveCount(0);
+});
+
+test("Field staff get operations without the portfolio roll-up", async ({ page }) => {
+  await loginAs(page, "inspector@demo.com");
+  await expect(page.getByRole("heading", { name: "Operations" })).toBeVisible();
+  // Withheld because an Inspector holds no financial permission — and not
+  // merely hidden: the service never fetches it for them.
+  await expect(page.getByText("12-MONTH EXPOSURE")).toHaveCount(0);
+  await expect(page.getByText("PORTFOLIO HEALTH")).toHaveCount(0);
 });
 
 test("Internal staff land on Operations with jobs and the subcontractor roster", async ({ page }) => {

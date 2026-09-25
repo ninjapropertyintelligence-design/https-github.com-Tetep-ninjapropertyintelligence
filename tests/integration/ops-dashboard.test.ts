@@ -313,3 +313,40 @@ describe("scope", () => {
     expect(orgWide.counts.awaitingReview).toBe(1);
   });
 });
+
+describe("the portfolio roll-up", () => {
+  /** An Inspector: field staff, no financial permission. */
+  function inspectorCtx(): SessionContext {
+    return {
+      ...staffCtx(),
+      role: Role.INSPECTOR,
+      grants: [{ scopeType: "PROPERTY", portfolioId: null, regionId: null, propertyId: siteA.id }],
+    };
+  }
+
+  it("is present for a role that may see financial exposure", async () => {
+    const data = await getOperationsDashboard(staffCtx());
+    expect(data.portfolio).not.toBeNull();
+    // Three sites were created in this org, so the roll-up must be the
+    // portfolio's own number rather than a placeholder.
+    expect(data.portfolio!.totalProperties).toBe(3);
+    expect(typeof data.portfolio!.exposure12mo).toBe("number");
+  });
+
+  it("is withheld from field staff, who hold no financial permission", async () => {
+    const data = await getOperationsDashboard(inspectorCtx());
+    // Not merely hidden in the component — never fetched. An Inspector has no
+    // use for an org-wide roll-up and this is the page's costliest query.
+    expect(data.portfolio).toBeNull();
+    // They still get the operational half of the page.
+    expect(data.crews).toBeInstanceOf(Array);
+  });
+
+  it("scopes the roll-up to what a scoped manager can see", async () => {
+    const data = await getOperationsDashboard(scopedCtx(siteA.id));
+    expect(data.portfolio).not.toBeNull();
+    // One grant, one property. An unscoped roll-up would show a Facilities
+    // Manager the whole organization's totals.
+    expect(data.portfolio!.totalProperties).toBe(1);
+  });
+});
