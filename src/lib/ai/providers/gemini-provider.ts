@@ -1,5 +1,7 @@
 import type {
+  AIImageInput,
   AIProvider,
+  AIStructuredImageResult,
   AIToolCallRecord,
   AIToolDefinition,
   AIToolExecutor,
@@ -38,6 +40,7 @@ const MAX_ITERATIONS = 8;
 
 interface GeminiPart {
   text?: string;
+  inlineData?: { mimeType: string; data: string };
   functionCall?: { name: string; args?: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
 }
@@ -122,6 +125,32 @@ export class GeminiProvider implements AIProvider {
       contents: [{ role: "user", parts: [{ text: params.prompt }] }],
     });
     return GeminiProvider.textOf(json.candidates?.[0]?.content);
+  }
+
+  async analyzeImage(params: {
+    system: string;
+    prompt: string;
+    image: AIImageInput;
+    schema: JSONSchemaObject;
+  }): Promise<AIStructuredImageResult> {
+    const json = await this.call({
+      systemInstruction: { parts: [{ text: params.system }] },
+      contents: [
+        {
+          role: "user",
+          parts: [{ inlineData: { mimeType: params.image.mediaType, data: params.image.base64 } }, { text: params.prompt }],
+        },
+      ],
+      generationConfig: { responseMimeType: "application/json", responseSchema: toGeminiSchema(params.schema) },
+    });
+
+    const usage = json.usageMetadata
+      ? { inputTokens: json.usageMetadata.promptTokenCount ?? 0, outputTokens: json.usageMetadata.candidatesTokenCount ?? 0 }
+      : undefined;
+
+    const text = GeminiProvider.textOf(json.candidates?.[0]?.content);
+    if (!text) throw new Error("The AI provider returned no response");
+    return { output: JSON.parse(text), usage };
   }
 
   async runToolLoop(params: {

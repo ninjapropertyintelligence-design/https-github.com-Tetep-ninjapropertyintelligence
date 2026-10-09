@@ -12,7 +12,19 @@ import { NullProvider } from "@/lib/ai/providers/null-provider";
  * is the single choke point where that would plug in without touching any
  * caller.
  */
+let providerOverride: AIProvider | null = null;
+
+/**
+ * Tests only. CI runs with no AI key, so without this the suggest-then-confirm
+ * flow could only ever be tested as far as "not configured". Same pattern as
+ * `__setStorageProviderForTest`.
+ */
+export function __setAIProviderForTest(next: AIProvider | null): void {
+  providerOverride = next;
+}
+
 export function getAIProvider(): AIProvider {
+  if (providerOverride) return providerOverride;
   const selected = (process.env.AI_PROVIDER ?? "anthropic").toLowerCase();
 
   if (selected === "openai") {

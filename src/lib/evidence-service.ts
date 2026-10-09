@@ -79,6 +79,32 @@ const CAPTURE_KIND_FLAG: Partial<Record<EvidenceType, (typeof FEATURE_FLAGS)[key
   IMAGE_360: FEATURE_FLAGS.IMAGE_360,
 };
 
+/**
+ * Every asset a file names must be on that file's own property.
+ *
+ * The asset id was taken on trust. That let a photo of one building name an
+ * asset in another — harmless while the link was a label, but automatic AI
+ * analysis now rates the named asset from the photo, so a wrong link would
+ * put one building's damage on another building's equipment.
+ */
+async function assertAssetsOnProperties(
+  organizationId: string,
+  items: Array<{ assetId?: string | null; propertyId?: string | null }>,
+): Promise<void> {
+  const named = items.filter((i): i is { assetId: string; propertyId?: string | null } => !!i.assetId);
+  if (named.length === 0) return;
+  const assets = await prisma.asset.findMany({
+    where: { id: { in: [...new Set(named.map((i) => i.assetId))] }, organizationId },
+    select: { id: true, propertyId: true },
+  });
+  const propertyOf = new Map(assets.map((a) => [a.id, a.propertyId]));
+  for (const item of named) {
+    if (!item.propertyId || propertyOf.get(item.assetId) !== item.propertyId) {
+      throw new ApiError(400, "A file names an asset that is not on its property");
+    }
+  }
+}
+
 export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
   // Permission first: "you may not do this at all" is a truer answer than
   // "your organization has not bought this" for someone who could never do
@@ -97,6 +123,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     });
     if (!property) throw new ApiError(400, "Invalid propertyId, or you don't have access to it");
   }
+
+  await assertAssetsOnProperties(ctx.organizationId, [input]);
 
   // A shot id from another site would otherwise mark that site's route
   // complete with imagery taken somewhere else.
@@ -264,6 +292,8 @@ export async function createEvidenceBatch(
       throw new ApiError(400, "One or more files name a property that does not exist, or that you can't access");
     }
   }
+
+  await assertAssetsOnProperties(ctx.organizationId, items);
 
   for (const item of items) {
     if (!item.captureShotId) continue;

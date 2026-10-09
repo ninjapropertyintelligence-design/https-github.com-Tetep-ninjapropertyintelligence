@@ -56,6 +56,7 @@ export const PRODUCT_FEATURES = [
   "interior.tour_viewed",
   "cogs.viewed",
   "storage_settings.viewed",
+  "defect_rules.viewed",
   "retention_settings.viewed",
   "webhook.configured",
   "mfa.enrolled",

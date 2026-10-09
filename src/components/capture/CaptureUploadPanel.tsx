@@ -70,6 +70,8 @@ export function CaptureUploadPanel({
   jobTitle,
   shots,
   disabled,
+  assets = [],
+  autoAnalyze = false,
 }: {
   jobId: string;
   siteId: string;
@@ -80,6 +82,10 @@ export function CaptureUploadPanel({
   shots: ShotOption[];
   /** True once the site is accepted or the job is closed. */
   disabled: boolean;
+  /** The site's assets, for saying which one a batch of photos shows. */
+  assets?: Array<{ id: string; name: string }>;
+  /** Whether this organization analyses photos automatically on upload. */
+  autoAnalyze?: boolean;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +98,10 @@ export function CaptureUploadPanel({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [spaceRef, setSpaceRef] = useState("");
+  // Which asset a batch of photos shows. Optional: a general site photo
+  // shows no one asset. Naming one is also what lets the AI analyse the
+  // photos automatically, since it has to know what it is rating.
+  const [assetId, setAssetId] = useState("");
 
   /** Unwraps this API's envelope, whose `error` is a string, not an object. */
   async function call<T>(url: string, body: unknown): Promise<T> {
@@ -234,6 +244,8 @@ export function CaptureUploadPanel({
               // Drone imagery is a flight, not a position, so it never
               // carries a shot.
               captureShotId: shotId || undefined,
+              // Only photos name an asset: a 360 panorama shows a whole space.
+              assetId: kind === "PHOTOS" && assetId ? assetId : undefined,
               mimeType: u.file.type || undefined,
               sizeBytes: u.file.size,
             })),
@@ -242,10 +254,12 @@ export function CaptureUploadPanel({
       }
 
       const failed = selected.length - uploaded.length;
+      const analysing = autoAnalyze && kind === "PHOTOS" && assetId !== "";
       setDone(
-        failed === 0
+        (failed === 0
           ? `${uploaded.length} ${uploaded.length === 1 ? "file" : "files"} uploaded.`
-          : `${uploaded.length} uploaded, ${failed} failed — retry the failed files.`,
+          : `${uploaded.length} uploaded, ${failed} failed — retry the failed files.`) +
+          (analysing ? " The AI is analysing them now; its suggestions will appear below for you to review." : ""),
       );
       if (inputRef.current) inputRef.current.value = "";
       // Refreshes the deliverable chips, which are computed from the data.
@@ -365,6 +379,33 @@ export function CaptureUploadPanel({
               </option>
             ))}
           </select>
+        </div>
+      ) : null}
+
+      {kind === "PHOTOS" && assets.length > 0 ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="text-xs text-muted" htmlFor={`asset-${siteId}`}>
+            Asset shown
+          </label>
+          <select
+            id={`asset-${siteId}`}
+            value={assetId}
+            disabled={busy}
+            onChange={(e) => setAssetId(e.target.value)}
+            className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-brand"
+          >
+            <option value="">No one asset</option>
+            {assets.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          {autoAnalyze ? (
+            <span className="text-xs text-muted">
+              {assetId ? "The AI will analyse these photos as soon as they upload." : "Pick an asset to have the AI analyse these photos."}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
