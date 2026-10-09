@@ -406,7 +406,6 @@ model User {
   resolvedIssues         Issue[]                 @relation("IssueResolvedBy")
   submittedRepairs       Issue[]                 @relation("IssueRepairSubmittedBy")
   verifiedRepairs        Issue[]                 @relation("IssueVerifiedBy")
-  reviewedAIFindings     AIFinding[]             @relation("AIFindingReviewedBy")
   uploadedEvidence       Evidence[]              @relation("EvidenceUploadedBy")
   uploadedDocs           DocumentVersion[]       @relation("DocumentUploadedBy")
   conditionChanges       AssetConditionHistory[] @relation("ConditionChangedBy")
@@ -588,7 +587,6 @@ model Organization {
   storageObjects       StorageObject[]
   captureJobs          CaptureJob[]
   invitations          Invitation[]
-  defectRules          DefectRule[]
 
   @@index([slug])
 }
@@ -801,7 +799,6 @@ model Asset {
   system   BuildingSystem? @relation(fields: [systemId], references: [id], onDelete: SetNull)
 
   conditionHistory     AssetConditionHistory[]
-  aiFindings           AIFinding[]
   issues               Issue[]
   evidence             Evidence[]
   documents            Document[]
@@ -939,7 +936,6 @@ model Issue {
   evidence        Evidence[]
   documents       Document[]
   exteriorMarkers ExteriorMarker[]
-  aiFinding       AIFinding?
 
   @@index([organizationId])
   @@index([propertyId])
@@ -1446,65 +1442,10 @@ model AIFinding {
   reviewedAt   DateTime?
   createdAt    DateTime        @default(now())
 
-  /// The defect class the model named, e.g. "roof_membrane_damage". Looked
-  /// up in the organization's `DefectRule` table for suggested severity,
-  /// cost and condition hit — the model itself never sets any of those.
-  defectClass String?
-  /// The model's own confidence, 0–1. Shown to the inspector; never used to
-  /// auto-confirm anything.
-  confidence  Float?
-  /// Which model produced it, for when two disagree or one is retired.
-  modelName   String?
-  /// The asset the finding is about, when known. The inspector can change it.
-  assetId     String?
-  /// Where on the photo, as fractions of the image (0–1):
-  /// { "x", "y", "w", "h" } from the top-left. Fractions, not pixels, so the
-  /// box lands in the right place at any display size.
-  boundingBox Json?
-  imageWidth  Int?
-  imageHeight Int?
-  /// Why the inspector rejected it, or anything they noted when confirming.
-  reviewNote  String?
-  /// The issue created when an inspector confirmed this finding. A finding
-  /// never creates or changes anything until then.
-  issueId     String? @unique
-
-  evidence   Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
-  asset      Asset?   @relation(fields: [assetId], references: [id], onDelete: SetNull)
-  issue      Issue?   @relation(fields: [issueId], references: [id], onDelete: SetNull)
-  reviewedBy User?    @relation("AIFindingReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
 
   @@index([evidenceId])
   @@index([status])
-  @@index([assetId])
-}
-
-/// What a kind of defect means to this organization: the severity, repair
-/// cost and condition hit an inspector is offered when confirming an AI
-/// finding of that class. Owned by the organization, never by the model —
-/// the model only names the class. Every value is a suggestion the inspector
-/// can change at confirmation.
-model DefectRule {
-  id                     String        @id @default(cuid())
-  organizationId         String
-  /// Matches `AIFinding.defectClass`, e.g. "concrete_spalling".
-  defectClass            String
-  /// What people read: "Concrete spalling".
-  label                  String
-  /// The kind of asset it usually applies to ("Roof", "Facade"), for context.
-  assetCategory          String?
-  defaultSeverity        IssueSeverity
-  /// Points taken off the asset's condition score (0–100) when confirmed.
-  conditionPenalty       Int           @default(0)
-  /// Suggested repair cost in cents, like every other money field here.
-  defaultRepairCostCents Int?
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  @@unique([organizationId, defectClass])
-  @@index([organizationId])
 }
 
 model AIQueryLog {
