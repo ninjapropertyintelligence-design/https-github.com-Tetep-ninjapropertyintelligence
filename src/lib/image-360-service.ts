@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-error";
 import { captureReviewWhere, propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { FEATURE_FLAGS, isFeatureEnabled } from "@/lib/feature-flags";
@@ -41,6 +42,8 @@ export interface Property360Data {
   propertyId: string;
   /** Whether this organization can capture NEW panoramas. */
   enabled: boolean;
+  /** Where the property is, so the importer can flag panoramas shot somewhere else. */
+  location: { latitude: number; longitude: number } | null;
   panoramas: Panorama360[];
 }
 
@@ -62,7 +65,7 @@ function labelFor(storageKey: string, index: number): string {
 export async function getProperty360Data(ctx: SessionContext, propertyId: string): Promise<Property360Data> {
   const property = await prisma.property.findFirst({
     where: { AND: [{ id: propertyId }, propertyScopeWhere(ctx)] },
-    select: { id: true },
+    select: { id: true, latitude: true, longitude: true },
   });
   if (!property) throw new ApiError(404, "Property not found");
 
@@ -89,6 +92,48 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
   return {
     propertyId,
     enabled: await isFeatureEnabled(ctx.organizationId || null, FEATURE_FLAGS.IMAGE_360),
+    location:
+      property.latitude !== null && property.longitude !== null
+        ? { latitude: property.latitude, longitude: property.longitude }
+        : null,
     panoramas,
   };
+}
+
+/** Most checksums one duplicate check may carry — one SD card's worth, and then some. */
+export const MAX_CHECKSUM_LOOKUP = 2000;
+
+/**
+ * Which of these files this property already has, by SHA-256 of the bytes.
+ *
+ * The Insta360 importer is pointed at a whole SD card, which still holds last
+ * month's shoot as well as today's. It hashes every file in the browser and
+ * asks here first, so re-importing the card uploads only what is new instead
+ * of filling the gallery with copies. The hash is recorded in the evidence
+ * row's metadata at import (`metadata.sha256`).
+ */
+export async function findExisting360Checksums(
+  ctx: SessionContext,
+  propertyId: string,
+  checksums: string[],
+): Promise<string[]> {
+  const property = await prisma.property.findFirst({
+    where: { AND: [{ id: propertyId }, propertyScopeWhere(ctx)] },
+    select: { id: true },
+  });
+  if (!property) throw new ApiError(404, "Property not found");
+  if (checksums.length > MAX_CHECKSUM_LOOKUP) {
+    throw new ApiError(400, `At most ${MAX_CHECKSUM_LOOKUP} checksums per request; this one has ${checksums.length}`);
+  }
+  const wanted = [...new Set(checksums.map((c) => c.toLowerCase()).filter((c) => /^[0-9a-f]{64}$/.test(c)))];
+  if (wanted.length === 0) return [];
+  const rows = await prisma.$queryRaw<Array<{ sha: string }>>(Prisma.sql`
+    SELECT DISTINCT "metadata"->>'sha256' AS sha
+    FROM "Evidence"
+    WHERE "organizationId" = ${ctx.organizationId}
+      AND "propertyId" = ${property.id}
+      AND "type" = 'IMAGE_360'
+      AND "metadata"->>'sha256' = ANY(${wanted})
+  `);
+  return rows.map((r) => r.sha);
 }

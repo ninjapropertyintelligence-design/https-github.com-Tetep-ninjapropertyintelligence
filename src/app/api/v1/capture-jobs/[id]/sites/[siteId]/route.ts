@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { withApiHandler, ApiError } from "@/lib/api-utils";
+import { withApiHandler, ApiError, requirePermission } from "@/lib/api-utils";
 import {
   resolveDroneTargetForSite,
   reviewCaptureSite,
+  setShotLocations,
   submitCaptureSite,
   submitConditionScores,
 } from "@/lib/capture-job-service";
@@ -32,6 +33,21 @@ const bodySchema = z.discriminatedUnion("action", [
   // and dataset only if there isn't one already in flight.
   z.object({ action: z.literal("drone-target") }),
   z.object({ action: z.literal("submit") }),
+  // Pins for the route's positions, so imported photos can be matched by GPS.
+  // A null pair clears a pin.
+  z.object({
+    action: z.literal("shot-locations"),
+    locations: z
+      .array(
+        z.object({
+          shotId: z.string().min(1),
+          latitude: z.number().nullable(),
+          longitude: z.number().nullable(),
+        }),
+      )
+      .min(1)
+      .max(50),
+  }),
   z.object({
     action: z.literal("review"),
     accept: z.boolean(),
@@ -50,6 +66,9 @@ export const POST = withApiHandler<NextResponse, RouteParams>(async (ctx, req, {
       return NextResponse.json(await resolveDroneTargetForSite(ctx, id, siteId));
     case "submit":
       return NextResponse.json(await submitCaptureSite(ctx, id, siteId));
+    case "shot-locations":
+      requirePermission(ctx, "canManageProperties");
+      return NextResponse.json(await setShotLocations(ctx, id, siteId, body.locations));
     case "review":
       return NextResponse.json(
         await reviewCaptureSite(ctx, id, siteId, { accept: body.accept, reason: body.reason }),

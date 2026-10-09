@@ -57,11 +57,32 @@ async function countPanoramas(page: Page, propertyId: string): Promise<number> {
 }
 
 /**
+ * The smallest real equirectangular frame: a 2×1 JPEG.
+ *
+ * The 360 importer refuses anything that is not 2:1, so a 1×1 placeholder
+ * would (correctly) be rejected as "not a 360 photo". Each call also carries
+ * a unique comment segment: the importer skips bytes the property already
+ * has, and this spec runs against seeded data that survives between runs.
+ */
+const PANORAMA_2X1 = Buffer.from(
+  "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAABAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwC7RRRXach//9k=",
+  "base64",
+);
+
+function uniquePanorama(): Buffer {
+  const text = Buffer.from(randomUUID());
+  const length = text.length + 2;
+  const comment = Buffer.concat([Buffer.from([0xff, 0xfe, length >> 8, length & 0xff]), text]);
+  return Buffer.concat([PANORAMA_2X1.subarray(0, 2), comment, PANORAMA_2X1.subarray(2)]);
+}
+
+/**
  * The upload panel, driven as a subcontractor would.
  *
  * Every layer under this is covered by integration tests. What only a browser
- * proves is that the three-step dance actually works from a real page: signed
- * URLs minted, bytes PUT straight to storage, then one batched registration.
+ * proves is that the three-step dance actually works from a real page: files
+ * read and checked in the browser, signed URLs minted, bytes PUT straight to
+ * storage, then one batched registration carrying each file's position.
  */
 test("a capture vendor uploads panoramas from the job page", async ({ page }) => {
   await page.goto("/login");
@@ -85,37 +106,41 @@ test("a capture vendor uploads panoramas from the job page", async ({ page }) =>
   await expect(page.getByPlaceholder(/Space ID or https/)).toBeVisible();
   await expect(page.locator('input[type="file"]')).toHaveCount(0);
 
+  // 360s go through the importer, which reads every file before uploading.
   await page.locator("select[id^='kind-']").first().selectOption("IMAGE_360");
-  await expect(page.locator('input[type="file"]')).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "Import 360° panoramas" })).toBeVisible();
 
-  // The route is rendered, and the position selector defaults to the first
-  // one still outstanding so a technician walking it does not re-pick at
-  // every stop.
   await expect(page.getByText(/Route \(\d+\/\d+\)/)).toBeVisible();
   const routeBefore = await routeProgress(page);
-  const positions = page.locator("select[id^='shot-']").first();
-  await expect(positions).toBeVisible();
-  const chosen = await positions.inputValue();
+
+  const names = [`e2e-${randomUUID()}.jpg`, `e2e-${randomUUID()}.jpg`];
+  await page.setInputFiles('input[accept=".jpg,.jpeg,.insp,.insv"]', [
+    { name: names[0], mimeType: "image/jpeg", buffer: uniquePanorama() },
+    { name: names[1], mimeType: "image/jpeg", buffer: uniquePanorama() },
+  ]);
+  await expect(page.getByRole("button", { name: "Import 2 panoramas" })).toBeVisible({ timeout: 30000 });
+
+  // No GPS and fewer photos than open positions, so nothing is matched
+  // automatically — the importer refuses to guess. File the first by hand to
+  // the first position still outstanding.
+  const position = page.locator(`select[aria-label="Position for ${names[0]}"]`);
+  await expect(position).toHaveValue("");
+  const open = await position.locator("option").evaluateAll((options) =>
+    options
+      .map((o) => ({ value: (o as HTMLOptionElement).value, text: o.textContent ?? "" }))
+      .filter((o) => o.value !== "" && !o.text.includes("✓")),
+  );
   // This spec writes to seeded data that survives the run, so it ticks off a
   // position each time. Once the route is complete there is nothing left to
-  // preselect and the assertion below cannot mean anything — say so rather
-  // than failing obscurely six runs later.
-  test.skip(chosen === "", "every route position is already captured — run `npm run db:seed` to reset");
+  // file against — say so rather than failing obscurely six runs later.
+  test.skip(open.length === 0, "every route position is already captured — run `npm run db:seed` to reset");
+  await position.selectOption(open[0].value);
 
-  // A tiny but real JPEG: the smallest thing the server will accept as bytes.
-  const jpeg = Buffer.from(
-    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==",
-    "base64",
-  );
-
-  await page.setInputFiles('input[type="file"]', [
-    { name: `e2e-${randomUUID()}.jpg`, mimeType: "image/jpeg", buffer: jpeg },
-    { name: `e2e-${randomUUID()}.jpg`, mimeType: "image/jpeg", buffer: jpeg },
-  ]);
+  await page.getByRole("button", { name: "Import 2 panoramas" }).click();
 
   // The panel reports what landed. Asserting on the count rather than a
   // spinner, because a silent no-op would also make a spinner disappear.
-  await expect(page.getByText(/2 files uploaded/i)).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText(/2 panoramas imported/i)).toBeVisible({ timeout: 30000 });
 
   // And two more panoramas exist than before.
   //
@@ -126,10 +151,10 @@ test("a capture vendor uploads panoramas from the job page", async ({ page }) =>
   const after = await countPanoramas(page, propertyId);
   expect(after).toBe(before + 2);
 
-  // And one more position is ticked off. This is what the shot list is for:
-  // not that imagery exists somewhere on the site, but that this particular
-  // place was captured. A delta rather than a fixed count, because the
-  // previous run already ticked one.
+  // And exactly one more position is ticked off — the one filed by hand; the
+  // other panorama was left unlisted. This is what the shot list is for: not
+  // that imagery exists somewhere on the site, but that this particular place
+  // was captured.
   await expect
     .poll(async () => (await routeProgress(page)).done, { timeout: 15000 })
     .toBe(routeBefore.done + 1);

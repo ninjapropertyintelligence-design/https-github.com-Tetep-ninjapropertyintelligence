@@ -197,6 +197,54 @@ next layer to add on top once a live Matterport/PIX4D integration is
 wired up — the schema and UI don't assume Matterport is present anywhere
 else in the app.
 
+### Auto-import (DroneDeploy, Insta360)
+
+**DroneDeploy** (`src/lib/dronedeploy-import-service.ts`). An organization
+connects its own DroneDeploy account under Administration → DroneDeploy.
+Each import pass then lists the account's maps, files each new one to the
+single property within the match radius (300 m by default) of the map's
+location, requests its exports, and on a later pass streams each finished
+export into storage as a `DroneOutput`. The capture ends up `READY`, the
+same as a manual upload. A map with no location, no nearby property, or
+more than one nearby property waits on that page for a person to file it.
+Maps created before the account was connected are never imported.
+
+Passes run from the "Check now" button, from `POST /api/v1/admin/dronedeploy/run`
+(platform admin), or on a schedule via `GET /api/v1/cron/dronedeploy` with
+`Authorization: Bearer $CRON_SECRET`. For Vercel Cron, add to `vercel.json`:
+
+```json
+{ "crons": [{ "path": "/api/v1/cron/dronedeploy", "schedule": "*/15 * * * *" }] }
+```
+
+(Vercel's Hobby plan only allows daily crons, so a schedule this frequent
+needs a paid plan.) The GraphQL operations follow DroneDeploy's public docs
+but have not been run against a live account from this environment. Run
+`npm run dronedeploy:introspect` with a real key before relying on it.
+
+**Insta360** (`src/components/media/Insta360ImportPanel.tsx`). Insta360 has
+no cloud API, so this import runs in the browser. On a property's 360° Views
+tab, choose the camera's SD card folder. Each file's EXIF/XMP is read
+(`src/lib/media/panorama-metadata.ts`) for capture time, GPS and projection.
+Camera originals (`.insp`/`.insv`) are skipped with a note to export them as
+360 JPGs first. Panoramas shot more than 1 km from the property are held back
+unless included. Each file is hashed and checked against the panoramas the
+property already has, so re-importing a card uploads only new files.
+
+**Shot positions.** When the property is on an open capture job with a 360
+route, the importer also proposes the route position for each panorama
+(`src/lib/capture/shot-matching.ts`):
+
+- By GPS: a geotagged photo goes to the nearest pinned position within 30 m.
+- By walking order: if the photos left over exactly match the positions
+  left over, they are paired in shooting order.
+- Otherwise the photo is left for a person to choose.
+
+Every proposal can be changed before upload. Pins come from four places:
+staff placing them on the job page (map with `NEXT_PUBLIC_MAPBOX_TOKEN`, or
+pasted coordinates); the previous job at the same site, matched by position
+name; or the first geotagged photo filed against an unpinned position.
+
 ### File storage
 
 `src/lib/storage.ts` defines a `StorageProvider` interface; large files

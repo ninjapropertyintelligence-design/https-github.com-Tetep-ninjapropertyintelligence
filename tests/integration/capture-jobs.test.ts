@@ -6,6 +6,8 @@ import {
   getCaptureJob,
   issueCaptureJob,
   listCaptureJobs,
+  openRouteForProperty,
+  setShotLocations,
   outstandingDeliverables,
   outstandingShots,
   reviewCaptureSite,
@@ -967,6 +969,142 @@ describe("telling people", () => {
 
     const after = await prisma.captureJobSite.findUniqueOrThrow({ where: { id: site.id } });
     expect(after.status).toBe("SUBMITTED");
+  });
+});
+
+describe("shot position pins", () => {
+  // Kansas City, so pins can be checked against the site's own location.
+  const LAT = 39.0997;
+  const LNG = -94.5786;
+
+  beforeAll(async () => {
+    await prisma.property.update({ where: { id: siteA.id }, data: { latitude: LAT, longitude: LNG } });
+  });
+  afterAll(async () => {
+    await prisma.property.update({ where: { id: siteA.id }, data: { latitude: null, longitude: null } });
+  });
+
+  async function routedJob(title = `Pinned ${suffix}`) {
+    const job = await createCaptureJob(staffCtx(), {
+      title,
+      vendorId: vendor.id,
+      propertyIds: [siteA.id, siteB.id],
+      deliverables: ["IMAGE_360"],
+      shots: [{ label: "North lot" }, { label: "Main entrance" }],
+    });
+    await issueCaptureJob(staffCtx(), job.id);
+    return getCaptureJob(staffCtx(), job.id);
+  }
+
+  it("lets staff place and clear pins", async () => {
+    const job = await routedJob();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const [north, entrance] = site.shots;
+    const saved = await setShotLocations(staffCtx(), job.id, site.id, [
+      { shotId: north.id, latitude: LAT + 0.0009, longitude: LNG },
+      { shotId: entrance.id, latitude: LAT, longitude: LNG },
+    ]);
+    expect(saved.map((s) => [s.latitude, s.longitude])).toEqual([
+      [LAT + 0.0009, LNG],
+      [LAT, LNG],
+    ]);
+    const cleared = await setShotLocations(staffCtx(), job.id, site.id, [
+      { shotId: north.id, latitude: null, longitude: null },
+    ]);
+    expect(cleared[0].latitude).toBeNull();
+  });
+
+  it("does not let the vendor move the positions they are measured against", async () => {
+    const job = await routedJob();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    await expect(
+      setShotLocations(vendorCtx(), job.id, site.id, [{ shotId: site.shots[0].id, latitude: LAT, longitude: LNG }]),
+    ).rejects.toThrow(/ordering organization/);
+  });
+
+  it("refuses a pin far from the site — usually latitude and longitude swapped", async () => {
+    const job = await routedJob();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    await expect(
+      setShotLocations(staffCtx(), job.id, site.id, [{ shotId: site.shots[0].id, latitude: LNG / 2, longitude: LAT }]),
+    ).rejects.toThrow(/km from/);
+  });
+
+  it("refuses a position from another site's route", async () => {
+    const job = await routedJob();
+    const siteARow = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const siteBRow = job.sites.find((s) => s.propertyId === siteB.id)!;
+    await expect(
+      setShotLocations(staffCtx(), job.id, siteARow.id, [{ shotId: siteBRow.shots[0].id, latitude: LAT, longitude: LNG }]),
+    ).rejects.toThrow(/not on this site's route/);
+  });
+
+  it("learns an unpinned position from the first geotagged photo filed against it, and never moves a placed pin", async () => {
+    const job = await routedJob();
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const [north, entrance] = site.shots;
+    await setShotLocations(staffCtx(), job.id, site.id, [{ shotId: entrance.id, latitude: LAT, longitude: LNG }]);
+
+    await createEvidenceBatch(vendorCtx(), [
+      {
+        type: "IMAGE_360",
+        storageKey: `${siteA.id}/${crypto.randomUUID()}-n.jpg`,
+        propertyId: siteA.id,
+        captureShotId: north.id,
+        latitude: LAT + 0.0009,
+        longitude: LNG + 0.0001,
+      },
+      {
+        type: "IMAGE_360",
+        storageKey: `${siteA.id}/${crypto.randomUUID()}-e.jpg`,
+        propertyId: siteA.id,
+        captureShotId: entrance.id,
+        latitude: LAT + 0.0003,
+        longitude: LNG + 0.0003,
+      },
+    ]);
+
+    const after = await prisma.captureShot.findMany({ where: { siteId: site.id }, orderBy: { sequence: "asc" } });
+    expect([after[0].latitude, after[0].longitude]).toEqual([LAT + 0.0009, LNG + 0.0001]);
+    expect([after[1].latitude, after[1].longitude]).toEqual([LAT, LNG]);
+  });
+
+  it("carries pins over to the next job at the same site, by position name", async () => {
+    const first = await routedJob("First visit");
+    const site = first.sites.find((s) => s.propertyId === siteA.id)!;
+    await setShotLocations(staffCtx(), first.id, site.id, [
+      { shotId: site.shots[0].id, latitude: LAT + 0.0009, longitude: LNG },
+    ]);
+
+    const second = await createCaptureJob(staffCtx(), {
+      title: "Second visit",
+      vendorId: vendor.id,
+      propertyIds: [siteA.id, siteB.id],
+      deliverables: ["IMAGE_360"],
+      // Different case and an extra position: matched by name, not by order.
+      shots: [{ label: "Loading dock" }, { label: "north lot" }],
+    });
+    const shots = await prisma.captureShot.findMany({
+      where: { site: { jobId: second.id, propertyId: siteA.id } },
+      orderBy: { sequence: "asc" },
+    });
+    expect(shots[0].latitude).toBeNull();
+    expect([shots[1].latitude, shots[1].longitude]).toEqual([LAT + 0.0009, LNG]);
+    // The other site had no pins to inherit.
+    const other = await prisma.captureShot.findMany({ where: { site: { jobId: second.id, propertyId: siteB.id } } });
+    expect(other.every((s) => s.latitude === null)).toBe(true);
+  });
+
+  it("offers the open route on the property's 360 tab, to the vendor only on their own job", async () => {
+    const job = await routedJob();
+    const route = await openRouteForProperty(staffCtx(), siteA.id);
+    expect(route?.jobId).toBe(job.id);
+    expect(route?.shots.map((s) => s.label)).toEqual(["North lot", "Main entrance"]);
+    expect((await openRouteForProperty(vendorCtx(), siteA.id))?.jobId).toBe(job.id);
+
+    const otherVendor = await prisma.vendor.create({ data: { organizationId: org.id, name: `Other ${suffix}`, trade: "Capture" } });
+    expect(await openRouteForProperty({ ...vendorCtx(), vendorId: otherVendor.id }, siteA.id)).toBeNull();
+    expect(await openRouteForProperty(staffCtx(), untouchedSite.id)).toBeNull();
   });
 });
 

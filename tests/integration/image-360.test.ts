@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import { FEATURE_FLAGS } from "@/lib/feature-flags";
 import { createEvidence } from "@/lib/evidence-service";
-import { getProperty360Data } from "@/lib/image-360-service";
+import { findExisting360Checksums, getProperty360Data } from "@/lib/image-360-service";
 import { getSiteMapData } from "@/lib/site-map";
 import type { SessionContext } from "@/lib/tenant-scope";
 
@@ -323,6 +323,45 @@ describe("reading 360 panoramas", () => {
     const { panoramas } = await getProperty360Data(ctxFor(entitledOrg.id), entitledProperty.id);
     // Not a slice of the key presented as a filename.
     expect(panoramas[0].label).toBe("360 panorama 1");
+  });
+});
+
+describe("Insta360 import duplicate check", () => {
+  const shaA = "a".repeat(64);
+  const shaB = "b".repeat(64);
+
+  it("reports only the checksums this property already holds as panoramas", async () => {
+    await createEvidence(ctxFor(entitledOrg.id), {
+      type: "IMAGE_360",
+      storageKey: `${entitledOrg.id}/00000000-0000-0000-0000-000000000000-a.jpg`,
+      propertyId: entitledProperty.id,
+      metadata: { sha256: shaA, source: "insta360-import" },
+    });
+    // Same bytes as an ordinary photo do not count: only panoramas are deduplicated.
+    await createEvidence(ctxFor(entitledOrg.id), {
+      type: "PHOTO",
+      storageKey: `${entitledOrg.id}/00000000-0000-0000-0000-000000000001-b.jpg`,
+      propertyId: entitledProperty.id,
+      metadata: { sha256: shaB },
+    });
+
+    const existing = await findExisting360Checksums(ctxFor(entitledOrg.id), entitledProperty.id, [
+      shaA.toUpperCase(),
+      shaB,
+      "not-a-hash",
+    ]);
+    expect(existing).toEqual([shaA]);
+  });
+
+  it("refuses a property in another organization", async () => {
+    await expect(findExisting360Checksums(ctxFor(barredOrg.id), entitledProperty.id, ["a".repeat(64)])).rejects.toThrow(
+      /not found/i,
+    );
+  });
+
+  it("reports the property's location so far-away panoramas can be flagged", async () => {
+    const data = await getProperty360Data(ctxFor(entitledOrg.id), entitledProperty.id);
+    expect(data.location).toEqual({ latitude: 32.7767, longitude: -96.797 });
   });
 });
 
