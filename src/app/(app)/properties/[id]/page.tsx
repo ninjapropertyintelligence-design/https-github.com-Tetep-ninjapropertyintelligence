@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getSessionContext, propertyScopeWhere, can, SessionContext } from "@/lib/session-context";
+import { getSessionContext, propertyScopeWhere, captureReviewWhere, can, SessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { getLatestHealthSnapshot, getDataConfidenceWarnings, CategoryBreakdownEntry } from "@/lib/scoring";
 import { ScoringCategory } from "@/lib/scoring-categories";
@@ -117,7 +117,7 @@ async function TabContent({
     case "exterior":
       return <ExteriorTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "digital-twin":
-      return <DigitalTwinTab propertyId={propertyId} />;
+      return <DigitalTwinTab propertyId={propertyId} ctx={ctx} />;
     case "projects":
       return (
         <EmptyState
@@ -148,8 +148,14 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
       prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
       prisma.asset.count({ where: { propertyId, status: "ACTIVE", criticalityScore: { gte: 4 } } }),
       prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
-      prisma.matterportPropertyLink.findFirst({ where: { propertyId }, orderBy: { linkedAt: "desc" } }),
-      prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" }, orderBy: { capturedAt: "desc" } }),
+      prisma.matterportPropertyLink.findFirst({
+        where: { propertyId, ...captureReviewWhere(ctx) },
+        orderBy: { linkedAt: "desc" },
+      }),
+      prisma.droneCapture.findFirst({
+        where: { propertyId, status: "READY", ...captureReviewWhere(ctx) },
+        orderBy: { capturedAt: "desc" },
+      }),
       getDataConfidenceWarnings(propertyId),
     ]);
 
@@ -437,9 +443,12 @@ async function ExteriorTab({
   );
 }
 
-async function DigitalTwinTab({ propertyId }: { propertyId: string }) {
+async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const pointClouds = await prisma.droneOutput.findMany({
-    where: { outputType: { in: ["POINT_CLOUD", "MESH_3D"] }, dataset: { capture: { propertyId } } },
+    where: {
+      outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
+      dataset: { capture: { propertyId, ...captureReviewWhere(ctx) } },
+    },
   });
   return (
     <Card>

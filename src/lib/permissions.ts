@@ -26,6 +26,11 @@ export const PERMISSIONS = [
   "canPerformCapture",
   "canManageDroneJobs",
   "canManageVendors",
+  // Accepting or sending back a subcontractor's capture. Narrower than
+  // canPerformCapture on purpose: acceptance is what publishes vendor work to
+  // everyone else on the property, so it belongs to the organization's admins,
+  // not to everyone who can see the job.
+  "canReviewCaptures",
   "canViewAuditLogs",
   "canManageFeatureFlags",
   "canAccessPlatformAdmin",
@@ -85,6 +90,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canPerformCapture",
     "canManageDroneJobs",
     "canManageVendors",
+    "canReviewCaptures",
   ],
 
   [Role.REGIONAL_MANAGER]: [

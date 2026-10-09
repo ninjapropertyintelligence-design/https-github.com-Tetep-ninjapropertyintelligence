@@ -1030,6 +1030,11 @@ model Evidence {
   uploadedById String
   /// The shot position this satisfies, when it was taken against a route.
   captureShotId String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
   latitude     Float?
   longitude    Float?
 
@@ -1050,6 +1055,7 @@ model Evidence {
   assessmentAnswer AssessmentAnswer? @relation(fields: [assessmentAnswerId], references: [id], onDelete: SetNull)
   uploadedBy       User              @relation("EvidenceUploadedBy", fields: [uploadedById], references: [id])
   captureShot      CaptureShot?      @relation(fields: [captureShotId], references: [id], onDelete: SetNull)
+  captureJobSite   CaptureJobSite?   @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
@@ -1060,6 +1066,7 @@ model Evidence {
   @@index([assetId])
   @@index([issueId])
   @@index([captureShotId])
+  @@index([captureJobSiteId])
   @@index([type])
 }
 
@@ -1191,13 +1198,20 @@ model MatterportPropertyLink {
   linkedAt   DateTime @default(now())
   operator   String?
   notes      String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
 
-  property   Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  space      MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  references MatterportReference[]
+  property       Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  space          MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  captureJobSite CaptureJobSite?       @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  references     MatterportReference[]
 
   @@unique([propertyId, spaceId])
   @@index([propertyId])
+  @@index([captureJobSiteId])
 }
 
 // Associates a point/tag within a Matterport space to a graph entity.
@@ -1232,13 +1246,20 @@ model DroneCapture {
   droneModel   String?
   status       DroneCaptureStatus @default(CREATED)
   notes        String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
 
-  property Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  datasets DroneDataset[]
+  property       Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  captureJobSite CaptureJobSite? @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  datasets       DroneDataset[]
 
   @@index([propertyId])
+  @@index([captureJobSiteId])
   @@index([status])
 }
 
@@ -2097,6 +2118,12 @@ model CaptureJobSite {
   property   Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   reviewedBy User?         @relation("CaptureJobSiteReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   shots      CaptureShot[]
+
+  /// What the vendor delivered against this site. Held back from the rest of
+  /// the organization until the site is accepted.
+  evidence        Evidence[]
+  droneCaptures   DroneCapture[]
+  matterportLinks MatterportPropertyLink[]
 
   /// A site appears on a job once. Two rows would let one submission satisfy
   /// the other and make the completion count wrong.

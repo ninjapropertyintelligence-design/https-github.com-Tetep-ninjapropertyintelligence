@@ -11,7 +11,13 @@ import { IMPERSONATION_COOKIE, resolveImpersonation } from "@/lib/impersonation"
 // tenant-scope.ts (see that file's header comment) is an internal
 // implementation detail, not an API change.
 export type { SessionContext, AccessGrantScope, ImpersonationInfo } from "@/lib/tenant-scope";
-export { propertyScopeWhere, issueScopeWhere, canAccessProperty, mfaPolicySatisfied } from "@/lib/tenant-scope";
+export {
+  propertyScopeWhere,
+  issueScopeWhere,
+  canAccessProperty,
+  captureReviewWhere,
+  mfaPolicySatisfied,
+} from "@/lib/tenant-scope";
 
 export const ACTIVE_ORG_COOKIE = "activeOrgId";
 

@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { recordUsage } from "@/lib/cost-metering";
-import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+import { SessionContext, captureReviewWhere, propertyScopeWhere, reviewSiteIdForUpload } from "@/lib/tenant-scope";
 import { ApiError } from "@/lib/api-error";
 import { requireFeature, FEATURE_FLAGS } from "@/lib/feature-flags";
 import { getStorageProvider } from "@/lib/storage";
@@ -81,6 +81,8 @@ export async function createDroneCapture(
       droneModel: input.droneModel,
       notes: input.notes,
       status: "CREATED",
+      // A vendor's flight is held for review against the job site it delivers.
+      captureJobSiteId: await reviewSiteIdForUpload(ctx, property.id),
     },
   });
   await Promise.all([
@@ -349,7 +351,7 @@ export async function getPropertyExteriorData(
 ) {
   const property = await assertPropertyInScope(ctx, propertyId);
   const captures = await prisma.droneCapture.findMany({
-    where: { propertyId: property.id },
+    where: { propertyId: property.id, ...captureReviewWhere(ctx) },
     // By flight date, not row-creation time. A backfilled capture of a flight
     // from last year is created today; ordering by createdAt would present it
     // as the most recent survey of the building, which it is not. Nulls last

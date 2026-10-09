@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { NotificationType, Role } from "@/generated/prisma/client";
+import { hasPermission } from "@/lib/permissions";
 
 /**
  * Finds every membership in the org whose role/scope should be informed
@@ -56,6 +57,37 @@ export async function notifyPropertyStakeholders(params: {
   await prisma.notification.createMany({
     data: result.userIds.map((userId) => ({
       organizationId: result.organizationId,
+      userId,
+      type: params.type,
+      title: params.title,
+      body: params.body,
+      link: params.link,
+    })),
+  });
+}
+
+/**
+ * Tells the people who can act on a capture submission — the organization's
+ * reviewers — and nobody else. A property stakeholder who cannot accept the
+ * work, and cannot yet see it, gains nothing from "ready for review".
+ */
+export async function notifyCaptureReviewers(params: {
+  organizationId: string;
+  type: NotificationType;
+  title: string;
+  body?: string;
+  link?: string;
+}) {
+  const reviewerRoles = Object.values(Role).filter((role) => hasPermission(role, "canReviewCaptures"));
+  const reviewers = await prisma.membership.findMany({
+    where: { organizationId: params.organizationId, role: { in: reviewerRoles } },
+    select: { userId: true },
+  });
+  if (reviewers.length === 0) return;
+
+  await prisma.notification.createMany({
+    data: [...new Set(reviewers.map((m) => m.userId))].map((userId) => ({
+      organizationId: params.organizationId,
       userId,
       type: params.type,
       title: params.title,

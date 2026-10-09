@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
-import { canAccessProperty } from "@/lib/session-context";
+import { canAccessProperty, captureReviewWhere } from "@/lib/session-context";
 import { getStorageProvider } from "@/lib/storage";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -43,7 +43,9 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { 
   const { id } = await params;
 
   const evidence = await prisma.evidence.findFirst({
-    where: { id, organizationId: ctx.organizationId },
+    // Vendor work not yet accepted reads as absent to everyone but reviewers
+    // and the vendor, the same as it does in every list.
+    where: { id, organizationId: ctx.organizationId, ...captureReviewWhere(ctx) },
     select: { id: true, storageKey: true, mimeType: true, sizeBytes: true, propertyId: true },
   });
   // 404 rather than 403 for another organization's id: whether a given id

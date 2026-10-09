@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import { CaptureJobStatus as JobStatus, Prisma, Role } from "@/generated/prisma/client";
-import { Permission, isOrgWideRole } from "@/lib/permissions";
+import { CaptureJobSiteStatus, CaptureJobStatus as JobStatus, Prisma, Role } from "@/generated/prisma/client";
+import { Permission, hasPermission, isOrgWideRole } from "@/lib/permissions";
 
 /**
  * Pure tenant/scope authorization logic — no Next.js request context, no
@@ -150,8 +150,58 @@ export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInp
  * it can reach, and a row attached to none of them is not theirs.
  */
 export function evidenceScopeWhere(ctx: SessionContext): Prisma.EvidenceWhereInput {
-  if (isOrgWideRole(ctx.role)) return { organizationId: ctx.organizationId };
-  return { organizationId: ctx.organizationId, property: propertyScopeWhere(ctx) };
+  const review = captureReviewWhere(ctx);
+  if (isOrgWideRole(ctx.role)) return { organizationId: ctx.organizationId, ...review };
+  return { organizationId: ctx.organizationId, property: propertyScopeWhere(ctx), ...review };
+}
+
+/**
+ * Hides subcontractor work that has not been accepted yet.
+ *
+ * A vendor's upload lands on the property the moment it is registered, but
+ * until a reviewer accepts the capture-job site it was delivered against, it
+ * is a draft: it may be the wrong building, out of focus, or half a route.
+ * Showing it to the rest of the organization before then is how a client
+ * sees work that is about to be sent back.
+ *
+ * Who still sees it: reviewers, who have to look at it to accept it, and the
+ * vendor, who has to see what they delivered. Everyone else sees only work
+ * with no capture-job site (the organization's own) or work on an accepted
+ * site. A rejected site's work stays hidden until it is fixed and accepted.
+ *
+ * The fragment has the same shape on Evidence, DroneCapture and
+ * MatterportPropertyLink, so one function serves all three.
+ */
+export function captureReviewWhere(
+  ctx: SessionContext,
+): Prisma.EvidenceWhereInput & Prisma.DroneCaptureWhereInput & Prisma.MatterportPropertyLinkWhereInput {
+  if (ctx.role === Role.VENDOR || hasPermission(ctx.role, "canReviewCaptures")) return {};
+  return {
+    OR: [{ captureJobSiteId: null }, { captureJobSite: { status: CaptureJobSiteStatus.ACCEPTED } }],
+  };
+}
+
+/**
+ * The capture-job site a vendor is delivering against on this property, if
+ * any — the id every record they create there is tagged with, so it can be
+ * held for review. Null for anyone who is not a vendor: the organization's
+ * own captures need no acceptance.
+ *
+ * When one vendor has several open jobs on the same property, the most
+ * recently issued one takes the work, which is the one they are working.
+ */
+export async function reviewSiteIdForUpload(ctx: SessionContext, propertyId: string): Promise<string | null> {
+  if (ctx.role !== Role.VENDOR || !ctx.vendorId) return null;
+  const site = await prisma.captureJobSite.findFirst({
+    where: {
+      propertyId,
+      status: { not: CaptureJobSiteStatus.ACCEPTED },
+      job: { organizationId: ctx.organizationId, vendorId: ctx.vendorId, status: { in: [...OPEN_CAPTURE_JOB_STATUSES] } },
+    },
+    orderBy: { job: { issuedAt: "desc" } },
+    select: { id: true },
+  });
+  return site?.id ?? null;
 }
 
 export function issueScopeWhere(ctx: SessionContext): Prisma.IssueWhereInput {

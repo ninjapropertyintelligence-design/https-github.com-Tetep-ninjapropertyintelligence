@@ -43,6 +43,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
   );
 
   const isVendor = ctx.role === Role.VENDOR;
+  const canReview = can(ctx, "canReviewCaptures");
 
   return (
     <div className="space-y-5">
@@ -172,6 +173,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     jobStatus={job.status}
                     missingCount={missing.length}
                     isVendor={isVendor}
+                    canReview={canReview}
                   />
                 </li>
               );
