@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
-import { Prisma, StorageObjectKind, type Evidence, type EvidenceType } from "@/generated/prisma/client";
-import { propertyScopeWhere, reviewSiteIdForUpload, type SessionContext } from "@/lib/tenant-scope";
+import { Prisma, StorageObjectKind, type Evidence, type EvidenceType, type RepairPhotoStage } from "@/generated/prisma/client";
+import { issueScopeWhere, propertyScopeWhere, reviewSiteIdForUpload, type SessionContext } from "@/lib/tenant-scope";
 import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recordUsage } from "@/lib/cost-metering";
@@ -31,6 +31,8 @@ export interface CreateEvidenceInput {
   captureDate?: Date | null;
   /** The shot position this file was taken from, when it was taken on a route. */
   captureShotId?: string | null;
+  /** Before or after, when this photo is proof of a repair on `issueId`. */
+  repairStage?: RepairPhotoStage | null;
   latitude?: number | null;
   longitude?: number | null;
   metadata?: Record<string, unknown>;
@@ -79,6 +81,22 @@ const CAPTURE_KIND_FLAG: Partial<Record<EvidenceType, (typeof FEATURE_FLAGS)[key
   IMAGE_360: FEATURE_FLAGS.IMAGE_360,
 };
 
+/**
+ * An issue id on an upload must be an issue the caller can see, on the same
+ * property. Without this, naming another issue's id would attach a photo —
+ * possibly an "after" photo — to a repair the uploader has nothing to do with.
+ */
+async function assertIssueAttachable(ctx: SessionContext, issueId: string, propertyId: string | null) {
+  const issue = await prisma.issue.findFirst({
+    where: { AND: [{ id: issueId }, issueScopeWhere(ctx)] },
+    select: { propertyId: true },
+  });
+  if (!issue) throw new ApiError(400, "Invalid issueId, or you don't have access to it");
+  if (propertyId && issue.propertyId !== propertyId) {
+    throw new ApiError(400, "That issue is on a different property");
+  }
+}
+
 export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
   // Permission first: "you may not do this at all" is a truer answer than
   // "your organization has not bought this" for someone who could never do
@@ -105,8 +123,13 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     await assertShotBelongsToProperty(input.captureShotId, input.propertyId);
   }
 
-  // A vendor's upload is held for review against the job site it delivers.
-  const captureJobSiteId = input.propertyId ? await reviewSiteIdForUpload(ctx, input.propertyId) : null;
+  if (input.issueId) await assertIssueAttachable(ctx, input.issueId, input.propertyId ?? null);
+  if (input.repairStage && !input.issueId) throw new ApiError(400, "A before/after photo needs the issue it belongs to");
+
+  // A vendor's upload is held for review against the job site it delivers —
+  // unless it is repair proof, which belongs to the repair's own review.
+  const captureJobSiteId =
+    input.propertyId && !input.issueId ? await reviewSiteIdForUpload(ctx, input.propertyId) : null;
 
   const evidence = await prisma.evidence.create({
     data: {
@@ -123,6 +146,7 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       captureDate: input.captureDate ?? null,
       captureShotId: input.captureShotId ?? null,
       captureJobSiteId,
+      repairStage: input.repairStage ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -235,6 +259,12 @@ export async function createEvidenceBatch(
     }
   }
 
+  for (const issueId of new Set(items.map((i) => i.issueId).filter((id): id is string => !!id))) {
+    for (const item of items.filter((i) => i.issueId === issueId)) {
+      await assertIssueAttachable(ctx, issueId, item.propertyId ?? null);
+    }
+  }
+
   for (const item of items) {
     if (!item.captureShotId) continue;
     if (!item.propertyId) throw new ApiError(400, "A shot position needs the site it belongs to");
@@ -263,7 +293,8 @@ export async function createEvidenceBatch(
       sizeBytes: input.sizeBytes ?? null,
       captureDate: input.captureDate ?? null,
       captureShotId: input.captureShotId ?? null,
-      captureJobSiteId: input.propertyId ? (reviewSites.get(input.propertyId) ?? null) : null,
+      captureJobSiteId: input.propertyId && !input.issueId ? (reviewSites.get(input.propertyId) ?? null) : null,
+      repairStage: input.repairStage ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,

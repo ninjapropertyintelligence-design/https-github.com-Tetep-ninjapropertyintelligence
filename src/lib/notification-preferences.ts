@@ -15,7 +15,7 @@ export interface NotificationTypeInfo {
   type: NotificationType;
   label: string;
   description: string;
-  group: "Capture work" | "Issues" | "Assessments" | "Processing and reports" | "Team";
+  group: "Capture work" | "Repairs" | "Issues" | "Assessments" | "Processing and reports" | "Team";
 }
 
 /** Every notification type, in the order the settings page shows them. */
@@ -39,6 +39,24 @@ export const NOTIFICATION_CATALOG: NotificationTypeInfo[] = [
     group: "Capture work",
   },
   {
+    type: "REPAIR_SUBMITTED",
+    label: "Repair ready to check",
+    description: "Someone finished a repair on a building you look after and attached proof.",
+    group: "Repairs",
+  },
+  {
+    type: "REPAIR_VERIFIED",
+    label: "Repair accepted",
+    description: "A repair you did was checked and accepted.",
+    group: "Repairs",
+  },
+  {
+    type: "REPAIR_SENT_BACK",
+    label: "Repair sent back",
+    description: "A repair you did was sent back, with what still needs fixing.",
+    group: "Repairs",
+  },
+  {
     type: "ISSUE_CRITICAL",
     label: "Critical issue raised",
     description: "A critical issue was reported on a property you look after.",
@@ -46,8 +64,8 @@ export const NOTIFICATION_CATALOG: NotificationTypeInfo[] = [
   },
   {
     type: "ISSUE_ASSIGNED",
-    label: "Issue assigned to you",
-    description: "Someone assigned an issue to you.",
+    label: "Issue or repair assigned to you",
+    description: "Someone assigned an issue to you, or sent your company to repair one.",
     group: "Issues",
   },
   {

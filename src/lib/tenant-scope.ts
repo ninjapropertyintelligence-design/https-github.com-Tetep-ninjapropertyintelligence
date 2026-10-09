@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { CaptureJobSiteStatus, CaptureJobStatus as JobStatus, Prisma, Role } from "@/generated/prisma/client";
+import { CaptureJobSiteStatus, CaptureJobStatus as JobStatus, IssueStatus, Prisma, Role } from "@/generated/prisma/client";
 import { Permission, hasPermission, isOrgWideRole } from "@/lib/permissions";
 
 /**
@@ -78,6 +78,14 @@ export function mfaPolicySatisfied(ctx: SessionContext): boolean {
  */
 /** Job states in which a subcontractor still needs to reach the site. */
 const OPEN_CAPTURE_JOB_STATUSES = [JobStatus.ISSUED, JobStatus.SUBMITTED, JobStatus.REJECTED] as const;
+/** A repair is open until it is verified or the issue is closed. */
+export const OPEN_REPAIR_STATUSES = [
+  IssueStatus.OPEN,
+  IssueStatus.TRIAGED,
+  IssueStatus.ASSIGNED,
+  IssueStatus.IN_PROGRESS,
+  IssueStatus.RESOLVED,
+] as const;
 
 export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInput {
   const base: Prisma.PropertyWhereInput = { organizationId: ctx.organizationId };
@@ -123,6 +131,13 @@ export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInp
           },
         },
       },
+    });
+    // The same rule for repairs: a contractor sent to fix something reaches
+    // that building while the repair is open — to see where the problem is
+    // and to upload proof — and loses it once the repair is verified or the
+    // issue closed.
+    or.push({
+      issues: { some: { vendorId: ctx.vendorId, status: { in: [...OPEN_REPAIR_STATUSES] } } },
     });
   }
 

@@ -211,6 +211,16 @@ enum NotificationType {
   CAPTURE_REJECTED
   REPORT_READY
   USER_INVITED
+  REPAIR_SUBMITTED
+  REPAIR_VERIFIED
+  REPAIR_SENT_BACK
+}
+
+/// Which side of a repair a photo shows. Null for evidence that is not
+/// repair proof.
+enum RepairPhotoStage {
+  BEFORE
+  AFTER
 }
 
 enum DataRetentionStatus {
@@ -394,6 +404,8 @@ model User {
   assignedIssues         Issue[]                 @relation("IssueAssignee")
   createdIssues          Issue[]                 @relation("IssueCreatedBy")
   resolvedIssues         Issue[]                 @relation("IssueResolvedBy")
+  submittedRepairs       Issue[]                 @relation("IssueRepairSubmittedBy")
+  verifiedRepairs        Issue[]                 @relation("IssueVerifiedBy")
   uploadedEvidence       Evidence[]              @relation("EvidenceUploadedBy")
   uploadedDocs           DocumentVersion[]       @relation("DocumentUploadedBy")
   conditionChanges       AssetConditionHistory[] @relation("ConditionChangedBy")
@@ -890,6 +902,20 @@ model Issue {
   resolvedById String?
   resolvedAt   DateTime?
 
+  /// The repair, when someone is sent to fix this: what the repairer says
+  /// they did, when they said it was done, and the reviewer's answer. The
+  /// status carries the stage — RESOLVED means "repair done, waiting to be
+  /// checked", VERIFIED means a reviewer looked at the proof and accepted it.
+  repairNotes         String?
+  repairSubmittedAt   DateTime?
+  repairSubmittedById String?
+  /// Set when a reviewer sends the repair back. After-photos must be newer
+  /// than this to count again, so the same photos cannot be resubmitted.
+  repairSentBackAt    DateTime?
+  repairSentBackReason String?
+  verifiedAt          DateTime?
+  verifiedById        String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   version   Int      @default(1)
@@ -903,6 +929,8 @@ model Issue {
   vendor       Vendor?      @relation(fields: [vendorId], references: [id], onDelete: SetNull)
   createdBy    User         @relation("IssueCreatedBy", fields: [createdById], references: [id])
   resolvedBy   User?        @relation("IssueResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+  repairSubmittedBy User?   @relation("IssueRepairSubmittedBy", fields: [repairSubmittedById], references: [id], onDelete: SetNull)
+  verifiedBy   User?        @relation("IssueVerifiedBy", fields: [verifiedById], references: [id], onDelete: SetNull)
 
   comments        IssueComment[]
   evidence        Evidence[]
@@ -1062,6 +1090,8 @@ model Evidence {
   uploadedById String
   /// The shot position this satisfies, when it was taken against a route.
   captureShotId String?
+  /// Before or after, when this photo is proof of a repair on `issueId`.
+  repairStage  RepairPhotoStage?
   /// The capture-job site this was delivered against, when a subcontractor
   /// delivered it. Until that site is ACCEPTED the record is visible only to
   /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
