@@ -8,6 +8,7 @@ import { getPropertyInteriorStatus } from "@/lib/matterport-service";
 import { getPropertyExteriorData } from "@/lib/drone-service";
 import { getSiteMapData } from "@/lib/site-map";
 import { getProperty360Data } from "@/lib/image-360-service";
+import { openRouteForProperty } from "@/lib/capture-job-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SeverityBadge, StatusBadge } from "@/components/ui/Badge";
@@ -390,12 +391,16 @@ async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
 }
 
 async function Photo360Tab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const { panoramas, enabled, location } = await getProperty360Data(ctx, propertyId);
+  const [{ panoramas, enabled, location }, route] = await Promise.all([
+    getProperty360Data(ctx, propertyId),
+    openRouteForProperty(ctx, propertyId),
+  ]);
   return (
     <Photo360Gallery
       propertyId={propertyId}
       enabled={enabled}
       location={location}
+      route={route ? { label: route.jobTitle, shots: route.shots } : null}
       canImport={can(ctx, "canUploadEvidence") && can(ctx, "canPerformCapture")}
       panoramas={panoramas.map((p) => ({
         ...p,

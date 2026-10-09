@@ -14,6 +14,7 @@ import { recordAssetConditionChange } from "@/lib/asset-condition";
 import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { notifyPropertyStakeholders, notifyVendorUsers } from "@/lib/notifications";
+import { distanceMeters } from "@/lib/media/panorama-metadata";
 
 /**
  * Capture jobs — work ordered from a subcontractor.
@@ -89,6 +90,12 @@ export async function createCaptureJob(ctx: SessionContext, input: CreateCapture
     if (!vendor) throw new ApiError(400, "Unknown vendor");
   }
 
+  // Positions named the same as on an earlier job at the same site start with
+  // that job's pin. The route is the same six places every visit — that is
+  // its purpose — so a pin placed once should not have to be placed again on
+  // every job, and GPS matching works from the second visit with no setup.
+  const previousPins = input.shots?.length ? await latestPinsByLabel(properties.map((p) => p.id)) : new Map();
+
   return prisma.captureJob.create({
     data: {
       organizationId: ctx.organizationId,
@@ -106,13 +113,18 @@ export async function createCaptureJob(ctx: SessionContext, input: CreateCapture
                 // Sequence is the walking order, assigned from the order the
                 // positions were given rather than sorted later — a route is
                 // not alphabetical.
-                create: input.shots.map((shot, index) => ({
-                  label: shot.label,
-                  kind: shot.kind ?? CaptureShotKind.IMAGE_360,
-                  required: shot.required ?? true,
-                  notes: shot.notes ?? null,
-                  sequence: index + 1,
-                })),
+                create: input.shots.map((shot, index) => {
+                  const pin = previousPins.get(pinKey(p.id, shot.label));
+                  return {
+                    label: shot.label,
+                    kind: shot.kind ?? CaptureShotKind.IMAGE_360,
+                    required: shot.required ?? true,
+                    notes: shot.notes ?? null,
+                    sequence: index + 1,
+                    latitude: pin?.latitude ?? null,
+                    longitude: pin?.longitude ?? null,
+                  };
+                }),
               }
             : undefined,
         })),
@@ -120,6 +132,26 @@ export async function createCaptureJob(ctx: SessionContext, input: CreateCapture
     },
     include: { sites: true },
   });
+}
+
+function pinKey(propertyId: string, label: string): string {
+  return `${propertyId}\u0000${label.trim().toLowerCase()}`;
+}
+
+/** The most recent pin for each (site, position name) across earlier jobs. */
+async function latestPinsByLabel(propertyIds: string[]) {
+  const rows = await prisma.captureShot.findMany({
+    where: { site: { propertyId: { in: propertyIds } }, latitude: { not: null }, longitude: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { label: true, latitude: true, longitude: true, site: { select: { propertyId: true } } },
+    take: 5000,
+  });
+  const pins = new Map<string, { latitude: number; longitude: number }>();
+  for (const row of rows) {
+    const key = pinKey(row.site.propertyId, row.label);
+    if (!pins.has(key)) pins.set(key, { latitude: row.latitude!, longitude: row.longitude! });
+  }
+  return pins;
 }
 
 /**
@@ -143,7 +175,9 @@ export async function getCaptureJob(ctx: SessionContext, jobId: string) {
       vendor: { select: { id: true, name: true } },
       sites: {
         include: {
-          property: { select: { id: true, name: true, addressLine1: true, city: true, state: true } },
+          property: {
+            select: { id: true, name: true, addressLine1: true, city: true, state: true, latitude: true, longitude: true },
+          },
           shots: {
             orderBy: { sequence: "asc" },
             include: { _count: { select: { evidence: true } } },
@@ -257,6 +291,117 @@ export async function outstandingShots(siteId: string): Promise<Array<{ id: stri
     select: { id: true, label: true, _count: { select: { evidence: true } } },
   });
   return shots.filter((s) => s._count.evidence === 0).map((s) => ({ id: s.id, label: s.label }));
+}
+
+/** A pin further than this from the site is a typo or the wrong site, not a position on it. */
+export const MAX_SHOT_DISTANCE_FROM_SITE_METERS = 2000;
+
+/**
+ * Places (or clears) the pins for a site's shot positions.
+ *
+ * Staff only: where the positions are is part of what the ordering
+ * organization specifies, not something the vendor being measured against it
+ * gets to move. Pins are checked against the site's own location so a
+ * swapped latitude/longitude, or a pin dropped on the wrong store, is refused
+ * rather than silently matching every photo to nothing.
+ */
+export async function setShotLocations(
+  ctx: SessionContext,
+  jobId: string,
+  siteId: string,
+  locations: Array<{ shotId: string; latitude: number | null; longitude: number | null }>,
+) {
+  if (ctx.role === Role.VENDOR) throw new ApiError(403, "Only the ordering organization can place shot positions");
+  const { job, site } = await siteForAction(ctx, jobId, siteId);
+  if (job.status === CaptureJobStatus.ACCEPTED || job.status === CaptureJobStatus.CANCELLED) {
+    throw new ApiError(409, `This job is ${job.status.toLowerCase()} and can no longer be changed`);
+  }
+
+  const shotIds = new Set(site.shots.map((s) => s.id));
+  for (const loc of locations) {
+    if (!shotIds.has(loc.shotId)) throw new ApiError(400, "One or more positions are not on this site's route");
+    if ((loc.latitude === null) !== (loc.longitude === null)) {
+      throw new ApiError(400, "A position needs both a latitude and a longitude, or neither");
+    }
+    if (loc.latitude === null || loc.longitude === null) continue;
+    if (Math.abs(loc.latitude) > 90 || Math.abs(loc.longitude) > 180) {
+      throw new ApiError(400, "Latitude must be between -90 and 90 and longitude between -180 and 180");
+    }
+    const { latitude: siteLat, longitude: siteLng } = site.property;
+    if (siteLat !== null && siteLng !== null) {
+      const d = distanceMeters(siteLat, siteLng, loc.latitude, loc.longitude);
+      if (d > MAX_SHOT_DISTANCE_FROM_SITE_METERS) {
+        const label = site.shots.find((s) => s.id === loc.shotId)?.label ?? "A position";
+        throw new ApiError(
+          400,
+          `${label} is ${(d / 1000).toFixed(1)} km from ${site.property.name} — check the coordinates (latitude first, then longitude)`,
+        );
+      }
+    }
+  }
+
+  await prisma.$transaction(
+    locations.map((loc) =>
+      prisma.captureShot.update({
+        where: { id: loc.shotId },
+        data: { latitude: loc.latitude, longitude: loc.longitude },
+      }),
+    ),
+  );
+  return prisma.captureShot.findMany({ where: { siteId }, orderBy: { sequence: "asc" } });
+}
+
+/**
+ * The route a 360 import on this property should match against: the shots of
+ * the most recent open capture-job site here, if there is one.
+ *
+ * Scoped through `getCaptureJob`'s rules — a vendor only ever sees a route on
+ * one of their own open jobs.
+ */
+export async function openRouteForProperty(ctx: SessionContext, propertyId: string) {
+  const site = await prisma.captureJobSite.findFirst({
+    where: {
+      propertyId,
+      status: { not: CaptureJobSiteStatus.ACCEPTED },
+      shots: { some: { kind: CaptureShotKind.IMAGE_360 } },
+      job: {
+        organizationId: ctx.organizationId,
+        status: { in: OPEN_STATUSES },
+        ...(ctx.role === Role.VENDOR ? { vendorId: ctx.vendorId ?? "__no_vendor__" } : {}),
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      job: { select: { id: true, title: true } },
+      shots: {
+        where: { kind: CaptureShotKind.IMAGE_360 },
+        orderBy: { sequence: "asc" },
+        select: {
+          id: true,
+          label: true,
+          sequence: true,
+          latitude: true,
+          longitude: true,
+          _count: { select: { evidence: true } },
+        },
+      },
+    },
+  });
+  if (!site) return null;
+  return {
+    jobId: site.job.id,
+    jobTitle: site.job.title,
+    siteId: site.id,
+    shots: site.shots.map((s) => ({
+      id: s.id,
+      label: s.label,
+      sequence: s.sequence,
+      latitude: s.latitude,
+      longitude: s.longitude,
+      captured: s._count.evidence > 0,
+    })),
+  };
 }
 
 /** Loads a site the caller may act on, with the job's state already checked. */

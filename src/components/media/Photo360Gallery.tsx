@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Photo360Viewer } from "@/components/media/Photo360Viewer";
-import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
+import { Insta360ImportPanel, type ImportRoute } from "@/components/media/Insta360ImportPanel";
 
 /** Serialised across the server/client boundary — a Date does not survive it. */
 export interface Panorama360Option {
@@ -27,6 +27,7 @@ export function Photo360Gallery({
   enabled,
   canImport,
   location,
+  route,
 }: {
   propertyId: string;
   panoramas: Panorama360Option[];
@@ -35,10 +36,12 @@ export function Photo360Gallery({
   /** Whether this user may upload capture work (the server checks again). */
   canImport: boolean;
   location: { latitude: number; longitude: number } | null;
+  /** The open capture route on this site, so imported panoramas tick it off. */
+  route?: ImportRoute | null;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(panoramas[0]?.id ?? null);
   const selected = panoramas.find((p) => p.id === selectedId) ?? panoramas[0] ?? null;
-  const importer = enabled && canImport ? <Insta360ImportPanel propertyId={propertyId} location={location} /> : null;
+  const importer = enabled && canImport ? <Insta360ImportPanel propertyId={propertyId} location={location} route={route} /> : null;
 
   if (panoramas.length === 0) {
     return (

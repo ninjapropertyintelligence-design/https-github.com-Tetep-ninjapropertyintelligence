@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
 
 /**
  * The subcontractor's upload surface, on the job itself.
@@ -56,18 +57,25 @@ export interface ShotOption {
   label: string;
   kind: "PHOTO" | "IMAGE_360";
   captured: boolean;
+  sequence: number;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export function CaptureUploadPanel({
   jobId,
   siteId,
   propertyId,
+  propertyLocation,
+  jobTitle,
   shots,
   disabled,
 }: {
   jobId: string;
   siteId: string;
   propertyId: string;
+  propertyLocation: { latitude: number; longitude: number } | null;
+  jobTitle: string;
   /** The route for this site, in walking order. Empty when the job has none. */
   shots: ShotOption[];
   /** True once the site is accepted or the job is closed. */
@@ -292,7 +300,7 @@ export function CaptureUploadPanel({
               {busy ? "Linking…" : "Link space"}
             </button>
           </>
-        ) : (
+        ) : kind === "IMAGE_360" ? null : (
           <input
             ref={inputRef}
             type="file"
@@ -308,7 +316,33 @@ export function CaptureUploadPanel({
         )}
       </div>
 
-      {shots.length > 0 && ROUTED_KINDS.includes(kind) ? (
+      {kind === "IMAGE_360" ? (
+        // 360s go through the importer: it reads each file's date and GPS,
+        // skips duplicates and camera originals, and matches every panorama
+        // to its route position instead of one position per upload.
+        <div className="mt-2">
+          <Insta360ImportPanel
+            propertyId={propertyId}
+            location={propertyLocation}
+            title="Import 360° panoramas"
+            route={{
+              label: jobTitle,
+              shots: shots
+                .filter((s) => s.kind === "IMAGE_360")
+                .map((s) => ({
+                  id: s.id,
+                  label: s.label,
+                  sequence: s.sequence,
+                  latitude: s.latitude,
+                  longitude: s.longitude,
+                  captured: s.captured,
+                })),
+            }}
+          />
+        </div>
+      ) : null}
+
+      {shots.length > 0 && ROUTED_KINDS.includes(kind) && kind !== "IMAGE_360" ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label className="text-xs text-muted" htmlFor={`shot-${siteId}`}>
             Position

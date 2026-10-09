@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { apiFetch, ApiClientError } from "@/lib/api-client";
@@ -11,6 +11,7 @@ import {
   readPanoramaMetadata,
   type PanoramaMetadata,
 } from "@/lib/media/panorama-metadata";
+import { matchPhotosToShots, type ShotMatch, type ShotTarget } from "@/lib/capture/shot-matching";
 
 /**
  * Insta360 auto-import: point it at the camera's SD card (or any folder of
@@ -27,6 +28,12 @@ import {
  *     what is new.
  * What is left is uploaded straight to storage and registered in one batch,
  * dated and geotagged from the camera rather than typed in by hand.
+ *
+ * When the site is on a capture route, each panorama is also given the shot
+ * position it was taken at — by GPS against the route's pins, else by walking
+ * order (see lib/capture/shot-matching.ts). The proposal is shown per file
+ * and can be changed before anything uploads; the import then ticks off the
+ * route the same way picking positions by hand would.
  */
 
 /** Further than this from the property and a panorama is probably another site. */
@@ -52,6 +59,15 @@ interface Candidate {
   meta?: PanoramaMetadata;
   sha256?: string;
   distance?: number;
+  /** A position chosen by hand overrides the automatic match; "" means none. */
+  manualShotId?: string;
+}
+
+/** The route this import can be matched against, when the site is on one. */
+export interface ImportRoute {
+  /** Shown above the list, e.g. the capture job's title. */
+  label: string;
+  shots: ShotTarget[];
 }
 
 const VERDICT_TEXT: Record<Verdict, string> = {
@@ -78,9 +94,13 @@ function isHidden(file: File): boolean {
 export function Insta360ImportPanel({
   propertyId,
   location,
+  route,
+  title = "Import from Insta360",
 }: {
   propertyId: string;
   location: { latitude: number; longitude: number } | null;
+  route?: ImportRoute | null;
+  title?: string;
 }) {
   const router = useRouter();
   const folderInput = useRef<HTMLInputElement>(null);
@@ -212,10 +232,11 @@ export function Insta360ImportPanel({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            items: landed.map(({ c, key }) => ({
+            items: landed.map(({ index, c, key }) => ({
               type: "IMAGE_360",
               storageKey: key,
               propertyId,
+              captureShotId: route ? shotFor(index) : null,
               mimeType: c.file.type || "image/jpeg",
               sizeBytes: c.file.size,
               captureDate: c.meta?.capturedAt ? c.meta.capturedAt.toISOString() : null,
@@ -249,6 +270,48 @@ export function Insta360ImportPanel({
     }
   }
 
+  const included = (c: Candidate) => c.verdict === "ready" || (includeFar && c.verdict === "far");
+
+  // Recomputed from the candidates, so a toggle or a manual pick on one file
+  // re-runs walking-order matching for the rest.
+  const matches = useMemo(() => {
+    if (!route || route.shots.length === 0) return new Map<number, ShotMatch>();
+    const pending = candidates
+      .map((c, index) => ({ c, index }))
+      .filter(({ c }) => included(c) && c.manualShotId === undefined);
+    // Positions picked by hand are taken; the automatic pass works around them.
+    const takenByHand = new Set(candidates.filter((c) => included(c) && c.manualShotId).map((c) => c.manualShotId));
+    const shots = route.shots.map((s) => (takenByHand.has(s.id) ? { ...s, captured: true } : s));
+    const byKey = matchPhotosToShots(
+      pending.map(({ c, index }) => ({
+        key: String(index),
+        filename: c.file.name,
+        latitude: c.meta?.latitude ?? null,
+        longitude: c.meta?.longitude ?? null,
+        capturedAt: c.meta?.capturedAt ?? null,
+      })),
+      shots,
+    );
+    return new Map(pending.map(({ index }) => [index, byKey.get(String(index))!]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidates, includeFar, route]);
+
+  function shotFor(index: number): string | null {
+    const c = candidates[index];
+    if (c.manualShotId !== undefined) return c.manualShotId || null;
+    return matches.get(index)?.shotId ?? null;
+  }
+
+  function matchNote(index: number): string {
+    const c = candidates[index];
+    if (c.manualShotId !== undefined) return "chosen by hand";
+    const m = matches.get(index);
+    if (!m) return "";
+    if (m.method === "GPS") return `matched by GPS, ${Math.round(m.distanceMeters)} m`;
+    if (m.method === "ORDER") return "matched by walking order";
+    return m.reason;
+  }
+
   const count = (v: Verdict) => candidates.filter((c) => c.verdict === v).length;
   const toImport = count("ready") + (includeFar ? count("far") : 0);
   const busy = phase === "scanning" || phase === "importing";
@@ -257,10 +320,13 @@ export function Insta360ImportPanel({
     <div className="rounded-xl border border-border bg-surface p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Import from Insta360</h3>
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
           <p className="mt-0.5 max-w-xl text-xs text-muted">
             Choose the camera&apos;s SD card or a folder of exported 360 JPGs. Dates and locations come from the camera;
             photos already here are skipped.
+            {route && route.shots.length > 0
+              ? ` Each photo is matched to a position on the route for "${route.label}".`
+              : ""}
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -313,6 +379,17 @@ export function Insta360ImportPanel({
             {count("needs-export") ? ` · ${count("needs-export")} need export from the Insta360 app` : ""}
             {count("not-360") ? ` · ${count("not-360")} not 360 photos` : ""}
           </p>
+          {route && route.shots.length > 0 && phase === "scanned" && toImport > 0 ? (
+            <p className="text-xs text-muted">
+              {(() => {
+                const indexes = candidates.map((c, i) => (included(c) ? i : -1)).filter((i) => i >= 0);
+                const placed = indexes.filter((i) => shotFor(i) !== null).length;
+                return `${placed} of ${indexes.length} matched to a route position${
+                  placed < indexes.length ? " — check the rest below, or leave them unlisted" : ""
+                }.`;
+              })()}
+            </p>
+          ) : null}
           {count("far") > 0 ? (
             <label className="flex items-center gap-2 text-xs text-muted">
               <input type="checkbox" checked={includeFar} onChange={(e) => setIncludeFar(e.target.checked)} />
@@ -326,8 +403,31 @@ export function Insta360ImportPanel({
           ) : null}
           <ul className="max-h-64 overflow-y-auto rounded-lg border border-border text-xs">
             {candidates.map((c, i) => (
-              <li key={i} className="flex items-center justify-between gap-3 border-b border-border px-3 py-1.5 last:border-0">
+              <li key={i} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border px-3 py-1.5 last:border-0">
                 <span className="min-w-0 truncate text-foreground">{c.file.name}</span>
+                {route && route.shots.length > 0 && included(c) && phase === "scanned" ? (
+                  <span className="flex items-center gap-2">
+                    <select
+                      aria-label={`Position for ${c.file.name}`}
+                      value={shotFor(i) ?? ""}
+                      onChange={(e) =>
+                        setCandidates((prev) =>
+                          prev.map((x, j) => (j === i ? { ...x, manualShotId: e.target.value } : x)),
+                        )
+                      }
+                      className="max-w-48 rounded border border-border bg-white px-1.5 py-0.5 text-xs"
+                    >
+                      <option value="">Not a listed position</option>
+                      {route.shots.map((shot) => (
+                        <option key={shot.id} value={shot.id}>
+                          {shot.sequence}. {shot.label}
+                          {shot.captured ? " ✓" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-muted">{matchNote(i)}</span>
+                  </span>
+                ) : null}
                 <span className="shrink-0 text-right text-muted">
                   {VERDICT_TEXT[c.verdict]}
                   {c.verdict === "far" && c.distance !== undefined ? ` (${(c.distance / 1000).toFixed(1)} km)` : ""}

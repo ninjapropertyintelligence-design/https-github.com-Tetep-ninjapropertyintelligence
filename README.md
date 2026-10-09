@@ -231,6 +231,20 @@ Camera originals (`.insp`/`.insv`) are skipped with a note to export them as
 unless included. Each file is hashed and checked against the panoramas the
 property already has, so re-importing a card uploads only new files.
 
+**Shot positions.** When the property is on an open capture job with a 360
+route, the importer also proposes the route position for each panorama
+(`src/lib/capture/shot-matching.ts`):
+
+- By GPS: a geotagged photo goes to the nearest pinned position within 30 m.
+- By walking order: if the photos left over exactly match the positions
+  left over, they are paired in shooting order.
+- Otherwise the photo is left for a person to choose.
+
+Every proposal can be changed before upload. Pins come from four places:
+staff placing them on the job page (map with `NEXT_PUBLIC_MAPBOX_TOKEN`, or
+pasted coordinates); the previous job at the same site, matched by position
+name; or the first geotagged photo filed against an unpinned position.
+
 ### File storage
 
 `src/lib/storage.ts` defines a `StorageProvider` interface; large files

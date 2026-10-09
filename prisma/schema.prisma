@@ -2222,6 +2222,12 @@ model CaptureShot {
   sequence  Int
   required  Boolean         @default(true)
   notes     String?
+  /// Where on the site this position is. Optional: a route can be walked by
+  /// order alone. When set, imported photos are matched to the position by
+  /// their GPS. Placed by staff on a map, carried over from the last job at the
+  /// same site, or learned from the first geotagged photo taken there.
+  latitude  Float?
+  longitude Float?
   createdAt DateTime        @default(now())
 
   site     CaptureJobSite @relation(fields: [siteId], references: [id], onDelete: Cascade)

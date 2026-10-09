@@ -134,6 +134,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     objectCreatedAt: evidence.createdAt,
   });
 
+  await learnShotLocations([evidence]);
+
   // Metered per panorama, not per byte: the bytes are already sampled into
   // GB-months by the storage meter, and counting them here too would bill the
   // same object twice under two names. What a 360 plan sells is the right to
@@ -188,6 +190,34 @@ async function assertShotBelongsToProperty(shotId: string, propertyId: string): 
     select: { id: true },
   });
   if (!shot) throw new ApiError(400, "That shot position does not belong to this site");
+}
+
+/**
+ * Gives an unpinned shot position the location of the first geotagged photo
+ * taken at it.
+ *
+ * This is how a route acquires pins without anyone placing them: the first
+ * visit is matched by walking order or by hand, and from then on every
+ * photo carrying GPS can be matched by location — on this job and, because
+ * new jobs inherit pins by position name, on every later one. Conditional on
+ * the shot still having no pin, so it never moves one a person placed.
+ */
+async function learnShotLocations(
+  items: Array<{ captureShotId?: string | null; latitude?: number | null; longitude?: number | null }>,
+): Promise<void> {
+  const firstByShot = new Map<string, { latitude: number; longitude: number }>();
+  for (const item of items) {
+    if (!item.captureShotId || item.latitude == null || item.longitude == null) continue;
+    if (!firstByShot.has(item.captureShotId)) {
+      firstByShot.set(item.captureShotId, { latitude: item.latitude, longitude: item.longitude });
+    }
+  }
+  for (const [shotId, point] of firstByShot) {
+    await prisma.captureShot.updateMany({
+      where: { id: shotId, latitude: null, longitude: null },
+      data: point,
+    });
+  }
 }
 
 /**
@@ -277,6 +307,8 @@ export async function createEvidenceBatch(
       objectCreatedAt: row.createdAt,
     });
   }
+
+  await learnShotLocations(items);
 
   // Metered per panorama here too. A bulk upload of 40 panoramas is 40
   // billable captures — charging once per batch would let a customer avoid
