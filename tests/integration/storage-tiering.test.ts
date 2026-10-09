@@ -107,6 +107,13 @@ async function seedObject(orgId: string, key: string, ageDays: number, sizeBytes
 }
 
 beforeAll(async () => {
+  // Drone capture is entitlement-gated; on an unseeded database (CI's) the
+  // flag does not exist, and every drone path would refuse.
+  await prisma.featureFlag.upsert({
+    where: { key: "drone_processing" },
+    create: { key: "drone_processing", description: "drone_processing (test)", defaultEnabled: true },
+    update: {},
+  });
   org = await prisma.organization.create({ data: { name: `ST Org ${suffix}`, slug: `st-org-${suffix}` } });
   otherOrg = await prisma.organization.create({ data: { name: `ST Other ${suffix}`, slug: `st-other-${suffix}` } });
   user = await prisma.user.create({ data: { email: `${suffix}@example.com`, passwordHash: "x", name: "ST User" } });
