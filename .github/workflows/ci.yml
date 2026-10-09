@@ -31,7 +31,10 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # PostGIS, not stock Postgres: the spatial migration runs
+        # CREATE EXTENSION postgis, which a plain image cannot satisfy.
+        # Same image as docker-compose.yml.
+        image: postgis/postgis:16-3.4
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -105,7 +108,10 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # PostGIS, not stock Postgres: the spatial migration runs
+        # CREATE EXTENSION postgis, which a plain image cannot satisfy.
+        # Same image as docker-compose.yml.
+        image: postgis/postgis:16-3.4
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
