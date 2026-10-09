@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { apiRequest } from "@/components/settings/api-request";
 import {
   MembershipFields,
   type MembershipOptions,
@@ -10,7 +11,6 @@ import {
   type ScopeType,
   membershipComplete,
   membershipPayload,
-  teamRequest,
 } from "@/components/settings/MembershipFields";
 
 export interface TeamMember {
@@ -67,7 +67,7 @@ export function TeamMembers({
     if (!value) return;
     setBusy(true);
     setError(null);
-    const result = await teamRequest(`/api/v1/members/${member.membershipId}`, {
+    const result = await apiRequest(`/api/v1/members/${member.membershipId}`, {
       method: "PATCH",
       body: JSON.stringify(membershipPayload(value)),
     });
@@ -91,7 +91,7 @@ export function TeamMembers({
     }
     setError(null);
     setNotice(null);
-    const result = await teamRequest(`/api/v1/members/${member.membershipId}`, { method: "DELETE" });
+    const result = await apiRequest(`/api/v1/members/${member.membershipId}`, { method: "DELETE" });
     if (!result.ok) {
       setError(result.error);
       return;

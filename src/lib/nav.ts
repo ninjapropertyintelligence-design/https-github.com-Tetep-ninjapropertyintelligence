@@ -18,6 +18,7 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
     return [
       { label: "Platform Administration", href: "/admin", section: "Administration", icon: "platform" },
       { label: "Security", href: "/settings/security", section: "Administration", icon: "shield" },
+      { label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" },
     ];
   }
 
@@ -55,6 +56,8 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   // Every role can manage its own second factor, so this is not permission-gated.
   items.push({ label: "Security", href: "/settings/security", section: "Administration", icon: "shield" });
+  // Everyone chooses for their own inbox, so this is not permission-gated either.
+  items.push({ label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" });
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });
   }

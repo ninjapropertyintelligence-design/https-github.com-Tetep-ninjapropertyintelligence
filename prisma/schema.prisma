@@ -410,6 +410,7 @@ model User {
   webhookEndpoints       WebhookEndpoint[]       @relation("WebhookCreatedBy")
   passwordResetTokens    PasswordResetToken[]
   sentInvitations        Invitation[]            @relation("InvitationInvitedBy")
+  notificationPreferences NotificationPreference[]
 
   @@index([email])
 }
@@ -2225,4 +2226,24 @@ model Invitation {
 
   @@index([organizationId])
   @@index([email])
+}
+
+/// A person's choice about one kind of notification email.
+///
+/// Only opt-outs need a row: a type with no row is emailed, so everyone who
+/// has never visited the page keeps the behaviour they had, and a notification
+/// type added later is on by default rather than silently off. The in-app
+/// notification is always delivered; this governs the email copy only.
+///
+/// Per person, not per organization: someone who belongs to two customers
+/// manages one inbox.
+model NotificationPreference {
+  userId    String
+  type      NotificationType
+  email     Boolean          @default(true)
+  updatedAt DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, type])
 }

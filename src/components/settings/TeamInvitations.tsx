@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { apiRequest } from "@/components/settings/api-request";
 import {
   MembershipFields,
   type MembershipOptions,
@@ -10,7 +11,6 @@ import {
   memberInputClass,
   membershipComplete,
   membershipPayload,
-  teamRequest,
 } from "@/components/settings/MembershipFields";
 
 export interface PendingInvitation {
@@ -56,7 +56,7 @@ export function TeamInvitations({ options, pending }: { options: MembershipOptio
     setBusy(true);
     setError(null);
     setNotice(null);
-    const result = await teamRequest("/api/v1/invitations", {
+    const result = await apiRequest("/api/v1/invitations", {
       method: "POST",
       body: JSON.stringify({ email, name: name || null, ...membershipPayload(membership) }),
     });
@@ -76,7 +76,7 @@ export function TeamInvitations({ options, pending }: { options: MembershipOptio
   async function resend(invitation: PendingInvitation) {
     setError(null);
     setNotice(null);
-    const result = await teamRequest(`/api/v1/invitations/${invitation.id}`, {
+    const result = await apiRequest(`/api/v1/invitations/${invitation.id}`, {
       method: "POST",
       body: JSON.stringify({ action: "resend" }),
     });
@@ -92,7 +92,7 @@ export function TeamInvitations({ options, pending }: { options: MembershipOptio
     if (!window.confirm(`Cancel the invitation to ${invitation.email}? The link will stop working.`)) return;
     setError(null);
     setNotice(null);
-    const result = await teamRequest(`/api/v1/invitations/${invitation.id}`, { method: "DELETE" });
+    const result = await apiRequest(`/api/v1/invitations/${invitation.id}`, { method: "DELETE" });
     if (!result.ok) {
       setError(result.error);
       return;

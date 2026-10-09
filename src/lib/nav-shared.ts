@@ -32,6 +32,7 @@ export type NavIconKey =
   | "ai"
   | "settings"
   | "shield"
+  | "bell"
   | "webhook"
   | "retention"
   | "storage"

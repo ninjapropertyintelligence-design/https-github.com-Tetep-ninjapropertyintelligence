@@ -3,6 +3,7 @@ import { NotificationType, Role } from "@/generated/prisma/client";
 import { hasPermission } from "@/lib/permissions";
 import { appBaseUrl, sendEmail } from "@/lib/email";
 import { notificationEmail } from "@/lib/email-templates";
+import { usersWithEmailOff } from "@/lib/notification-preferences";
 
 /**
  * Finds every membership in the org whose role/scope should be informed
@@ -156,14 +157,26 @@ async function deliver(organizationId: string, userIds: string[], content: Notif
   });
 
   try {
+    // The in-app row above always goes out; the email copy respects what each
+    // person chose on their notification settings page.
+    const optedOut = await usersWithEmailOff(recipients, content.type);
     const users = await prisma.user.findMany({
-      where: { id: { in: recipients }, isActive: true },
+      where: { id: { in: recipients.filter((id) => !optedOut.has(id)) }, isActive: true },
       select: { email: true, name: true },
     });
     const url = content.link ? `${appBaseUrl()}${content.link.startsWith("/") ? "" : "/"}${content.link}` : null;
     await Promise.all(
       users.map((user) =>
-        sendEmail(notificationEmail({ to: user.email, name: user.name, title: content.title, body: content.body, url })),
+        sendEmail(
+          notificationEmail({
+            to: user.email,
+            name: user.name,
+            title: content.title,
+            body: content.body,
+            url,
+            settingsUrl: `${appBaseUrl()}/settings/notifications`,
+          }),
+        ),
       ),
     );
   } catch (err) {
