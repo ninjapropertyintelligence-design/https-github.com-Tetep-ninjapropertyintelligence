@@ -55,6 +55,12 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   // Every role can manage its own second factor, so this is not permission-gated.
   items.push({ label: "Security", href: "/settings/security", section: "Administration", icon: "shield" });
+  // The rulebook turns confirmed AI findings into repair costs, so it is
+  // shown to whoever may see financial exposure; editing is narrower and
+  // enforced by the page and the API.
+  if (can(ctx, "canViewFinancialExposure")) {
+    items.push({ label: "Defect Rules", href: "/settings/defect-rules", section: "Administration", icon: "rules" });
+  }
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });
   }
