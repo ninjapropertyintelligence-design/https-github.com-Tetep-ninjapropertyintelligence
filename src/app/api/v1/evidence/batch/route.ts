@@ -30,6 +30,7 @@ const schema = z.object({
         assessmentId: z.string().nullish(),
         captureDate: z.coerce.date().nullish(),
         captureShotId: z.string().nullish(),
+        repairStage: z.enum(["BEFORE", "AFTER"]).nullish(),
         latitude: z.number().nullish(),
         longitude: z.number().nullish(),
         metadata: z.record(z.string(), z.unknown()).default({}),

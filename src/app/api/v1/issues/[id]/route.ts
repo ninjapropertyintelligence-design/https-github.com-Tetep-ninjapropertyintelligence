@@ -6,7 +6,8 @@ import { updateIssueSchema } from "@/lib/validation";
 import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recalculatePropertyHealth } from "@/lib/scoring";
-import { notifyUser } from "@/lib/notifications";
+import { notifyUser, notifyVendorUsers } from "@/lib/notifications";
+import { Role } from "@/generated/prisma/client";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -35,6 +36,12 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, _req, {
 
 export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
   const { id } = await params;
+  // A vendor reports its repair through the repair actions — start, notes,
+  // photos, done — and never edits the problem itself: its title, severity,
+  // estimate or who it is assigned to.
+  if (ctx.role === Role.VENDOR) {
+    throw new ApiError(403, "Vendors update a repair with Start work and Repair done, not by editing the issue");
+  }
   const existing = await loadScopedIssue(ctx, id);
 
   const body = await req.json();
@@ -51,6 +58,41 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
   // Resolving requires canResolveIssues; any other edit requires canCreateIssues
   // (assignment/triage) which every role that can raise issues can also update.
   requirePermission(ctx, resolving ? "canResolveIssues" : "canCreateIssues");
+  // "Verified" means someone checked the fix. It is given by whoever may
+  // check repairs, never by status dropdown alone.
+  if (input.status === "VERIFIED" && existing.status !== "VERIFIED") {
+    requirePermission(ctx, "canVerifyRepairs");
+  }
+
+  // Sending a vendor puts the issue in its hands, so an untouched issue moves
+  // to ASSIGNED unless the caller set a status of their own.
+  const newlyAssignedVendor = input.vendorId && input.vendorId !== existing.vendorId ? input.vendorId : null;
+  if (newlyAssignedVendor) {
+    const vendor = await prisma.vendor.findFirst({
+      where: { id: newlyAssignedVendor, organizationId: ctx.organizationId },
+      select: { id: true },
+    });
+    if (!vendor) throw new ApiError(400, "That vendor company does not exist in this organization");
+  }
+  // An assignee is someone in this organization who can act on issues — not a
+  // stranger's user id, and not a read-only viewer who could never fix it.
+  if (input.assigneeId && input.assigneeId !== existing.assigneeId) {
+    const member = await prisma.membership.findFirst({
+      where: {
+        userId: input.assigneeId,
+        organizationId: ctx.organizationId,
+        role: { notIn: [Role.VIEWER, Role.VENDOR] },
+      },
+      select: { id: true },
+    });
+    if (!member) throw new ApiError(400, "Assign the issue to a member of this organization who can work on it");
+  }
+  const autoStatus =
+    (newlyAssignedVendor || (input.assigneeId && input.assigneeId !== existing.assigneeId)) &&
+    input.status === undefined &&
+    (existing.status === "OPEN" || existing.status === "TRIAGED")
+      ? ("ASSIGNED" as const)
+      : undefined;
 
   const updated = await prisma.issue.update({
     where: { id: existing.id },
@@ -58,7 +100,10 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
       ...(input.title !== undefined ? { title: input.title } : {}),
       ...(input.description !== undefined ? { description: input.description } : {}),
       ...(input.severity !== undefined ? { severity: input.severity } : {}),
-      ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(input.status !== undefined ? { status: input.status } : autoStatus ? { status: autoStatus } : {}),
+      ...(input.status === "VERIFIED" && existing.status !== "VERIFIED"
+        ? { verifiedAt: new Date(), verifiedById: ctx.userId }
+        : {}),
       ...(input.assigneeId !== undefined ? { assigneeId: input.assigneeId } : {}),
       ...(input.vendorId !== undefined ? { vendorId: input.vendorId } : {}),
       ...(input.estimatedCost !== undefined ? { estimatedCost: input.estimatedCost } : {}),
@@ -95,6 +140,16 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
           userId: input.assigneeId,
           type: "ISSUE_ASSIGNED",
           title: `Assigned: ${updated.title}`,
+          link: `/issues/${updated.id}`,
+        })
+      : Promise.resolve(),
+    newlyAssignedVendor
+      ? notifyVendorUsers({
+          organizationId: ctx.organizationId,
+          vendorId: newlyAssignedVendor,
+          type: "ISSUE_ASSIGNED",
+          title: `Repair assigned: ${updated.title}`,
+          body: existing.property.name,
           link: `/issues/${updated.id}`,
         })
       : Promise.resolve(),

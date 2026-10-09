@@ -5,6 +5,8 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { ROLE_LABELS } from "@/lib/role-labels";
 import { formatCents, formatDate } from "@/lib/format";
 import { TeamInvitations } from "@/components/settings/TeamInvitations";
+import { TeamMembers, type TeamMember } from "@/components/settings/TeamMembers";
+import type { MembershipOptions, ScopeType } from "@/components/settings/MembershipFields";
 import { listPendingInvitations } from "@/lib/invitation-service";
 import { Role } from "@/generated/prisma/client";
 
@@ -15,7 +17,11 @@ export default async function SettingsPage() {
 
   const [org, memberships, subscription, flags, overrides] = await Promise.all([
     prisma.organization.findUnique({ where: { id: ctx.organizationId } }),
-    prisma.membership.findMany({ where: { organizationId: ctx.organizationId }, include: { user: true }, orderBy: { createdAt: "asc" } }),
+    prisma.membership.findMany({
+      where: { organizationId: ctx.organizationId },
+      include: { user: true, vendor: { select: { name: true } }, accessGrants: true },
+      orderBy: { createdAt: "asc" },
+    }),
     prisma.organizationSubscription.findUnique({ where: { organizationId: ctx.organizationId }, include: { plan: true } }),
     prisma.featureFlag.findMany(),
     prisma.featureFlagOverride.findMany({ where: { organizationId: ctx.organizationId } }),
@@ -47,6 +53,49 @@ export default async function SettingsPage() {
     .map((r) => ({ value: r, label: ROLE_LABELS[r] }));
   const now = new Date();
 
+  const options: MembershipOptions = {
+    roles: invitableRoles,
+    vendors: vendors.map((v) => ({ id: v.id, label: v.name })),
+    scopes: {
+      PORTFOLIO: portfolios.map((p) => ({ id: p.id, label: p.name })),
+      REGION: regions.map((r) => ({ id: r.id, label: `${r.name} (${r.portfolio.name})` })),
+      PROPERTY: properties.map((p) => ({
+        id: p.id,
+        label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
+      })),
+    },
+  };
+  const scopeName = new Map(
+    [...portfolios, ...regions, ...properties].map((x) => [x.id, x.name] as const),
+  );
+
+  const members: TeamMember[] = memberships.map((m) => {
+    const grantIds = m.accessGrants.map((g) => (g.portfolioId ?? g.regionId ?? g.propertyId) as string);
+    const scopeType = (m.accessGrants[0]?.scopeType ?? "PROPERTY") as ScopeType;
+    const names = grantIds.map((id) => scopeName.get(id)).filter((n): n is string => !!n);
+    const accessSummary =
+      grantIds.length === 0
+        ? null
+        : names.length > 0 && names.length <= 2
+          ? names.join(", ")
+          : `${grantIds.length} ${scopeType === "PROPERTY" ? "properties" : scopeType === "REGION" ? "regions" : "portfolios"}`;
+    return {
+      membershipId: m.id,
+      name: m.user.name,
+      email: m.user.email,
+      role: m.role,
+      roleLabel: ROLE_LABELS[m.role],
+      vendorId: m.vendorId,
+      vendorName: m.vendor?.name ?? null,
+      scopeType,
+      scopeIds: grantIds,
+      accessSummary,
+      isSelf: m.userId === ctx.userId,
+      // Mirrors the server: never yourself, and Owners only by Owners.
+      manageable: m.userId !== ctx.userId && (m.role !== Role.OWNER || ctx.role === Role.OWNER),
+    };
+  });
+
   return (
     <div className="space-y-6">
       <div>
@@ -58,29 +107,10 @@ export default async function SettingsPage() {
         <Card>
           <CardHeader title="Team" subtitle={`${memberships.length} members`} />
           <CardBody className="p-0">
-            <ul>
-              {memberships.map((m) => (
-                <li key={m.id} className="flex items-center justify-between border-b border-border px-5 py-2.5 text-sm last:border-0">
-                  <div>
-                    <p className="font-medium text-foreground">{m.user.name}</p>
-                    <p className="text-xs text-muted">{m.user.email}</p>
-                  </div>
-                  <span className="text-xs text-muted">{ROLE_LABELS[m.role]}</span>
-                </li>
-              ))}
-            </ul>
+            <TeamMembers members={members} options={options} canManage={canInvite} />
             {canInvite ? (
               <TeamInvitations
-                roles={invitableRoles}
-                vendors={vendors.map((v) => ({ id: v.id, label: v.name }))}
-                scopes={{
-                  PORTFOLIO: portfolios.map((p) => ({ id: p.id, label: p.name })),
-                  REGION: regions.map((r) => ({ id: r.id, label: `${r.name} (${r.portfolio.name})` })),
-                  PROPERTY: properties.map((p) => ({
-                    id: p.id,
-                    label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
-                  })),
-                }}
+                options={options}
                 pending={pending.map((inv) => ({
                   id: inv.id,
                   email: inv.email,
