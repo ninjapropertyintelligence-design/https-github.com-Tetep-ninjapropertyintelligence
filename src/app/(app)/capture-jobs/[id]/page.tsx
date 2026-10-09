@@ -46,6 +46,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
   const isVendor = ctx.role === Role.VENDOR;
   const canPlacePins =
     !isVendor && can(ctx, "canManageProperties") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
+  const canReview = can(ctx, "canReviewCaptures");
 
   return (
     <div className="space-y-5">
@@ -201,6 +202,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     jobStatus={job.status}
                     missingCount={missing.length}
                     isVendor={isVendor}
+                    canReview={canReview}
                   />
                 </li>
               );

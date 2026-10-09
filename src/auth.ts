@@ -128,6 +128,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async jwt({ token, user }) {
       if (user?.id) {
         token.userId = user.id;
+        // When this sign-in happened. Compared with `passwordChangedAt` on
+        // every request, so a password reset signs out every older session.
+        token.authTime = Date.now();
       }
       return token;
     },
@@ -135,6 +138,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (session.user && typeof token.userId === "string") {
         session.user.id = token.userId;
       }
+      if (typeof token.authTime === "number") session.authTime = token.authTime;
       return session;
     },
   },

@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { NotificationType, Role } from "@/generated/prisma/client";
+import { hasPermission } from "@/lib/permissions";
+import { appBaseUrl, sendEmail } from "@/lib/email";
+import { notificationEmail } from "@/lib/email-templates";
 
 /**
  * Finds every membership in the org whose role/scope should be informed
@@ -52,17 +55,28 @@ export async function notifyPropertyStakeholders(params: {
 }) {
   const result = await membershipsToNotifyForProperty(params.propertyId);
   if (!result || result.userIds.length === 0) return;
+  await deliver(result.organizationId, result.userIds, params);
+}
 
-  await prisma.notification.createMany({
-    data: result.userIds.map((userId) => ({
-      organizationId: result.organizationId,
-      userId,
-      type: params.type,
-      title: params.title,
-      body: params.body,
-      link: params.link,
-    })),
+/**
+ * Tells the people who can act on a capture submission — the organization's
+ * reviewers — and nobody else. A property stakeholder who cannot accept the
+ * work, and cannot yet see it, gains nothing from "ready for review".
+ */
+export async function notifyCaptureReviewers(params: {
+  organizationId: string;
+  type: NotificationType;
+  title: string;
+  body?: string;
+  link?: string;
+}) {
+  const reviewerRoles = Object.values(Role).filter((role) => hasPermission(role, "canReviewCaptures"));
+  const reviewers = await prisma.membership.findMany({
+    where: { organizationId: params.organizationId, role: { in: reviewerRoles } },
+    select: { userId: true },
   });
+  if (reviewers.length === 0) return;
+  await deliver(params.organizationId, reviewers.map((m) => m.userId), params);
 }
 
 export async function notifyUser(params: {
@@ -73,16 +87,7 @@ export async function notifyUser(params: {
   body?: string;
   link?: string;
 }) {
-  return prisma.notification.create({
-    data: {
-      organizationId: params.organizationId,
-      userId: params.userId,
-      type: params.type,
-      title: params.title,
-      body: params.body,
-      link: params.link,
-    },
-  });
+  await deliver(params.organizationId, [params.userId], params);
 }
 
 /**
@@ -116,15 +121,52 @@ export async function notifyVendorUsers(params: {
   });
   if (memberships.length === 0) return;
 
-  const userIds = [...new Set(memberships.map((m) => m.userId))];
+  await deliver(params.organizationId, memberships.map((m) => m.userId), params);
+}
+
+interface NotificationContent {
+  type: NotificationType;
+  title: string;
+  body?: string;
+  link?: string;
+}
+
+/**
+ * The one place a notification is delivered: the in-app row, then an email
+ * copy to each recipient.
+ *
+ * The in-app row is the record and is written first; a failure there is the
+ * caller's to handle, as it always was. The email is a courtesy on top: it is
+ * attempted for every recipient and never throws, because a mail outage must
+ * not undo a submission or a review decision that has already happened.
+ */
+async function deliver(organizationId: string, userIds: string[], content: NotificationContent) {
+  const recipients = [...new Set(userIds)];
+  if (recipients.length === 0) return;
+
   await prisma.notification.createMany({
-    data: userIds.map((userId) => ({
-      organizationId: params.organizationId,
+    data: recipients.map((userId) => ({
+      organizationId,
       userId,
-      type: params.type,
-      title: params.title,
-      body: params.body,
-      link: params.link,
+      type: content.type,
+      title: content.title,
+      body: content.body,
+      link: content.link,
     })),
   });
+
+  try {
+    const users = await prisma.user.findMany({
+      where: { id: { in: recipients }, isActive: true },
+      select: { email: true, name: true },
+    });
+    const url = content.link ? `${appBaseUrl()}${content.link.startsWith("/") ? "" : "/"}${content.link}` : null;
+    await Promise.all(
+      users.map((user) =>
+        sendEmail(notificationEmail({ to: user.email, name: user.name, title: content.title, body: content.body, url })),
+      ),
+    );
+  } catch (err) {
+    console.error("Failed to email a notification", err);
+  }
 }

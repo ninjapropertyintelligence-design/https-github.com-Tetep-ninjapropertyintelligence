@@ -10,10 +10,11 @@ import {
   Role,
 } from "@/generated/prisma/client";
 import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
+import { hasPermission } from "@/lib/permissions";
 import { recordAssetConditionChange } from "@/lib/asset-condition";
 import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
-import { notifyPropertyStakeholders, notifyVendorUsers } from "@/lib/notifications";
+import { notifyCaptureReviewers, notifyVendorUsers } from "@/lib/notifications";
 import { distanceMeters } from "@/lib/media/panorama-metadata";
 
 /**
@@ -523,8 +524,8 @@ export async function submitCaptureSite(ctx: SessionContext, jobId: string, site
   // Best-effort: a notification failure must not undo a submission that has
   // already been accepted and recorded. The site is submitted either way.
   try {
-    await notifyPropertyStakeholders({
-      propertyId: site.propertyId,
+    await notifyCaptureReviewers({
+      organizationId: job.organizationId,
       type: NotificationType.CAPTURE_SUBMITTED,
       title: `Capture ready for review: ${site.property.name}`,
       body: `${job.vendor?.name ?? "A vendor"} submitted this site for "${job.title}".`,
@@ -545,6 +546,12 @@ export async function reviewCaptureSite(
   decision: { accept: boolean; reason?: string | null },
 ) {
   if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot review its own submission");
+  // Acceptance publishes the vendor's work to everyone on the property (see
+  // `captureReviewWhere`), so it is an admin decision, not something any
+  // member who can open the job may do.
+  if (!hasPermission(ctx.role, "canReviewCaptures")) {
+    throw new ApiError(403, "Only an organization admin can accept or send back capture work");
+  }
   const { job, site } = await siteForAction(ctx, jobId, siteId);
   if (site.status !== CaptureJobSiteStatus.SUBMITTED) {
     throw new ApiError(409, "Only a submitted site can be reviewed");

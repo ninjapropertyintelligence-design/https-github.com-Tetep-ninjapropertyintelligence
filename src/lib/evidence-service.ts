@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
 import { Prisma, StorageObjectKind, type Evidence, type EvidenceType } from "@/generated/prisma/client";
-import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
+import { propertyScopeWhere, reviewSiteIdForUpload, type SessionContext } from "@/lib/tenant-scope";
 import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recordUsage } from "@/lib/cost-metering";
@@ -105,6 +105,9 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     await assertShotBelongsToProperty(input.captureShotId, input.propertyId);
   }
 
+  // A vendor's upload is held for review against the job site it delivers.
+  const captureJobSiteId = input.propertyId ? await reviewSiteIdForUpload(ctx, input.propertyId) : null;
+
   const evidence = await prisma.evidence.create({
     data: {
       organizationId: ctx.organizationId,
@@ -119,6 +122,7 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       sizeBytes: input.sizeBytes ?? null,
       captureDate: input.captureDate ?? null,
       captureShotId: input.captureShotId ?? null,
+      captureJobSiteId,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -267,6 +271,13 @@ export async function createEvidenceBatch(
     await assertShotBelongsToProperty(item.captureShotId, item.propertyId);
   }
 
+  // Resolved once per property, not per file: a 400-file batch is one or two
+  // sites, not 400 lookups.
+  const reviewSites = new Map<string, string | null>();
+  for (const propertyId of propertyIds) {
+    reviewSites.set(propertyId, await reviewSiteIdForUpload(ctx, propertyId));
+  }
+
   const createdAt = new Date();
   await prisma.evidence.createMany({
     data: items.map((input) => ({
@@ -282,6 +293,7 @@ export async function createEvidenceBatch(
       sizeBytes: input.sizeBytes ?? null,
       captureDate: input.captureDate ?? null,
       captureShotId: input.captureShotId ?? null,
+      captureJobSiteId: input.propertyId ? (reviewSites.get(input.propertyId) ?? null) : null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,

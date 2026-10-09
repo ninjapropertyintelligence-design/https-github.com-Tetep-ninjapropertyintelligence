@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
-import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+import { SessionContext, captureReviewWhere, propertyScopeWhere } from "@/lib/tenant-scope";
 import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
 
@@ -25,9 +25,9 @@ export async function getPropertyReportData(ctx: SessionContext, propertyId: str
       }),
       prisma.issue.count({ where: { propertyId: property.id, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } } }),
       prisma.assessment.findFirst({ where: { propertyId: property.id, status: "COMPLETED" }, orderBy: { completedAt: "desc" }, include: { template: true } }),
-      prisma.matterportPropertyLink.findFirst({ where: { propertyId: property.id }, orderBy: { linkedAt: "desc" }, include: { space: true } }),
-      prisma.droneCapture.findFirst({ where: { propertyId: property.id, status: "READY" }, orderBy: { capturedAt: "desc" } }),
-      prisma.evidence.count({ where: { propertyId: property.id } }),
+      prisma.matterportPropertyLink.findFirst({ where: { propertyId: property.id, ...captureReviewWhere(ctx) }, orderBy: { linkedAt: "desc" }, include: { space: true } }),
+      prisma.droneCapture.findFirst({ where: { propertyId: property.id, status: "READY", ...captureReviewWhere(ctx) }, orderBy: { capturedAt: "desc" } }),
+      prisma.evidence.count({ where: { propertyId: property.id, ...captureReviewWhere(ctx) } }),
       prisma.document.count({ where: { propertyId: property.id } }),
     ]);
 
