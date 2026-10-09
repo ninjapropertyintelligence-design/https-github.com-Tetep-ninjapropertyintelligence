@@ -525,6 +525,8 @@ model Organization {
   featureFlagOverrides FeatureFlagOverride[]
   scoringWeights       ScoringCategoryWeight[]
   matterportConnection MatterportConnection?
+  droneDeployConnection DroneDeployConnection?
+  droneDeployImports    DroneDeployImport[]
   subscription         OrganizationSubscription?
   usageRecords         UsageRecord[]
   costRates            CostRate[]
@@ -624,6 +626,7 @@ model Property {
   healthSnapshots PropertyHealthSnapshot[]
   matterportLinks MatterportPropertyLink[]
   droneCaptures   DroneCapture[]
+  droneDeployImports DroneDeployImport[]
   captureJobSites CaptureJobSite[]
   accessGrants    AccessGrant[]
   exteriorMarkers ExteriorMarker[]
@@ -1237,6 +1240,7 @@ model DroneCapture {
 
   property Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   datasets DroneDataset[]
+  droneDeployImport DroneDeployImport?
 
   @@index([propertyId])
   @@index([status])
@@ -1311,6 +1315,101 @@ model DroneOutput {
 
   @@index([datasetId])
   @@index([outputType])
+}
+
+// ---------------------------------------------------------------------------
+// DroneDeploy auto-import. DroneDeploy does the photogrammetry; these rows
+// track pulling its finished maps into DroneCapture/DroneOutput, so the rest
+// of the app sees an imported flight exactly as it sees a manual upload.
+// ---------------------------------------------------------------------------
+
+/// One per organization: that organization's own DroneDeploy account.
+model DroneDeployConnection {
+  id             String    @id @default(cuid())
+  organizationId String    @unique
+  /// AES-256-GCM, see lib/integrations/crypto.ts. Never returned to a client.
+  apiKeyEnc      String
+  status         String    @default("CONNECTED") // CONNECTED | ERROR | DISCONNECTED
+  errorMessage   String?
+  /// Maps created before this are never imported. Defaults to the moment of
+  /// connecting, so connecting an account with five years of maps does not
+  /// silently copy five years of maps into storage.
+  importSince    DateTime  @default(now())
+  /// How far a map's location may be from a property for it to be filed
+  /// there without a human choosing.
+  matchRadiusMeters Int    @default(300)
+  lastPolledAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+enum DroneDeployImportStatus {
+  /// No property within the match radius; waiting for a person to choose.
+  UNMATCHED
+  /// Filed to a property; exports requested and not all copied yet.
+  IMPORTING
+  IMPORTED
+  FAILED
+  /// A person decided this map does not belong in the platform.
+  IGNORED
+}
+
+/// One DroneDeploy map (a "MapPlan") and what has happened to it here.
+model DroneDeployImport {
+  id             String                  @id @default(cuid())
+  organizationId String
+  externalPlanId String
+  planName       String?
+  planCreatedAt  DateTime?
+  latitude       Float?
+  longitude      Float?
+  status         DroneDeployImportStatus @default(UNMATCHED)
+  propertyId     String?
+  /// "GPS" when matched automatically, "MANUAL" when a person chose.
+  matchedBy      String?
+  matchDistanceMeters Float?
+  captureId      String?                 @unique
+  errorMessage   String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  capture      DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  exports      DroneDeployExportImport[]
+
+  @@unique([organizationId, externalPlanId])
+  @@index([organizationId, status])
+}
+
+enum DroneDeployExportStatus {
+  /// Asked DroneDeploy to build it; not ready yet.
+  REQUESTED
+  /// Copied into our storage and registered as a DroneOutput.
+  IMPORTED
+  FAILED
+}
+
+/// One layer (orthomosaic, elevation, point cloud) of one imported map.
+model DroneDeployExportImport {
+  id               String                  @id @default(cuid())
+  importId         String
+  layer            String
+  outputType       DroneOutputType
+  externalExportId String?
+  status           DroneDeployExportStatus @default(REQUESTED)
+  droneOutputId    String?
+  attempts         Int                     @default(0)
+  errorMessage     String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  import DroneDeployImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, layer])
+  @@index([status])
 }
 
 // A user-placed pin on an exterior photo or orthomosaic, referencing the

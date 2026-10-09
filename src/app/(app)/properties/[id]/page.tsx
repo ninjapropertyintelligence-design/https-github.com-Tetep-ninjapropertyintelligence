@@ -390,10 +390,13 @@ async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
 }
 
 async function Photo360Tab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const { panoramas, enabled } = await getProperty360Data(ctx, propertyId);
+  const { panoramas, enabled, location } = await getProperty360Data(ctx, propertyId);
   return (
     <Photo360Gallery
+      propertyId={propertyId}
       enabled={enabled}
+      location={location}
+      canImport={can(ctx, "canUploadEvidence") && can(ctx, "canPerformCapture")}
       panoramas={panoramas.map((p) => ({
         ...p,
         // Serialised here: a Date does not cross the server/client boundary as

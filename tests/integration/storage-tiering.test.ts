@@ -91,6 +91,7 @@ class FakeTieringProvider implements StorageProvider {
     return null;
   }
   async writeBytes() {}
+  async writeStream() {}
 }
 
 let provider: FakeTieringProvider;
