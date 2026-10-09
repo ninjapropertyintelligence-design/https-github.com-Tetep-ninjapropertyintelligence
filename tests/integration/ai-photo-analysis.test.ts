@@ -260,8 +260,9 @@ describe("a person confirms", () => {
 
     const reviewed = await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" });
 
-    // Platform default for hvac_corrosion: -15 condition, MEDIUM, $4,000.
-    // The AI suggested 58; the rule, not the model, decides the number.
+    // Platform default for hvac_corrosion: -15 condition, MEDIUM, and NO
+    // repair estimate — the platform invents none. The AI suggested 58; the
+    // rule, not the model, decides the number.
     expect(reviewed.status).toBe("HUMAN_VERIFIED");
     expect(reviewed.confirmedScore).toBe(75);
     const after = await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } });
@@ -270,7 +271,8 @@ describe("a person confirms", () => {
 
     const issue = await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } });
     expect(issue.severity).toBe("MEDIUM");
-    expect(issue.estimatedCost).toBe(400_000);
+    expect(issue.estimatedCost).toBeNull();
+    expect(issue.description).toContain("no repair estimate set");
     expect(issue.source).toBe("AI_SUGGESTED");
     expect(issue.assetId).toBe(asset.id);
     expect(issue.propertyId).toBe(site.id);
@@ -284,9 +286,9 @@ describe("a person confirms", () => {
     expect(history.changedByUserId).toBe(vendorUser.id);
     expect(history.reason).toContain("rule took 15 off 90");
 
-    // The engine recalculated with the new issue's cost in capital exposure.
+    // With no estimate, the issue adds nothing to capital exposure.
     const snapshot = await getLatestHealthSnapshot(site.id);
-    expect(snapshot!.capitalExposure36mo).toBeGreaterThanOrEqual(400_000);
+    expect(snapshot!.capitalExposure12mo + snapshot!.capitalExposure24mo + snapshot!.capitalExposure36mo).toBe(0);
 
     // The confirmed rating is the vendor's condition-scores deliverable.
     const job = await getCaptureJob(staffCtx(), (await prisma.captureJob.findFirstOrThrow({ where: { organizationId: org.id } })).id);
@@ -309,9 +311,20 @@ describe("a person confirms", () => {
     const issue = await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } });
     expect(issue.severity).toBe("HIGH");
     expect(issue.estimatedCost).toBe(900_000);
+    // The organization's own price is what reaches capital exposure (HIGH
+    // with no due date lands in the 24-month bucket).
+    const snapshot = await getLatestHealthSnapshot(site.id);
+    expect(snapshot!.capitalExposure24mo).toBe(900_000);
   });
 
   it("lets the reviewer's score win, but keeps the rule's severity and cost", async () => {
+    await upsertDefectRule(org.id, staff.id, {
+      defectClass: "hvac_corrosion",
+      category: "HVAC",
+      defaultSeverity: "MEDIUM",
+      conditionHit: 15,
+      repairCostCents: 400_000,
+    });
     __setAIProviderForTest(fakeProvider(RUSTY_RTU));
     const photo = await vendorPhoto({ assetId: asset.id });
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
@@ -435,6 +448,20 @@ describe("a person confirms", () => {
 });
 
 describe("the rulebook", () => {
+  it("ships with no invented repair costs", async () => {
+    // Every platform default leaves the estimate to the organization. A
+    // plausible figure in code would reach capital exposure looking real.
+    for (const rule of await listEffectiveDefectRules(org.id)) {
+      if (rule.source === "platform") expect(rule.repairCostCents, rule.defectClass).toBeNull();
+    }
+  });
+
+  it("lets an organization clear an estimate again", async () => {
+    await upsertDefectRule(org.id, staff.id, { defectClass: "facade_crack", category: "ExteriorParking", defaultSeverity: "HIGH", conditionHit: 15, repairCostCents: 600_000 });
+    await upsertDefectRule(org.id, staff.id, { defectClass: "facade_crack", category: "ExteriorParking", defaultSeverity: "HIGH", conditionHit: 15, repairCostCents: null });
+    expect((await resolveDefectRule(org.id, "facade_crack"))!).toMatchObject({ source: "organization", repairCostCents: null });
+  });
+
   it("merges the organization's overrides and own classes over the platform defaults", async () => {
     await upsertDefectRule(org.id, staff.id, {
       defectClass: "roof_shingle_damage",
@@ -454,6 +481,7 @@ describe("the rulebook", () => {
   it("refuses a rule outside the scoring categories or with impossible numbers", () => {
     const ok = { defectClass: "x_damage", category: "Roof" as const, defaultSeverity: "LOW" as const, conditionHit: 5, repairCostCents: 100 };
     expect(() => validateDefectRule(ok)).not.toThrow();
+    expect(() => validateDefectRule({ ...ok, repairCostCents: null })).not.toThrow();
     expect(() => validateDefectRule({ ...ok, category: "Pavement" as never })).toThrow(/Category/);
     expect(() => validateDefectRule({ ...ok, category: "Issues" as never })).toThrow(/Category/);
     expect(() => validateDefectRule({ ...ok, conditionHit: 150 })).toThrow(/Condition hit/);

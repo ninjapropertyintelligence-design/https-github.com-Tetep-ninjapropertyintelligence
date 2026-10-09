@@ -22,8 +22,13 @@ export interface DefectRuleValues {
   defaultSeverity: IssueSeverity;
   /** Points subtracted from the asset's condition score. */
   conditionHit: number;
-  /** Repair estimate in cents. */
-  repairCostCents: number;
+  /**
+   * Repair estimate in cents, or null when none has been set. Null is not
+   * zero: a confirmed finding with no estimate opens an issue that SAYS it
+   * has no estimate and adds nothing to capital exposure, where zero would
+   * claim the repair is free.
+   */
+  repairCostCents: number | null;
 }
 
 export interface EffectiveDefectRule extends DefectRuleValues {
@@ -32,25 +37,33 @@ export interface EffectiveDefectRule extends DefectRuleValues {
 }
 
 /**
- * PLACEHOLDERS, not market rates. These exist so the pipeline produces sane
- * numbers on day one; each organization is expected to set its own costs
- * for its own regions and contracts. Class names are snake_case and stable —
+ * The platform's starting rulebook. Class names are snake_case and stable —
  * they are the contract with whatever detector is plugged in.
+ *
+ * NO REPAIR COSTS, deliberately. There is no sourced figure to put here:
+ * repair prices vary by region, building and contract, and a plausible
+ * number invented in code would flow into capital exposure — which lenders
+ * and insurers read — looking exactly like a real estimate. Each
+ * organization sets its own on the Defect Rules page; until it does,
+ * confirmed findings open issues with no estimate.
+ *
+ * The condition points ARE defaults: a judgement call, not a standard, shown
+ * to the inspector before every confirmation and editable per organization.
  */
 export const DEFAULT_DEFECT_RULES: readonly DefectRuleValues[] = [
-  { defectClass: "roof_shingle_damage", category: "Roof", defaultSeverity: "HIGH", conditionHit: 25, repairCostCents: 1_500_000 },
-  { defectClass: "roof_membrane_damage", category: "Roof", defaultSeverity: "HIGH", conditionHit: 20, repairCostCents: 1_200_000 },
-  { defectClass: "roof_ponding_water", category: "Roof", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: 350_000 },
-  { defectClass: "hvac_corrosion", category: "HVAC", defaultSeverity: "MEDIUM", conditionHit: 15, repairCostCents: 400_000 },
-  { defectClass: "hvac_physical_damage", category: "HVAC", defaultSeverity: "HIGH", conditionHit: 25, repairCostCents: 800_000 },
-  { defectClass: "electrical_hazard", category: "Electrical", defaultSeverity: "CRITICAL", conditionHit: 35, repairCostCents: 500_000 },
-  { defectClass: "plumbing_leak", category: "Plumbing", defaultSeverity: "HIGH", conditionHit: 20, repairCostCents: 300_000 },
-  { defectClass: "fire_safety_equipment_damage", category: "FireLifeSafety", defaultSeverity: "CRITICAL", conditionHit: 30, repairCostCents: 200_000 },
-  { defectClass: "water_stain", category: "Interior", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: 150_000 },
-  { defectClass: "interior_finish_damage", category: "Interior", defaultSeverity: "LOW", conditionHit: 5, repairCostCents: 100_000 },
-  { defectClass: "pavement_crack", category: "ExteriorParking", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: 250_000 },
-  { defectClass: "pavement_pothole", category: "ExteriorParking", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: 200_000 },
-  { defectClass: "facade_crack", category: "ExteriorParking", defaultSeverity: "HIGH", conditionHit: 15, repairCostCents: 600_000 },
+  { defectClass: "roof_shingle_damage", category: "Roof", defaultSeverity: "HIGH", conditionHit: 25, repairCostCents: null },
+  { defectClass: "roof_membrane_damage", category: "Roof", defaultSeverity: "HIGH", conditionHit: 20, repairCostCents: null },
+  { defectClass: "roof_ponding_water", category: "Roof", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: null },
+  { defectClass: "hvac_corrosion", category: "HVAC", defaultSeverity: "MEDIUM", conditionHit: 15, repairCostCents: null },
+  { defectClass: "hvac_physical_damage", category: "HVAC", defaultSeverity: "HIGH", conditionHit: 25, repairCostCents: null },
+  { defectClass: "electrical_hazard", category: "Electrical", defaultSeverity: "CRITICAL", conditionHit: 35, repairCostCents: null },
+  { defectClass: "plumbing_leak", category: "Plumbing", defaultSeverity: "HIGH", conditionHit: 20, repairCostCents: null },
+  { defectClass: "fire_safety_equipment_damage", category: "FireLifeSafety", defaultSeverity: "CRITICAL", conditionHit: 30, repairCostCents: null },
+  { defectClass: "water_stain", category: "Interior", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: null },
+  { defectClass: "interior_finish_damage", category: "Interior", defaultSeverity: "LOW", conditionHit: 5, repairCostCents: null },
+  { defectClass: "pavement_crack", category: "ExteriorParking", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: null },
+  { defectClass: "pavement_pothole", category: "ExteriorParking", defaultSeverity: "MEDIUM", conditionHit: 10, repairCostCents: null },
+  { defectClass: "facade_crack", category: "ExteriorParking", defaultSeverity: "HIGH", conditionHit: 15, repairCostCents: null },
 ];
 
 const DEFAULTS_BY_CLASS = new Map(DEFAULT_DEFECT_RULES.map((r) => [r.defectClass, r]));
@@ -66,7 +79,7 @@ function fromRow(row: {
   category: string;
   defaultSeverity: IssueSeverity;
   conditionHit: number;
-  repairCostCents: number;
+  repairCostCents: number | null;
 }): EffectiveDefectRule {
   return { ...row, category: row.category as ScoringCategory, source: "organization" };
 }
@@ -105,8 +118,8 @@ export function validateDefectRule(input: DefectRuleValues): void {
   if (!Number.isInteger(input.conditionHit) || input.conditionHit < 0 || input.conditionHit > 100) {
     throw new ApiError(400, "Condition hit must be a whole number from 0 to 100");
   }
-  if (!Number.isInteger(input.repairCostCents) || input.repairCostCents < 0) {
-    throw new ApiError(400, "Repair cost must be a non-negative whole number of cents");
+  if (input.repairCostCents !== null && (!Number.isInteger(input.repairCostCents) || input.repairCostCents < 0)) {
+    throw new ApiError(400, "Repair cost must be empty or a non-negative whole number of cents");
   }
 }
 

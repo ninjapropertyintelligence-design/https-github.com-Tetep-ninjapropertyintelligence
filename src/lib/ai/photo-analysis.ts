@@ -358,8 +358,9 @@ export interface ConfirmationPlan {
  *     accepted.
  *
  * Severity and repair cost follow the same order: what the reviewer typed,
- * then the rule, then (severity only) the AI's suggestion. A finding with no
- * rule and no typed cost carries no cost rather than a made-up one.
+ * then the rule, then (severity only) the AI's suggestion. With no typed
+ * cost and no estimate on the rule, the issue carries none rather than a
+ * made-up one.
  */
 export function planConfirmation(params: {
   reviewerScore: number | null | undefined;
@@ -458,7 +459,9 @@ export async function reviewAIFinding(
 
   const ruleText = rule
     ? `Rule ${rule.defectClass} (${rule.source === "organization" ? "your organization's" : "platform default"}): ` +
-      `-${rule.conditionHit} condition, ${formatCents(rule.repairCostCents)} estimate, ${rule.defaultSeverity.toLowerCase()} severity.`
+      `-${rule.conditionHit} condition, ` +
+      (rule.repairCostCents !== null ? `${formatCents(rule.repairCostCents)} estimate` : "no repair estimate set") +
+      `, ${rule.defaultSeverity.toLowerCase()} severity.`
     : "No defect rule applies.";
   const overrideText = [
     plan.overridden.severity ? `severity set by reviewer to ${plan.severity.toLowerCase()}` : null,

@@ -10,7 +10,8 @@ const ruleSchema = z.object({
   category: z.string().min(1),
   defaultSeverity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]),
   conditionHit: z.number().int(),
-  repairCostCents: z.number().int(),
+  // Null clears the estimate: issues from this class get none.
+  repairCostCents: z.number().int().nullable(),
 });
 
 // GET /api/v1/defect-rules — this organization's effective rulebook: platform

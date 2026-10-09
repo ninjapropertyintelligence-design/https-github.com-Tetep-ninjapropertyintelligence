@@ -1477,8 +1477,9 @@ model DefectRule {
   defaultSeverity IssueSeverity
   /// Points subtracted from the asset's condition score on confirmation.
   conditionHit    Int
-  /// Repair estimate in cents, like every other cost in this schema.
-  repairCostCents Int
+  /// Repair estimate in cents, like every other cost in this schema. Null
+  /// when the organization has not set one: no estimate, not a free repair.
+  repairCostCents Int?
   updatedById     String?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt

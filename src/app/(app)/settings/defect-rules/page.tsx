@@ -18,6 +18,7 @@ export default async function DefectRulesPage() {
 
   await recordProductEvent(ctx, "defect_rules.viewed");
   const rules = await listEffectiveDefectRules(ctx.organizationId);
+  const unpriced = rules.filter((r) => r.repairCostCents === null).length;
 
   return (
     <div className="space-y-6">
@@ -32,6 +33,14 @@ export default async function DefectRulesPage() {
         estimate, which flows into capital exposure. The AI never decides these numbers. Changes apply to findings
         confirmed from now on; issues already created keep the numbers they were created with.
       </p>
+
+      {unpriced > 0 ? (
+        <p className="max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {unpriced} of {rules.length} defect {rules.length === 1 ? "class has" : "classes have"} no repair estimate.
+          Confirmed findings in {unpriced === 1 ? "that class" : "those classes"} add nothing to capital exposure until
+          you set one.
+        </p>
+      ) : null}
 
       <DefectRulesManager
         rules={rules}

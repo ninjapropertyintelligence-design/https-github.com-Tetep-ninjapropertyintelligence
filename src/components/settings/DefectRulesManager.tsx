@@ -9,7 +9,8 @@ interface Rule {
   category: string;
   defaultSeverity: string;
   conditionHit: number;
-  repairCostCents: number;
+  /** Null when no estimate has been set. */
+  repairCostCents: number | null;
   source?: "platform" | "organization";
 }
 
@@ -56,11 +57,21 @@ function toClassKey(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-/** Dollars as typed → whole cents, or null if it is not a valid amount. */
-function dollarsToCents(value: string): number | null {
+/**
+ * Dollars as typed → whole cents. Empty is a valid answer — "no estimate" —
+ * so it is null; anything that is not an amount is "invalid".
+ */
+function dollarsToCents(value: string): number | null | "invalid" {
   if (value.trim() === "") return null;
   const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : null;
+  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : "invalid";
+}
+
+const centsToInput = (cents: number | null) => (cents === null ? "" : String(cents / 100));
+
+/** An estimate, or a visible "Not set" — never a blank that reads like $0. */
+function Estimate({ cents }: { cents: number | null }) {
+  return cents === null ? <span className="font-normal text-amber-700">Not set</span> : <>{formatCents(cents)}</>;
 }
 
 async function send(method: "PUT" | "DELETE", body?: Rule, defectClass?: string): Promise<string | null> {
@@ -144,9 +155,12 @@ export function DefectRulesManager({
       {canEdit ? <AddRuleForm categories={categories} existing={new Set(rules.map((r) => r.defectClass))} /> : null}
 
       <p className="text-xs leading-relaxed text-muted">
-        Platform defaults are placeholders, not market rates. Set repair estimates from your own contracts and
-        regional pricing. Class names are the labels a detector reports, so a custom class only matches findings once
-        your detector uses the same name.
+        The platform sets no repair estimates: there is no single price for a repair that holds across regions,
+        buildings and contracts, and an invented one would appear in capital exposure as if it were real. Enter
+        figures from your own contracts, quotes or past invoices. Until you do, confirmed findings open issues with no
+        estimate. The condition points are starting defaults, not an industry standard; adjust them to your own
+        judgement. Class names are the labels a detector reports, so a custom class only matches findings once your
+        detector uses the same name.
       </p>
     </div>
   );
@@ -170,7 +184,7 @@ function RuleRow({
   const [category, setCategory] = useState(rule.category);
   const [severity, setSeverity] = useState(rule.defaultSeverity);
   const [hit, setHit] = useState(String(rule.conditionHit));
-  const [cost, setCost] = useState(String(rule.repairCostCents / 100));
+  const [cost, setCost] = useState(centsToInput(rule.repairCostCents));
 
   const customized = rule.source === "organization" && platformDefault !== null;
   const customClass = rule.source === "organization" && platformDefault === null;
@@ -196,7 +210,7 @@ function RuleRow({
     setCategory(rule.category);
     setSeverity(rule.defaultSeverity);
     setHit(String(rule.conditionHit));
-    setCost(String(rule.repairCostCents / 100));
+    setCost(centsToInput(rule.repairCostCents));
     setError(null);
     setEditing(true);
   }
@@ -252,6 +266,7 @@ function RuleRow({
                 step="any"
                 value={cost}
                 onChange={(e) => setCost(e.target.value)}
+                placeholder="Not set"
                 className={`${inputClass} w-full md:text-right`}
               />
             </div>
@@ -275,7 +290,7 @@ function RuleRow({
             </div>
             <div role="cell" className="font-medium tabular-nums text-foreground md:text-right">
               <CellLabel>Repair estimate</CellLabel>
-              {formatCents(rule.repairCostCents)}
+              <Estimate cents={rule.repairCostCents} />
             </div>
           </>
         )}
@@ -287,7 +302,8 @@ function RuleRow({
             <>
               <span className="text-xs font-medium text-brand">Customized</span>
               <p className="mt-0.5 text-xs text-muted">
-                Default: −{platformDefault.conditionHit}, {formatCents(platformDefault.repairCostCents)},{" "}
+                Default: −{platformDefault.conditionHit},{" "}
+                {platformDefault.repairCostCents === null ? "no estimate" : formatCents(platformDefault.repairCostCents)},{" "}
                 {platformDefault.defaultSeverity.toLowerCase()}
               </p>
             </>
@@ -301,7 +317,7 @@ function RuleRow({
             <>
               <button
                 type="button"
-                disabled={busy || !hitValid || costCents === null}
+                disabled={busy || !hitValid || costCents === "invalid"}
                 onClick={() =>
                   run(() =>
                     send("PUT", {
@@ -309,7 +325,7 @@ function RuleRow({
                       category,
                       defaultSeverity: severity,
                       conditionHit: hitValue,
-                      repairCostCents: costCents ?? 0,
+                      repairCostCents: costCents === "invalid" ? null : costCents,
                     }),
                   )
                 }
@@ -374,7 +390,7 @@ function AddRuleForm({ categories, existing }: { categories: readonly string[]; 
   const hitValid = hit.trim() !== "" && Number.isInteger(hitValue) && hitValue >= 0 && hitValue <= 100;
   const costCents = dollarsToCents(cost);
   const duplicate = existing.has(key);
-  const ready = key.length >= 2 && !duplicate && hitValid && costCents !== null;
+  const ready = key.length >= 2 && !duplicate && hitValid && costCents !== "invalid";
 
   async function add() {
     setBusy(true);
@@ -384,7 +400,7 @@ function AddRuleForm({ categories, existing }: { categories: readonly string[]; 
       category,
       defaultSeverity: severity,
       conditionHit: hitValue,
-      repairCostCents: costCents ?? 0,
+      repairCostCents: costCents === "invalid" ? null : costCents,
     });
     setBusy(false);
     if (message) {
@@ -446,7 +462,7 @@ function AddRuleForm({ categories, existing }: { categories: readonly string[]; 
             step="any"
             value={cost}
             onChange={(e) => setCost(e.target.value)}
-            placeholder="0"
+            placeholder="Not set"
             className={`${inputClass} w-32`}
           />
           <span> </span>

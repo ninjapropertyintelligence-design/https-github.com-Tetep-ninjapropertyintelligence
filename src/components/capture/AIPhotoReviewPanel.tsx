@@ -28,7 +28,7 @@ export interface PhotoFinding {
   /** The asset's score right now — what a rule would subtract from. */
   currentScore: number | null;
   /** The rule Confirm will apply, if the defect class has one. */
-  rule: { conditionHit: number; repairCostCents: number; defaultSeverity: string; source: string } | null;
+  rule: { conditionHit: number; repairCostCents: number | null; defaultSeverity: string; source: string } | null;
   issueId: string | null;
   /** Normalized 0-1, top-left origin; null when the detector gave no box. */
   boundingBox: NormalizedBox | null;
@@ -237,7 +237,13 @@ function PhotoRow({
                     ? `condition ${pending.currentScore} → ${Math.max(0, pending.currentScore - pending.rule.conditionHit)}`
                     : `−${pending.rule.conditionHit} condition (no current score, so enter one)`}
                   , {pending.rule.defaultSeverity.toLowerCase()} issue,{" "}
-                  {formatCents(pending.rule.repairCostCents)} repair estimate.
+                  {pending.rule.repairCostCents !== null ? (
+                    `${formatCents(pending.rule.repairCostCents)} repair estimate.`
+                  ) : (
+                    <span className="text-amber-700">
+                      no repair estimate (none set in Defect Rules — enter one below if you have a quote).
+                    </span>
+                  )}
                 </>
               ) : (
                 <>
@@ -281,7 +287,7 @@ function PhotoRow({
                   type="number"
                   min={0}
                   value={cost}
-                  placeholder={pending.rule ? String(pending.rule.repairCostCents / 100) : "none"}
+                  placeholder={pending.rule?.repairCostCents != null ? String(pending.rule.repairCostCents / 100) : "none"}
                   onChange={(e) => setCost(e.target.value)}
                   className="w-24 rounded-lg border border-border bg-surface px-2 py-1 text-sm text-foreground outline-none focus:border-brand"
                 />

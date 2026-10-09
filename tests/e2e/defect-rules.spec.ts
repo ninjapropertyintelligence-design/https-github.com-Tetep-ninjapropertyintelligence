@@ -23,6 +23,8 @@ test("an Owner customizes a rule, sees it saved, and resets it to the default", 
 
   const row = page.getByRole("row").filter({ hasText: "pavement_pothole" });
   await expect(row.getByText("Platform default")).toBeVisible();
+  // The platform ships no repair costs; it says so instead of showing one.
+  await expect(row.getByText("Not set")).toBeVisible();
   await row.getByRole("button", { name: "Edit" }).click();
   await row.getByLabel("Condition points").fill("18");
   await row.getByLabel("Repair estimate in dollars").fill("3250");
@@ -40,6 +42,7 @@ test("an Owner customizes a rule, sees it saved, and resets it to the default", 
   page.once("dialog", (d) => d.accept());
   await row.getByRole("button", { name: "Reset" }).click();
   await expect(row.getByText("Platform default")).toBeVisible();
+  await expect(row.getByText("Not set")).toBeVisible();
 });
 
 test("a Viewer can read the rulebook but not change it", async ({ page }) => {
