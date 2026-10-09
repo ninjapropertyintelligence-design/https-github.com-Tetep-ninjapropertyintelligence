@@ -10,6 +10,7 @@ import { AIPhotoReviewPanel, type SitePhoto } from "@/components/capture/AIPhoto
 import { getSitePhotoFindings } from "@/lib/ai/photo-analysis";
 import { parseStoredBox } from "@/lib/ai/bounding-box";
 import { prisma } from "@/lib/prisma";
+import { ShotPinEditor } from "@/components/capture/ShotPinEditor";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
 
@@ -114,6 +115,8 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     ? ((await prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }))
         ?.autoAnalyzePhotos ?? false)
     : false;
+  const canPlacePins =
+    !isVendor && can(ctx, "canManageProperties") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
   const canReview = can(ctx, "canReviewCaptures");
 
   return (
@@ -207,6 +210,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                                   {shot.kind === "IMAGE_360" ? "360°" : "photo"}
                                   {shot.required ? "" : " · optional"}
                                   {captured ? ` · ${shot._count.evidence}` : ""}
+                                  {shot.latitude !== null ? " · 📍" : ""}
                                 </span>
                               </span>
                             </li>
@@ -214,6 +218,22 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                         })}
                       </ol>
                     </div>
+                  ) : null}
+
+                  {canPlacePins && site.shots.length > 0 ? (
+                    <ShotPinEditor
+                      jobId={job.id}
+                      siteId={site.id}
+                      token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
+                      site={{ name: site.property.name, latitude: site.property.latitude, longitude: site.property.longitude }}
+                      shots={site.shots.map((shot) => ({
+                        id: shot.id,
+                        label: shot.label,
+                        sequence: shot.sequence,
+                        latitude: shot.latitude,
+                        longitude: shot.longitude,
+                      }))}
+                    />
                   ) : null}
 
                   {site.rejectionReason ? (
@@ -227,11 +247,20 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                       jobId={job.id}
                       siteId={site.id}
                       propertyId={site.propertyId}
+                      propertyLocation={
+                        site.property.latitude !== null && site.property.longitude !== null
+                          ? { latitude: site.property.latitude, longitude: site.property.longitude }
+                          : null
+                      }
+                      jobTitle={job.title}
                       shots={site.shots.map((shot) => ({
                         id: shot.id,
                         label: shot.label,
                         kind: shot.kind,
                         captured: shot._count.evidence > 0,
+                        sequence: shot.sequence,
+                        latitude: shot.latitude,
+                        longitude: shot.longitude,
                       }))}
                       disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
                       assets={assetsByProperty.get(site.propertyId) ?? []}
