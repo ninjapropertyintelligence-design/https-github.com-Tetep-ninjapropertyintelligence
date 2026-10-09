@@ -10,6 +10,7 @@ import { __setAIProviderForTest } from "@/lib/ai/provider-factory";
 import { NullProvider } from "@/lib/ai/providers/null-provider";
 import type { AIProvider } from "@/lib/ai/provider";
 import type { SessionContext } from "@/lib/tenant-scope";
+import { GET as cronGet } from "@/app/api/v1/cron/photo-analysis/route";
 
 /**
  * Automatic analysis on upload. What matters: the right photos are queued
@@ -284,5 +285,43 @@ describe("processing", () => {
     expect((await getSitePhotoFindings(vendorCtx(), siteId))[0].analysisJob).toMatchObject({ status: "QUEUED" });
     await processPhotoAnalysisJobs({ jobIds: [jobId] });
     expect((await getSitePhotoFindings(vendorCtx(), siteId))[0].analysisJob).toMatchObject({ status: "SKIPPED" });
+  });
+});
+
+describe("the cron route", () => {
+  const withSecret = async (value: string | undefined, fn: () => Promise<void>) => {
+    const before = process.env.CRON_SECRET;
+    try {
+      if (value === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = value;
+      await fn();
+    } finally {
+      if (before === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = before;
+    }
+  };
+  const call = (auth?: string) =>
+    cronGet(new Request("http://x/api/v1/cron/photo-analysis", auth ? { headers: { authorization: auth } } : undefined));
+
+  it("is closed without CRON_SECRET, and rejects a wrong one", async () => {
+    await withSecret(undefined, async () => {
+      expect((await call("Bearer anything")).status).toBe(401);
+    });
+    await withSecret("s3cret", async () => {
+      expect((await call()).status).toBe(401);
+      expect((await call("Bearer nope")).status).toBe(401);
+    });
+  });
+
+  it("works through the queue with the right secret", async () => {
+    __setAIProviderForTest(provider());
+    const { ids } = await vendorUpload([{ assetId: asset.id }]);
+    const [jobId] = await enqueueAutoAnalysis(vendorCtx(), ids);
+    await withSecret("s3cret", async () => {
+      const res = await call("Bearer s3cret");
+      expect(res.status).toBe(200);
+      expect((await res.json()).data.done).toBeGreaterThanOrEqual(1);
+    });
+    expect((await prisma.photoAnalysisJob.findUniqueOrThrow({ where: { id: jobId } })).status).toBe("DONE");
   });
 });
