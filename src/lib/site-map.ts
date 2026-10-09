@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
-import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+import { SessionContext, captureReviewWhere, propertyScopeWhere } from "@/lib/tenant-scope";
 
 /**
  * The per-site "what has been captured here" model behind the Site Map tab.
@@ -98,7 +98,7 @@ export async function getSiteMapData(
   // on the selected one. Scoped to this property, which is what makes the
   // requested id safe to use.
   const captures = await prisma.droneCapture.findMany({
-    where: { propertyId },
+    where: { propertyId, ...captureReviewWhere(ctx) },
     // nulls last: a capture with no recorded date must not be picked as the
     // most recent one just because NULL sorts first.
     orderBy: { capturedAt: { sort: "desc", nulls: "last" } },
@@ -121,7 +121,7 @@ export async function getSiteMapData(
       // Property-level, deliberately NOT capture-scoped: evidence is attached
       // to issues and assessments, not to a drone flight. The panel says so.
       prisma.evidence.findMany({
-        where: { propertyId },
+        where: { propertyId, ...captureReviewWhere(ctx) },
         select: { id: true, latitude: true, longitude: true, type: true, captureDate: true },
       }),
       prisma.droneOutput.groupBy({
@@ -129,7 +129,7 @@ export async function getSiteMapData(
         where: captureFilter,
         _count: { _all: true },
       }),
-      prisma.matterportPropertyLink.count({ where: { propertyId } }),
+      prisma.matterportPropertyLink.count({ where: { propertyId, ...captureReviewWhere(ctx) } }),
       prisma.asset.count({ where: { propertyId } }),
       prisma.issue.count({ where: { propertyId, status: { notIn: ["RESOLVED", "CLOSED"] } } }),
       prisma.document.count({ where: { propertyId } }),

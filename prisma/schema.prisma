@@ -380,6 +380,11 @@ model User {
   mfaEnabledAt     DateTime?
   mfaLastVerifiedAt DateTime?
 
+  /// When the password last changed. A session that signed in before this is
+  /// refused (see `getSessionContext`), which is what makes a reset actually
+  /// lock out whoever had the old password.
+  passwordChangedAt DateTime?
+
   memberships            Membership[]
   auditLogs              AuditLog[]              @relation("AuditActor")
   events                 Event[]                 @relation("EventActor")
@@ -403,8 +408,32 @@ model User {
   legalHoldsPlaced       LegalHold[]             @relation("LegalHoldPlacedBy")
   deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
   webhookEndpoints       WebhookEndpoint[]       @relation("WebhookCreatedBy")
+  passwordResetTokens    PasswordResetToken[]
+  sentInvitations        Invitation[]            @relation("InvitationInvitedBy")
 
   @@index([email])
+}
+
+/// A single-use password reset link.
+///
+/// Only a SHA-256 of the token is stored. The token itself exists in exactly
+/// one place — the email — so a database read does not hand anyone a way into
+/// an account. A random 256-bit token needs no salt or slow hash: there is
+/// nothing to brute-force.
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  userId      String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  /// Set when the token is redeemed, or when a newer request or a completed
+  /// reset supersedes it. A token with this set is dead.
+  usedAt      DateTime?
+  requestedIp String?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 /**
@@ -544,6 +573,7 @@ model Organization {
   storageTieringPolicy StorageTieringPolicy?
   storageObjects       StorageObject[]
   captureJobs          CaptureJob[]
+  invitations          Invitation[]
 
   @@index([slug])
 }
@@ -912,6 +942,7 @@ model Vendor {
   issues      Issue[]
   memberships Membership[]
   captureJobs CaptureJob[]
+  invitations Invitation[]
 
   @@index([organizationId])
 }
@@ -1030,6 +1061,11 @@ model Evidence {
   uploadedById String
   /// The shot position this satisfies, when it was taken against a route.
   captureShotId String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
   latitude     Float?
   longitude    Float?
 
@@ -1050,6 +1086,7 @@ model Evidence {
   assessmentAnswer AssessmentAnswer? @relation(fields: [assessmentAnswerId], references: [id], onDelete: SetNull)
   uploadedBy       User              @relation("EvidenceUploadedBy", fields: [uploadedById], references: [id])
   captureShot      CaptureShot?      @relation(fields: [captureShotId], references: [id], onDelete: SetNull)
+  captureJobSite   CaptureJobSite?   @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
@@ -1060,6 +1097,7 @@ model Evidence {
   @@index([assetId])
   @@index([issueId])
   @@index([captureShotId])
+  @@index([captureJobSiteId])
   @@index([type])
 }
 
@@ -1191,13 +1229,20 @@ model MatterportPropertyLink {
   linkedAt   DateTime @default(now())
   operator   String?
   notes      String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
 
-  property   Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  space      MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  references MatterportReference[]
+  property       Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  space          MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  captureJobSite CaptureJobSite?       @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  references     MatterportReference[]
 
   @@unique([propertyId, spaceId])
   @@index([propertyId])
+  @@index([captureJobSiteId])
 }
 
 // Associates a point/tag within a Matterport space to a graph entity.
@@ -1232,13 +1277,20 @@ model DroneCapture {
   droneModel   String?
   status       DroneCaptureStatus @default(CREATED)
   notes        String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
 
-  property Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  datasets DroneDataset[]
+  property       Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  captureJobSite CaptureJobSite? @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  datasets       DroneDataset[]
 
   @@index([propertyId])
+  @@index([captureJobSiteId])
   @@index([status])
 }
 
@@ -2098,6 +2150,12 @@ model CaptureJobSite {
   reviewedBy User?         @relation("CaptureJobSiteReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
   shots      CaptureShot[]
 
+  /// What the vendor delivered against this site. Held back from the rest of
+  /// the organization until the site is accepted.
+  evidence        Evidence[]
+  droneCaptures   DroneCapture[]
+  matterportLinks MatterportPropertyLink[]
+
   /// A site appears on a job once. Two rows would let one submission satisfy
   /// the other and make the completion count wrong.
   @@unique([jobId, propertyId])
@@ -2132,4 +2190,39 @@ model CaptureShot {
   /// and the order ambiguous.
   @@unique([siteId, sequence])
   @@index([siteId])
+}
+
+/// An invitation to join an organization, sent by email.
+///
+/// Carries everything the membership will be — role, vendor company, access
+/// scopes — so accepting it creates exactly what the admin chose and nothing
+/// the invitee could alter. As with password resets, only a SHA-256 of the
+/// token is stored; the link in the email is the only copy.
+model Invitation {
+  id             String    @id @default(cuid())
+  organizationId String
+  /// Lower-cased. One pending invitation per address per organization.
+  email          String
+  name           String?
+  role           Role
+  /// Required when role = VENDOR: the company the invitee works for.
+  vendorId       String?
+  /// The access grants the membership will get, as
+  /// [{ scopeType, portfolioId | regionId | propertyId }]. Re-checked against
+  /// the organization on acceptance, so a portfolio deleted in the meantime
+  /// is dropped rather than resurrected.
+  grants         Json      @default("[]")
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  invitedById    String?
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor       Vendor?      @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  invitedBy    User?        @relation("InvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([email])
 }

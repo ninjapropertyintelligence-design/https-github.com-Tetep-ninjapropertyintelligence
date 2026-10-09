@@ -27,7 +27,8 @@ export type ObservabilityEvent =
   | "ai.tool_call"
   | "ai.provider_call"
   | "document.index_job"
-  | "report.generate";
+  | "report.generate"
+  | "email.send";
 
 export interface ObservabilityFields {
   organizationId?: string;

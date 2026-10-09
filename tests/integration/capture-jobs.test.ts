@@ -17,7 +17,8 @@ import { resolveDroneTargetForSite } from "@/lib/capture-job-service";
 import { MAX_DRONE_IMAGE_BATCH, registerDroneImagesBatch } from "@/lib/drone-service";
 import { linkSpaceByIdDirect, normalizeSpaceId } from "@/lib/matterport-service";
 import { getStorageProvider } from "@/lib/storage";
-import { canAccessProperty, evidenceScopeWhere } from "@/lib/tenant-scope";
+import { canAccessProperty, captureReviewWhere, evidenceScopeWhere } from "@/lib/tenant-scope";
+import { createEvidence } from "@/lib/evidence-service";
 import { computePropertyHealth } from "@/lib/scoring";
 import type { SessionContext } from "@/lib/tenant-scope";
 
@@ -73,6 +74,20 @@ function vendorCtx(): SessionContext {
 }
 
 beforeAll(async () => {
+  // Self-sufficient on an unseeded database, as CI's is: the capture kinds
+  // exercised here are entitlement-gated, and the flags must exist as
+  // platform definitions for an organization to have them at all.
+  for (const key of ["drone_processing", "matterport", "image_360"]) {
+    await prisma.featureFlag.upsert({
+      where: { key },
+      create: { key, description: `${key} (test)`, defaultEnabled: true },
+      update: {},
+    });
+  }
+  // Linking a space by id needs only a viewer key, and the provider reads it
+  // once, lazily. A placeholder is enough: nothing here calls Matterport.
+  process.env.MATTERPORT_SDK_KEY ||= "test-sdk-key";
+
   org = await prisma.organization.create({ data: { name: `CJ ${suffix}`, slug: `cj-${suffix}` } });
   vendor = await prisma.vendor.create({
     data: { organizationId: org.id, name: `Capture Co ${suffix}`, trade: "Capture" },
@@ -952,5 +967,139 @@ describe("telling people", () => {
 
     const after = await prisma.captureJobSite.findUniqueOrThrow({ where: { id: site.id } });
     expect(after.status).toBe("SUBMITTED");
+  });
+});
+
+describe("vendor work is held until it is accepted", () => {
+  /** Read-only, org-wide: the client who should only ever see finished work. */
+  function viewerCtx(): SessionContext {
+    return { ...staffCtx(), role: Role.VIEWER };
+  }
+
+  /** A manager on the site: can open the job, but is not an admin. */
+  function managerCtx(): SessionContext {
+    return {
+      ...staffCtx(),
+      role: Role.FACILITIES_MANAGER,
+      grants: [{ scopeType: "PROPERTY", propertyId: siteA.id, portfolioId: null, regionId: null }],
+    };
+  }
+
+  async function vendorPhoto(propertyId: string) {
+    return createEvidence(vendorCtx(), {
+      propertyId,
+      type: "PHOTO",
+      storageKey: `${propertyId}/${crypto.randomUUID()}-held.jpg`,
+    });
+  }
+
+  async function visibleTo(ctx: SessionContext, evidenceId: string) {
+    return prisma.evidence.count({ where: { ...evidenceScopeWhere(ctx), id: evidenceId } });
+  }
+
+  it("ties a vendor's upload to the site it delivers, and leaves the organization's own untied", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+
+    const theirs = await vendorPhoto(siteA.id);
+    const ours = await createEvidence(staffCtx(), {
+      propertyId: siteA.id,
+      type: "PHOTO",
+      storageKey: `${siteA.id}/${crypto.randomUUID()}-own.jpg`,
+    });
+
+    expect(theirs.captureJobSiteId).toBe(site.id);
+    expect(ours.captureJobSiteId).toBeNull();
+  });
+
+  it("shows unaccepted work to the reviewer and the vendor, and to nobody else", async () => {
+    await issuedJob(["PHOTOS"]);
+    const photo = await vendorPhoto(siteA.id);
+
+    expect(await visibleTo(staffCtx(), photo.id)).toBe(1);
+    expect(await visibleTo(vendorCtx(), photo.id)).toBe(1);
+    expect(await visibleTo(viewerCtx(), photo.id)).toBe(0);
+    expect(await visibleTo(managerCtx(), photo.id)).toBe(0);
+  });
+
+  it("publishes the work once the site is accepted", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const photo = await vendorPhoto(siteA.id);
+
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+    expect(await visibleTo(viewerCtx(), photo.id)).toBe(0);
+
+    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    expect(await visibleTo(viewerCtx(), photo.id)).toBe(1);
+  });
+
+  it("keeps work on a site that was sent back hidden", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const photo = await vendorPhoto(siteA.id);
+
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: false, reason: "Wrong building" });
+
+    expect(await visibleTo(viewerCtx(), photo.id)).toBe(0);
+  });
+
+  it("holds a vendor's drone flight the same way", async () => {
+    const job = await issuedJob(["DRONE"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const { captureId } = await resolveDroneTargetForSite(vendorCtx(), job.id, site.id);
+
+    const where = (ctx: SessionContext) => ({ id: captureId, ...captureReviewWhere(ctx) });
+    expect(await prisma.droneCapture.count({ where: where(viewerCtx()) })).toBe(0);
+    expect(await prisma.droneCapture.count({ where: where(staffCtx()) })).toBe(1);
+
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    expect(await prisma.droneCapture.count({ where: where(viewerCtx()) })).toBe(1);
+  });
+
+  it("holds a vendor's Matterport link the same way", async () => {
+    const job = await issuedJob(["MATTERPORT"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    const link = await linkSpaceByIdDirect(vendorCtx(), siteA.id, `held${suffix}`);
+
+    expect(link.captureJobSiteId).toBe(site.id);
+    const where = { id: link.id, ...captureReviewWhere(viewerCtx()) };
+    expect(await prisma.matterportPropertyLink.count({ where })).toBe(0);
+
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    expect(await prisma.matterportPropertyLink.count({ where })).toBe(1);
+  });
+});
+
+describe("only an admin reviews", () => {
+  it("refuses acceptance from a manager who can see the job", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites.find((s) => s.propertyId === siteA.id)!;
+    await prisma.evidence.create({
+      data: {
+        organizationId: org.id,
+        propertyId: siteA.id,
+        type: "PHOTO",
+        storageKey: `${siteA.id}/${crypto.randomUUID()}-r.jpg`,
+        uploadedById: vendorUser.id,
+      },
+    });
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+
+    const manager: SessionContext = {
+      ...staffCtx(),
+      role: Role.REGIONAL_MANAGER,
+      grants: [{ scopeType: "PROPERTY", propertyId: siteA.id, portfolioId: null, regionId: null }],
+    };
+    await expect(reviewCaptureSite(manager, job.id, site.id, { accept: true })).rejects.toMatchObject({
+      status: 403,
+    });
+
+    const admin: SessionContext = { ...staffCtx(), role: Role.PORTFOLIO_ADMIN };
+    const reviewed = await reviewCaptureSite(admin, job.id, site.id, { accept: true });
+    expect(reviewed.status).toBe("ACCEPTED");
   });
 });

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+import { SessionContext, captureReviewWhere, propertyScopeWhere, reviewSiteIdForUpload } from "@/lib/tenant-scope";
 import { getMatterportProvider } from "@/lib/integrations/matterport-provider";
 import { encryptSecret } from "@/lib/integrations/crypto";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
@@ -137,7 +137,13 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
 
   const link = await prisma.matterportPropertyLink.upsert({
     where: { propertyId_spaceId: { propertyId: property.id, spaceId: space.id } },
-    create: { propertyId: property.id, spaceId: space.id, operator: ctx.userName },
+    create: {
+      propertyId: property.id,
+      spaceId: space.id,
+      operator: ctx.userName,
+      // A vendor's scan is held for review against the job site it delivers.
+      captureJobSiteId: await reviewSiteIdForUpload(ctx, property.id),
+    },
     update: {},
     include: { space: true },
   });
@@ -232,7 +238,13 @@ export async function linkSpaceByIdDirect(
 
   const link = await prisma.matterportPropertyLink.upsert({
     where: { propertyId_spaceId: { propertyId: property.id, spaceId: space.id } },
-    create: { propertyId: property.id, spaceId: space.id, operator: ctx.userName },
+    create: {
+      propertyId: property.id,
+      spaceId: space.id,
+      operator: ctx.userName,
+      // A vendor's scan is held for review against the job site it delivers.
+      captureJobSiteId: await reviewSiteIdForUpload(ctx, property.id),
+    },
     update: {},
     include: { space: true },
   });
@@ -346,7 +358,7 @@ export async function getPropertyInteriorStatus(ctx: SessionContext, propertyId:
   const [connection, link] = await Promise.all([
     prisma.matterportConnection.findUnique({ where: { organizationId: ctx.organizationId } }),
     prisma.matterportPropertyLink.findFirst({
-      where: { propertyId: property.id },
+      where: { propertyId: property.id, ...captureReviewWhere(ctx) },
       orderBy: { linkedAt: "desc" },
       include: { space: true, references: { include: { asset: { select: { id: true, name: true } } } } },
     }),
@@ -364,7 +376,10 @@ export async function getPropertyInteriorStatus(ctx: SessionContext, propertyId:
           take: 50,
           select: { id: true, title: true, severity: true },
         }),
-        prisma.evidence.findMany({ where: { propertyId: property.id, type: { in: ["MATTERPORT_REFERENCE", "PHOTO", "IMAGE_360"] } }, take: 50 }),
+        prisma.evidence.findMany({
+          where: { propertyId: property.id, type: { in: ["MATTERPORT_REFERENCE", "PHOTO", "IMAGE_360"] }, ...captureReviewWhere(ctx) },
+          take: 50,
+        }),
       ])
     : [[], [], [], []];
 

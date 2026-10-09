@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
-import { propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
+import { captureReviewWhere, propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { FEATURE_FLAGS, isFeatureEnabled } from "@/lib/feature-flags";
 
 /**
@@ -67,7 +67,7 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
   if (!property) throw new ApiError(404, "Property not found");
 
   const rows = await prisma.evidence.findMany({
-    where: { propertyId, type: "IMAGE_360" },
+    where: { propertyId, type: "IMAGE_360", ...captureReviewWhere(ctx) },
     // By capture date, newest first — the date the panorama was shot, not the
     // date its row was written. A backfilled shoot uploaded last week is not
     // the most recent view of the site. Undated rows sort last rather than

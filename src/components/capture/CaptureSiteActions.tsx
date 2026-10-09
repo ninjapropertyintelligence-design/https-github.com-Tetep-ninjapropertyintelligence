@@ -19,6 +19,7 @@ export function CaptureSiteActions({
   jobStatus,
   missingCount,
   isVendor,
+  canReview,
 }: {
   jobId: string;
   siteId: string;
@@ -26,6 +27,8 @@ export function CaptureSiteActions({
   jobStatus: string;
   missingCount: number;
   isVendor: boolean;
+  /** Only organization admins may accept or send back; others are told who will. */
+  canReview: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -88,7 +91,11 @@ export function CaptureSiteActions({
           <span className="text-sm text-muted">Delivered — waiting on review.</span>
         ) : null}
 
-        {!isVendor && status === "SUBMITTED" ? (
+        {!isVendor && !canReview && status === "SUBMITTED" ? (
+          <span className="text-sm text-muted">Delivered — waiting on an admin to review.</span>
+        ) : null}
+
+        {!isVendor && canReview && status === "SUBMITTED" ? (
           <>
             <button
               type="button"

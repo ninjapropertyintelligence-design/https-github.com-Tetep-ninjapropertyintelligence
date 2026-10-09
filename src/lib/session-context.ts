@@ -3,7 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import { Permission, hasPermission, permissionsForRole } from "@/lib/permissions";
-import { SessionContext } from "@/lib/tenant-scope";
+import { SessionContext, sessionPredatesPasswordChange } from "@/lib/tenant-scope";
 import { IMPERSONATION_COOKIE, resolveImpersonation } from "@/lib/impersonation";
 
 // Re-export the pure scope logic + type so existing call sites can keep
@@ -11,7 +11,14 @@ import { IMPERSONATION_COOKIE, resolveImpersonation } from "@/lib/impersonation"
 // tenant-scope.ts (see that file's header comment) is an internal
 // implementation detail, not an API change.
 export type { SessionContext, AccessGrantScope, ImpersonationInfo } from "@/lib/tenant-scope";
-export { propertyScopeWhere, issueScopeWhere, canAccessProperty, mfaPolicySatisfied } from "@/lib/tenant-scope";
+export {
+  propertyScopeWhere,
+  issueScopeWhere,
+  canAccessProperty,
+  captureReviewWhere,
+  mfaPolicySatisfied,
+  sessionPredatesPasswordChange,
+} from "@/lib/tenant-scope";
 
 export const ACTIVE_ORG_COOKIE = "activeOrgId";
 
@@ -53,6 +60,11 @@ export async function getSessionContext(): Promise<SessionContext | null> {
   });
 
   if (!user || !user.isActive) {
+    return null;
+  }
+
+  // A password reset signs out every session that existed before it.
+  if (sessionPredatesPasswordChange(session.authTime, user.passwordChangedAt)) {
     return null;
   }
 
