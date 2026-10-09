@@ -11,6 +11,11 @@
 export type ObservabilityEvent =
   | "matterport.api_call"
   | "matterport.sync"
+  | "dronedeploy.api_call"
+  /** One auto-import pass over one organization's DroneDeploy account. */
+  | "dronedeploy.import_run"
+  /** One export copied from DroneDeploy into our storage. */
+  | "dronedeploy.export_copy"
   | "drone.upload"
   /**
    * Emitted when a client supplied a checksum but the object store could not
@@ -26,6 +31,7 @@ export type ObservabilityEvent =
   | "geocoding.request"
   | "ai.tool_call"
   | "ai.provider_call"
+  | "ai.photo_analysis_job"
   | "document.index_job"
   | "report.generate"
   | "email.send";

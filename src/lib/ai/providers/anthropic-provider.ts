@@ -1,5 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { AIProvider, AIToolCallRecord, AIToolDefinition, AIToolExecutor, AIToolLoopResult } from "@/lib/ai/provider";
+import {
+  AIImageInput,
+  AIProvider,
+  AIStructuredImageResult,
+  AIToolCallRecord,
+  AIToolDefinition,
+  AIToolExecutor,
+  AIToolLoopResult,
+  JSONSchemaObject,
+} from "@/lib/ai/provider";
 
 const MODEL = "claude-opus-5";
 const MAX_ITERATIONS = 8;
@@ -32,6 +41,53 @@ export class AnthropicProvider implements AIProvider {
       .map((b) => b.text)
       .join("\n")
       .trim();
+  }
+
+  async analyzeImage(params: {
+    system: string;
+    prompt: string;
+    image: AIImageInput;
+    schema: JSONSchemaObject;
+  }): Promise<AIStructuredImageResult> {
+    // Structured outputs constrain the reply to the schema, so the text block
+    // is the JSON itself — no tool call needed to get a machine-readable answer.
+    const response = await this.client.messages.create({
+      model: MODEL,
+      max_tokens: 4096,
+      system: params.system,
+      output_config: { format: { type: "json_schema", schema: params.schema as unknown as Record<string, unknown> } },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: params.image.mediaType as Anthropic.Base64ImageSource["media_type"],
+                data: params.image.base64,
+              },
+            },
+            { type: "text", text: params.prompt },
+          ],
+        },
+      ],
+    });
+
+    const usage = response.usage
+      ? { inputTokens: response.usage.input_tokens ?? 0, outputTokens: response.usage.output_tokens ?? 0 }
+      : undefined;
+
+    // A refusal or a truncated reply has no complete JSON in it. Said
+    // plainly rather than handed to JSON.parse to fail on.
+    if (response.stop_reason === "refusal") throw new Error("The AI provider declined to analyse this image");
+    if (response.stop_reason === "max_tokens") throw new Error("The AI provider's answer was cut off");
+
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    return { output: JSON.parse(text), usage };
   }
 
   async runToolLoop(params: {

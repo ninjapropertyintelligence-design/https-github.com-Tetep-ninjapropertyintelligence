@@ -117,6 +117,12 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
       <path d="M9.5 6V4h5v2M10 10.5v6M14 10.5v6" strokeLinecap="round" />
     </>
   ),
+  rules: (
+    <>
+      <path d="M9 6h11M9 12h11M9 18h11" strokeLinecap="round" />
+      <path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" strokeLinecap="round" strokeLinejoin="round" />
+    </>
+  ),
   storage: (
     <>
       <ellipse cx="12" cy="6" rx="8" ry="3" />

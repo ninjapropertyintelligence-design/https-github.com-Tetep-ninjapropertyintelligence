@@ -551,6 +551,11 @@ model Organization {
   // impersonation session against this organization at all, and any session
   // already running stops being honoured on the next request.
   allowSupportAccess Boolean          @default(true)
+  // When true, a vendor's capture-job photo uploaded against a named asset is
+  // sent for AI analysis on its own, so a suggestion is waiting for review.
+  // Each analysis is a paid AI call, so an organization can switch it off and
+  // keep the manual "Analyse with AI" button only.
+  autoAnalyzePhotos  Boolean          @default(true)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
@@ -566,7 +571,10 @@ model Organization {
   notifications        Notification[]
   featureFlagOverrides FeatureFlagOverride[]
   scoringWeights       ScoringCategoryWeight[]
+  defectRules          DefectRule[]
   matterportConnection MatterportConnection?
+  droneDeployConnection DroneDeployConnection?
+  droneDeployImports    DroneDeployImport[]
   subscription         OrganizationSubscription?
   usageRecords         UsageRecord[]
   costRates            CostRate[]
@@ -667,6 +675,7 @@ model Property {
   healthSnapshots PropertyHealthSnapshot[]
   matterportLinks MatterportPropertyLink[]
   droneCaptures   DroneCapture[]
+  droneDeployImports DroneDeployImport[]
   captureJobSites CaptureJobSite[]
   accessGrants    AccessGrant[]
   exteriorMarkers ExteriorMarker[]
@@ -806,6 +815,8 @@ model Asset {
   matterportReferences MatterportReference[]
   exteriorMarkers      ExteriorMarker[]
   documentChunks       DocumentChunk[]
+  aiFindings           AIFinding[]
+  analysisJobs         PhotoAnalysisJob[]
 
   @@unique([organizationId, customerAssetId])
   @@index([organizationId])
@@ -936,6 +947,7 @@ model Issue {
   evidence        Evidence[]
   documents       Document[]
   exteriorMarkers ExteriorMarker[]
+  aiFinding       AIFinding?
 
   @@index([organizationId])
   @@index([propertyId])
@@ -1121,6 +1133,7 @@ model Evidence {
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
+  analysisJob          PhotoAnalysisJob?
   exteriorMarkers      ExteriorMarker[]
 
   @@index([organizationId])
@@ -1316,9 +1329,10 @@ model DroneCapture {
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
 
-  property       Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  captureJobSite CaptureJobSite? @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
-  datasets       DroneDataset[]
+  property          Property           @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  captureJobSite    CaptureJobSite?    @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  datasets          DroneDataset[]
+  droneDeployImport DroneDeployImport?
 
   @@index([propertyId])
   @@index([captureJobSiteId])
@@ -1396,6 +1410,101 @@ model DroneOutput {
   @@index([outputType])
 }
 
+// ---------------------------------------------------------------------------
+// DroneDeploy auto-import. DroneDeploy does the photogrammetry; these rows
+// track pulling its finished maps into DroneCapture/DroneOutput, so the rest
+// of the app sees an imported flight exactly as it sees a manual upload.
+// ---------------------------------------------------------------------------
+
+/// One per organization: that organization's own DroneDeploy account.
+model DroneDeployConnection {
+  id             String    @id @default(cuid())
+  organizationId String    @unique
+  /// AES-256-GCM, see lib/integrations/crypto.ts. Never returned to a client.
+  apiKeyEnc      String
+  status         String    @default("CONNECTED") // CONNECTED | ERROR | DISCONNECTED
+  errorMessage   String?
+  /// Maps created before this are never imported. Defaults to the moment of
+  /// connecting, so connecting an account with five years of maps does not
+  /// silently copy five years of maps into storage.
+  importSince    DateTime  @default(now())
+  /// How far a map's location may be from a property for it to be filed
+  /// there without a human choosing.
+  matchRadiusMeters Int    @default(300)
+  lastPolledAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+enum DroneDeployImportStatus {
+  /// No property within the match radius; waiting for a person to choose.
+  UNMATCHED
+  /// Filed to a property; exports requested and not all copied yet.
+  IMPORTING
+  IMPORTED
+  FAILED
+  /// A person decided this map does not belong in the platform.
+  IGNORED
+}
+
+/// One DroneDeploy map (a "MapPlan") and what has happened to it here.
+model DroneDeployImport {
+  id             String                  @id @default(cuid())
+  organizationId String
+  externalPlanId String
+  planName       String?
+  planCreatedAt  DateTime?
+  latitude       Float?
+  longitude      Float?
+  status         DroneDeployImportStatus @default(UNMATCHED)
+  propertyId     String?
+  /// "GPS" when matched automatically, "MANUAL" when a person chose.
+  matchedBy      String?
+  matchDistanceMeters Float?
+  captureId      String?                 @unique
+  errorMessage   String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  capture      DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  exports      DroneDeployExportImport[]
+
+  @@unique([organizationId, externalPlanId])
+  @@index([organizationId, status])
+}
+
+enum DroneDeployExportStatus {
+  /// Asked DroneDeploy to build it; not ready yet.
+  REQUESTED
+  /// Copied into our storage and registered as a DroneOutput.
+  IMPORTED
+  FAILED
+}
+
+/// One layer (orthomosaic, elevation, point cloud) of one imported map.
+model DroneDeployExportImport {
+  id               String                  @id @default(cuid())
+  importId         String
+  layer            String
+  outputType       DroneOutputType
+  externalExportId String?
+  status           DroneDeployExportStatus @default(REQUESTED)
+  droneOutputId    String?
+  attempts         Int                     @default(0)
+  errorMessage     String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  import DroneDeployImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, layer])
+  @@index([status])
+}
+
 // A user-placed pin on an exterior photo or orthomosaic, referencing the
 // canonical Asset/Issue/Evidence record it points at — never a duplicate
 // business object (spec: "No Duplicate Data Rule").
@@ -1429,23 +1538,129 @@ model ExteriorMarker {
 }
 
 // ---------------------------------------------------------------------------
-// AI vision / findings (architecture only — no automatic defect detection yet)
+// AI vision / findings — photo analysis that SUGGESTS a condition rating.
+// A suggestion never moves a score on its own: a person confirms it first,
+// and only then does it go through `recordAssetConditionChange`.
 // ---------------------------------------------------------------------------
 
 model AIFinding {
-  id           String          @id @default(cuid())
-  evidenceId   String
-  label        String
-  description  String?
-  status       AIFindingStatus @default(SUGGESTED)
-  reviewedById String?
-  reviewedAt   DateTime?
-  createdAt    DateTime        @default(now())
+  id             String          @id @default(cuid())
+  organizationId String
+  evidenceId     String
+  /// The asset the photo was analysed against. Null when the asset has since
+  /// been deleted; the finding stays as a record of what was suggested.
+  assetId        String?
+  /// One-line headline of what the model saw, e.g. "Ponding water near drain".
+  label          String
+  description    String?
+  status         AIFindingStatus @default(SUGGESTED)
+
+  /// 0-100, the same scale as Asset.conditionScore.
+  suggestedScore    Int?
+  suggestedSeverity IssueSeverity?
+  /// 0-1, the model's own confidence. Shown to the reviewer, never used to
+  /// auto-apply anything.
+  confidence        Float?
+  /// [{ label, severity, location }] — individual defects seen in the photo.
+  defects           Json           @default("[]")
+  recommendedAction String?
+  provider          String?
+  requestedById     String?
+
+  /// Standard defect class, e.g. "roof_shingle_damage" — the key into
+  /// DefectRule. Null when the model saw nothing it could classify.
+  defectClass String?
+  /// Where the defect is, NORMALIZED to 0-1 of the image's width and height
+  /// ({ x, y, w, h }, x/y the top-left corner) so an overlay lands in the
+  /// right place at any display size. Null when the detector gives no box
+  /// (the vision-LLM path); a box detector such as Roboflow fills it.
+  boundingBox Json?
+  /// Pixel size of the image the box was measured on.
+  imageWidth  Int?
+  imageHeight Int?
+
+  /// What the reviewer actually applied — may differ from the suggestion.
+  confirmedScore Int?
+  reviewNote     String?
+  reviewedById   String?
+  reviewedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  /// The Issue created when this finding was confirmed. Set in the same
+  /// transaction as the confirmation; null for suggested and rejected ones.
+  issueId String? @unique
 
   evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  asset    Asset?   @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  issue    Issue?   @relation(fields: [issueId], references: [id], onDelete: SetNull)
 
+  @@index([organizationId, status])
   @@index([evidenceId])
+  @@index([assetId])
   @@index([status])
+}
+
+enum PhotoAnalysisJobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  /// Will not be retried: AI not configured, or the photo cannot be analysed.
+  SKIPPED
+}
+
+/// A photo waiting for automatic AI analysis, queued when a vendor uploads it
+/// against an asset. The queue is a table rather than an in-memory promise so
+/// that work survives a function timing out or an instance restarting: the
+/// upload request starts processing straight away, and a sweep picks up
+/// whatever that did not finish.
+model PhotoAnalysisJob {
+  id             String                 @id @default(cuid())
+  organizationId String
+  /// One job per photo: uploading never queues the same photo twice.
+  evidenceId     String                 @unique
+  assetId        String
+  requestedById  String
+  status         PhotoAnalysisJobStatus @default(QUEUED)
+  attempts       Int                    @default(0)
+  lastError      String?
+  /// The finding the analysis produced, once DONE.
+  findingId      String?
+  startedAt      DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  asset    Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
+  @@index([organizationId])
+}
+
+/// An organization's override of one platform default defect rule (see
+/// `DEFAULT_DEFECT_RULES` in src/lib/defect-rules.ts). Same arrangement as
+/// ScoringCategoryWeight: defaults are code, overrides are rows. A rule turns
+/// a CONFIRMED AI finding into fixed, auditable numbers; the model never
+/// decides a penalty or a cost.
+model DefectRule {
+  id              String        @id @default(cuid())
+  organizationId  String
+  defectClass     String
+  /// One of the scoring categories (Roof, HVAC, ...), validated on write.
+  category        String
+  defaultSeverity IssueSeverity
+  /// Points subtracted from the asset's condition score on confirmation.
+  conditionHit    Int
+  /// Repair estimate in cents, like every other cost in this schema. Null
+  /// when the organization has not set one: no estimate, not a free repair.
+  repairCostCents Int?
+  updatedById     String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, defectClass])
 }
 
 model AIQueryLog {
@@ -2212,6 +2427,12 @@ model CaptureShot {
   sequence  Int
   required  Boolean         @default(true)
   notes     String?
+  /// Where on the site this position is. Optional: a route can be walked by
+  /// order alone. When set, imported photos are matched to the position by
+  /// their GPS. Placed by staff on a map, carried over from the last job at the
+  /// same site, or learned from the first geotagged photo taken there.
+  latitude  Float?
+  longitude Float?
   createdAt DateTime        @default(now())
 
   site     CaptureJobSite @relation(fields: [siteId], references: [id], onDelete: Cascade)

@@ -58,8 +58,15 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   items.push({ label: "Security", href: "/settings/security", section: "Administration", icon: "shield" });
   // Everyone chooses for their own inbox, so this is not permission-gated either.
   items.push({ label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" });
+  // The rulebook turns confirmed AI findings into repair costs, so it is
+  // shown to whoever may see financial exposure; editing is narrower and
+  // enforced by the page and the API.
+  if (can(ctx, "canViewFinancialExposure")) {
+    items.push({ label: "Defect Rules", href: "/settings/defect-rules", section: "Administration", icon: "rules" });
+  }
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });
+    items.push({ label: "DroneDeploy", href: "/settings/dronedeploy", section: "Administration", icon: "capture" });
   }
   if (can(ctx, "canViewAuditLogs")) {
     items.push({ label: "Retention", href: "/settings/retention", section: "Administration", icon: "retention" });

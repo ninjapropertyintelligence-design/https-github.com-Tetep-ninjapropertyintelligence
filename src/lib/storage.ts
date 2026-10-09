@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
+import { createWriteStream } from "node:fs";
 import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { presignS3Url, type S3SignerConfig } from "@/lib/s3-signer";
 
 /**
@@ -103,6 +107,27 @@ export interface StorageProvider {
    * a few MB — never the large capture files that use signed direct upload.
    */
   writeBytes(key: string, bytes: Buffer): Promise<void>;
+  /**
+   * Writes an object from a stream, without holding it in memory.
+   *
+   * The one sanctioned way for a large file to pass through the app server:
+   * server-to-server auto-import (a DroneDeploy export), where there is no
+   * browser to hand a signed URL to. The bytes flow from the source response
+   * into the store chunk by chunk, so a multi-GB point cloud costs the
+   * function bandwidth and time, never memory. `sizeBytes` is required
+   * because an S3 PUT must declare its length up front.
+   */
+  writeStream(key: string, body: ReadableStream<Uint8Array>, sizeBytes: number): Promise<void>;
+}
+
+/**
+ * The key shape every provider uses: `<orgId>/<uuid>-<safe filename>`.
+ * Exposed for server-side writers (auto-import) that need a key without
+ * minting an upload URL, so their objects look like any other upload.
+ */
+export function newObjectKey(organizationId: string, filename: string): string {
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `${organizationId}/${crypto.randomUUID()}-${safeName}`;
 }
 
 const UPLOAD_TTL_MS = 15 * 60 * 1000;
@@ -148,8 +173,7 @@ class LocalStorageProvider implements StorageProvider {
     filename: string;
     contentType: string;
   }): Promise<SignedUploadUrl> {
-    const safeName = params.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const key = `${params.organizationId}/${crypto.randomUUID()}-${safeName}`;
+    const key = newObjectKey(params.organizationId, params.filename);
     const expiresAt = Date.now() + UPLOAD_TTL_MS;
     const token = sign(key, expiresAt);
     return {
@@ -224,6 +248,15 @@ class LocalStorageProvider implements StorageProvider {
     }
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, bytes);
+  }
+
+  async writeStream(key: string, body: ReadableStream<Uint8Array>): Promise<void> {
+    const filePath = path.join(LOCAL_STORAGE_ROOT, key);
+    if (!filePath.startsWith(LOCAL_STORAGE_ROOT + path.sep)) {
+      throw new Error("Refusing to write a key outside the storage root");
+    }
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await pipeline(Readable.fromWeb(body as WebReadableStream<Uint8Array>), createWriteStream(filePath));
   }
 }
 
@@ -331,8 +364,7 @@ class S3StorageProvider implements StorageProvider {
     // Key shape is kept identical to the local provider so that objects written
     // by one are addressable by the other — which is what makes a migration
     // between them a data copy rather than a re-keying exercise.
-    const safeName = params.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const key = `${params.organizationId}/${crypto.randomUUID()}-${safeName}`;
+    const key = newObjectKey(params.organizationId, params.filename);
     const { url, expiresAt } = presignS3Url(this.config, {
       method: "PUT",
       key,
@@ -399,6 +431,22 @@ class S3StorageProvider implements StorageProvider {
     });
     if (!res.ok) {
       throw new Error(`Storage write failed for key (HTTP ${res.status})`);
+    }
+  }
+
+  async writeStream(key: string, body: ReadableStream<Uint8Array>, sizeBytes: number): Promise<void> {
+    // Presigned with UNSIGNED-PAYLOAD, so the body can be streamed: nothing
+    // has to hash the whole object before the first byte is sent.
+    const { url } = presignS3Url(this.config, { method: "PUT", key, expiresInSeconds: 3600 });
+    const res = await fetch(url, {
+      method: "PUT",
+      body,
+      headers: { "content-length": String(sizeBytes) },
+      // Required by Node's fetch for a streaming request body.
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    if (!res.ok) {
+      throw new Error(`Storage stream write failed for key (HTTP ${res.status})`);
     }
   }
 }

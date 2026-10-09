@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Photo360Viewer } from "@/components/media/Photo360Viewer";
+import { Insta360ImportPanel, type ImportRoute } from "@/components/media/Insta360ImportPanel";
 
 /** Serialised across the server/client boundary — a Date does not survive it. */
 export interface Panorama360Option {
@@ -21,25 +22,39 @@ export interface Panorama360Option {
  * a location over time, and finding it again on the Site Map.
  */
 export function Photo360Gallery({
+  propertyId,
   panoramas,
   enabled,
+  canImport,
+  location,
+  route,
 }: {
+  propertyId: string;
   panoramas: Panorama360Option[];
   /** Whether the org can capture NEW panoramas. Existing ones always render. */
   enabled: boolean;
+  /** Whether this user may upload capture work (the server checks again). */
+  canImport: boolean;
+  location: { latitude: number; longitude: number } | null;
+  /** The open capture route on this site, so imported panoramas tick it off. */
+  route?: ImportRoute | null;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(panoramas[0]?.id ?? null);
   const selected = panoramas.find((p) => p.id === selectedId) ?? panoramas[0] ?? null;
+  const importer = enabled && canImport ? <Insta360ImportPanel propertyId={propertyId} location={location} route={route} /> : null;
 
   if (panoramas.length === 0) {
     return (
+      <div className="space-y-4">
+      {importer}
       <div className="rounded-xl border border-border bg-surface p-8 text-center">
         <h2 className="text-base font-semibold text-foreground">No 360° panoramas yet</h2>
         <p className="mx-auto mt-2 max-w-md text-sm text-muted">
           {enabled
-            ? "Upload an equirectangular JPEG from a 360 camera as evidence on this property and it will appear here."
+            ? "Import from an Insta360 SD card above, or upload an equirectangular JPEG from any 360 camera as evidence on this property, and it will appear here."
             : "360° panorama capture is not enabled for your organization. Contact your administrator to add it to your plan."}
         </p>
+      </div>
       </div>
     );
   }
@@ -55,6 +70,8 @@ export function Photo360Gallery({
           uploaded.
         </p>
       ) : null}
+
+      {importer}
 
       <div className="flex flex-col gap-4 lg:flex-row">
         <div className="h-[560px] min-w-0 flex-1">

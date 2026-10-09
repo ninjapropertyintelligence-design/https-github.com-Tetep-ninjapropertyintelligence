@@ -6,6 +6,11 @@ import { ApiError } from "@/lib/api-error";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { CaptureSiteActions } from "@/components/capture/CaptureSiteActions";
 import { CaptureUploadPanel } from "@/components/capture/CaptureUploadPanel";
+import { AIPhotoReviewPanel, type SitePhoto } from "@/components/capture/AIPhotoReviewPanel";
+import { getSitePhotoFindings } from "@/lib/ai/photo-analysis";
+import { parseStoredBox } from "@/lib/ai/bounding-box";
+import { prisma } from "@/lib/prisma";
+import { ShotPinEditor } from "@/components/capture/ShotPinEditor";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
 
@@ -42,7 +47,76 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     ),
   );
 
+  // Photos with their AI findings, and the assets each site's photos can be
+  // rated against. Loaded per site so a vendor's view stays scoped to their
+  // own uploads (see `getSitePhotoFindings`).
+  const photosBySite = new Map<string, SitePhoto[]>(
+    await Promise.all(
+      job.sites.map(async (site) => {
+        const rows = await getSitePhotoFindings(ctx, site.id);
+        const photos: SitePhoto[] = rows.map((row) => ({
+          id: row.id,
+          assetId: row.assetId,
+          label: row.captureShot?.label ?? `Photo uploaded ${formatDate(row.createdAt)}`,
+          analysis: row.analysisJob ? { status: row.analysisJob.status, error: row.analysisJob.lastError } : null,
+          findings: row.aiFindings.map((f) => ({
+            id: f.id,
+            status: f.status,
+            label: f.label,
+            description: f.description,
+            suggestedScore: f.suggestedScore,
+            suggestedSeverity: f.suggestedSeverity,
+            confidence: f.confidence,
+            defects: Array.isArray(f.defects) ? (f.defects as unknown as SitePhoto["findings"][number]["defects"]) : [],
+            recommendedAction: f.recommendedAction,
+            confirmedScore: f.confirmedScore,
+            assetName: f.asset?.name ?? null,
+            defectClass: f.defectClass,
+            currentScore: f.asset?.conditionScore ?? null,
+            rule: f.rule
+              ? {
+                  conditionHit: f.rule.conditionHit,
+                  repairCostCents: f.rule.repairCostCents,
+                  defaultSeverity: f.rule.defaultSeverity,
+                  source: f.rule.source,
+                }
+              : null,
+            issueId: f.issueId,
+            // Parsed here, server side: the column is JSON, and the client
+            // should only ever receive a box that is safe to draw.
+            boundingBox: parseStoredBox(f.boundingBox),
+            imageWidth: f.imageWidth,
+            imageHeight: f.imageHeight,
+          })),
+        }));
+        return [site.id, photos] as const;
+      }),
+    ),
+  );
   const isVendor = ctx.role === Role.VENDOR;
+  // A vendor needs a site's assets to say which one their photos show, so
+  // they are loaded for every site the vendor can upload to; anyone else
+  // only needs them where there are photos to rate.
+  const assetsByProperty = new Map<string, Array<{ id: string; name: string }>>();
+  for (const site of job.sites) {
+    const needed = isVendor || (photosBySite.get(site.id) ?? []).length > 0;
+    if (!needed || assetsByProperty.has(site.propertyId)) continue;
+    assetsByProperty.set(
+      site.propertyId,
+      await prisma.asset.findMany({
+        where: { propertyId: site.propertyId, organizationId: ctx.organizationId, status: "ACTIVE" },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+    );
+  }
+
+  const autoAnalyze = isVendor
+    ? ((await prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }))
+        ?.autoAnalyzePhotos ?? false)
+    : false;
+  const canPlacePins =
+    !isVendor && can(ctx, "canManageProperties") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
   const canReview = can(ctx, "canReviewCaptures");
 
   return (
@@ -136,6 +210,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                                   {shot.kind === "IMAGE_360" ? "360°" : "photo"}
                                   {shot.required ? "" : " · optional"}
                                   {captured ? ` · ${shot._count.evidence}` : ""}
+                                  {shot.latitude !== null ? " · 📍" : ""}
                                 </span>
                               </span>
                             </li>
@@ -143,6 +218,22 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                         })}
                       </ol>
                     </div>
+                  ) : null}
+
+                  {canPlacePins && site.shots.length > 0 ? (
+                    <ShotPinEditor
+                      jobId={job.id}
+                      siteId={site.id}
+                      token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
+                      site={{ name: site.property.name, latitude: site.property.latitude, longitude: site.property.longitude }}
+                      shots={site.shots.map((shot) => ({
+                        id: shot.id,
+                        label: shot.label,
+                        sequence: shot.sequence,
+                        latitude: shot.latitude,
+                        longitude: shot.longitude,
+                      }))}
+                    />
                   ) : null}
 
                   {site.rejectionReason ? (
@@ -156,15 +247,33 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                       jobId={job.id}
                       siteId={site.id}
                       propertyId={site.propertyId}
+                      propertyLocation={
+                        site.property.latitude !== null && site.property.longitude !== null
+                          ? { latitude: site.property.latitude, longitude: site.property.longitude }
+                          : null
+                      }
+                      jobTitle={job.title}
                       shots={site.shots.map((shot) => ({
                         id: shot.id,
                         label: shot.label,
                         kind: shot.kind,
                         captured: shot._count.evidence > 0,
+                        sequence: shot.sequence,
+                        latitude: shot.latitude,
+                        longitude: shot.longitude,
                       }))}
                       disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
+                      assets={assetsByProperty.get(site.propertyId) ?? []}
+                      autoAnalyze={autoAnalyze}
                     />
                   ) : null}
+
+                  <AIPhotoReviewPanel
+                    photos={photosBySite.get(site.id) ?? []}
+                    assets={assetsByProperty.get(site.propertyId) ?? []}
+                    disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
+                    canOpenIssues={!isVendor}
+                  />
 
                   <CaptureSiteActions
                     jobId={job.id}

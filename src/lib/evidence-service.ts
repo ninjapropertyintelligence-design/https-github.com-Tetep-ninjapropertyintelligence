@@ -97,6 +97,32 @@ async function assertIssueAttachable(ctx: SessionContext, issueId: string, prope
   }
 }
 
+/**
+ * Every asset a file names must be on that file's own property.
+ *
+ * The asset id was taken on trust. That let a photo of one building name an
+ * asset in another — harmless while the link was a label, but automatic AI
+ * analysis now rates the named asset from the photo, so a wrong link would
+ * put one building's damage on another building's equipment.
+ */
+async function assertAssetsOnProperties(
+  organizationId: string,
+  items: Array<{ assetId?: string | null; propertyId?: string | null }>,
+): Promise<void> {
+  const named = items.filter((i): i is { assetId: string; propertyId?: string | null } => !!i.assetId);
+  if (named.length === 0) return;
+  const assets = await prisma.asset.findMany({
+    where: { id: { in: [...new Set(named.map((i) => i.assetId))] }, organizationId },
+    select: { id: true, propertyId: true },
+  });
+  const propertyOf = new Map(assets.map((a) => [a.id, a.propertyId]));
+  for (const item of named) {
+    if (!item.propertyId || propertyOf.get(item.assetId) !== item.propertyId) {
+      throw new ApiError(400, "A file names an asset that is not on its property");
+    }
+  }
+}
+
 export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
   // Permission first: "you may not do this at all" is a truer answer than
   // "your organization has not bought this" for someone who could never do
@@ -115,6 +141,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     });
     if (!property) throw new ApiError(400, "Invalid propertyId, or you don't have access to it");
   }
+
+  await assertAssetsOnProperties(ctx.organizationId, [input]);
 
   // A shot id from another site would otherwise mark that site's route
   // complete with imagery taken somewhere else.
@@ -161,6 +189,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     sizeBytes: evidence.sizeBytes === null ? null : Number(evidence.sizeBytes),
     objectCreatedAt: evidence.createdAt,
   });
+
+  await learnShotLocations([evidence]);
 
   // Metered per panorama, not per byte: the bytes are already sampled into
   // GB-months by the storage meter, and counting them here too would bill the
@@ -219,6 +249,34 @@ async function assertShotBelongsToProperty(shotId: string, propertyId: string): 
 }
 
 /**
+ * Gives an unpinned shot position the location of the first geotagged photo
+ * taken at it.
+ *
+ * This is how a route acquires pins without anyone placing them: the first
+ * visit is matched by walking order or by hand, and from then on every
+ * photo carrying GPS can be matched by location — on this job and, because
+ * new jobs inherit pins by position name, on every later one. Conditional on
+ * the shot still having no pin, so it never moves one a person placed.
+ */
+async function learnShotLocations(
+  items: Array<{ captureShotId?: string | null; latitude?: number | null; longitude?: number | null }>,
+): Promise<void> {
+  const firstByShot = new Map<string, { latitude: number; longitude: number }>();
+  for (const item of items) {
+    if (!item.captureShotId || item.latitude == null || item.longitude == null) continue;
+    if (!firstByShot.has(item.captureShotId)) {
+      firstByShot.set(item.captureShotId, { latitude: item.latitude, longitude: item.longitude });
+    }
+  }
+  for (const [shotId, point] of firstByShot) {
+    await prisma.captureShot.updateMany({
+      where: { id: shotId, latitude: null, longitude: null },
+      data: point,
+    });
+  }
+}
+
+/**
  * Registers many evidence files in one call.
  *
  * Not a loop over `createEvidence`: the entitlement check and the property
@@ -264,6 +322,8 @@ export async function createEvidenceBatch(
       await assertIssueAttachable(ctx, issueId, item.propertyId ?? null);
     }
   }
+
+  await assertAssetsOnProperties(ctx.organizationId, items);
 
   for (const item of items) {
     if (!item.captureShotId) continue;
@@ -320,6 +380,8 @@ export async function createEvidenceBatch(
       objectCreatedAt: row.createdAt,
     });
   }
+
+  await learnShotLocations(items);
 
   // Metered per panorama here too. A bulk upload of 40 panoramas is 40
   // billable captures — charging once per batch would let a customer avoid

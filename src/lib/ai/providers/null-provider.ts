@@ -1,4 +1,4 @@
-import { AIProvider, AIProviderNotConfiguredError, AIToolLoopResult } from "@/lib/ai/provider";
+import { AIProvider, AIProviderNotConfiguredError, AIStructuredImageResult, AIToolLoopResult } from "@/lib/ai/provider";
 
 /**
  * Fallback when no provider is configured (missing API key, or
@@ -23,6 +23,10 @@ export class NullProvider implements AIProvider {
   }
 
   async generateResponse(): Promise<string> {
+    throw new AIProviderNotConfiguredError(this.name);
+  }
+
+  async analyzeImage(): Promise<AIStructuredImageResult> {
     throw new AIProviderNotConfiguredError(this.name);
   }
 

@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
 
 /**
  * The subcontractor's upload surface, on the job itself.
@@ -56,22 +57,35 @@ export interface ShotOption {
   label: string;
   kind: "PHOTO" | "IMAGE_360";
   captured: boolean;
+  sequence: number;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export function CaptureUploadPanel({
   jobId,
   siteId,
   propertyId,
+  propertyLocation,
+  jobTitle,
   shots,
   disabled,
+  assets = [],
+  autoAnalyze = false,
 }: {
   jobId: string;
   siteId: string;
   propertyId: string;
+  propertyLocation: { latitude: number; longitude: number } | null;
+  jobTitle: string;
   /** The route for this site, in walking order. Empty when the job has none. */
   shots: ShotOption[];
   /** True once the site is accepted or the job is closed. */
   disabled: boolean;
+  /** The site's assets, for saying which one a batch of photos shows. */
+  assets?: Array<{ id: string; name: string }>;
+  /** Whether this organization analyses photos automatically on upload. */
+  autoAnalyze?: boolean;
 }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -84,6 +98,10 @@ export function CaptureUploadPanel({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [spaceRef, setSpaceRef] = useState("");
+  // Which asset a batch of photos shows. Optional: a general site photo
+  // shows no one asset. Naming one is also what lets the AI analyse the
+  // photos automatically, since it has to know what it is rating.
+  const [assetId, setAssetId] = useState("");
 
   /** Unwraps this API's envelope, whose `error` is a string, not an object. */
   async function call<T>(url: string, body: unknown): Promise<T> {
@@ -226,6 +244,8 @@ export function CaptureUploadPanel({
               // Drone imagery is a flight, not a position, so it never
               // carries a shot.
               captureShotId: shotId || undefined,
+              // Only photos name an asset: a 360 panorama shows a whole space.
+              assetId: kind === "PHOTOS" && assetId ? assetId : undefined,
               mimeType: u.file.type || undefined,
               sizeBytes: u.file.size,
             })),
@@ -234,10 +254,12 @@ export function CaptureUploadPanel({
       }
 
       const failed = selected.length - uploaded.length;
+      const analysing = autoAnalyze && kind === "PHOTOS" && assetId !== "";
       setDone(
-        failed === 0
+        (failed === 0
           ? `${uploaded.length} ${uploaded.length === 1 ? "file" : "files"} uploaded.`
-          : `${uploaded.length} uploaded, ${failed} failed — retry the failed files.`,
+          : `${uploaded.length} uploaded, ${failed} failed — retry the failed files.`) +
+          (analysing ? " The AI is analysing them now; its suggestions will appear below for you to review." : ""),
       );
       if (inputRef.current) inputRef.current.value = "";
       // Refreshes the deliverable chips, which are computed from the data.
@@ -292,7 +314,7 @@ export function CaptureUploadPanel({
               {busy ? "Linking…" : "Link space"}
             </button>
           </>
-        ) : (
+        ) : kind === "IMAGE_360" ? null : (
           <input
             ref={inputRef}
             type="file"
@@ -308,7 +330,33 @@ export function CaptureUploadPanel({
         )}
       </div>
 
-      {shots.length > 0 && ROUTED_KINDS.includes(kind) ? (
+      {kind === "IMAGE_360" ? (
+        // 360s go through the importer: it reads each file's date and GPS,
+        // skips duplicates and camera originals, and matches every panorama
+        // to its route position instead of one position per upload.
+        <div className="mt-2">
+          <Insta360ImportPanel
+            propertyId={propertyId}
+            location={propertyLocation}
+            title="Import 360° panoramas"
+            route={{
+              label: jobTitle,
+              shots: shots
+                .filter((s) => s.kind === "IMAGE_360")
+                .map((s) => ({
+                  id: s.id,
+                  label: s.label,
+                  sequence: s.sequence,
+                  latitude: s.latitude,
+                  longitude: s.longitude,
+                  captured: s.captured,
+                })),
+            }}
+          />
+        </div>
+      ) : null}
+
+      {shots.length > 0 && ROUTED_KINDS.includes(kind) && kind !== "IMAGE_360" ? (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <label className="text-xs text-muted" htmlFor={`shot-${siteId}`}>
             Position
@@ -331,6 +379,33 @@ export function CaptureUploadPanel({
               </option>
             ))}
           </select>
+        </div>
+      ) : null}
+
+      {kind === "PHOTOS" && assets.length > 0 ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="text-xs text-muted" htmlFor={`asset-${siteId}`}>
+            Asset shown
+          </label>
+          <select
+            id={`asset-${siteId}`}
+            value={assetId}
+            disabled={busy}
+            onChange={(e) => setAssetId(e.target.value)}
+            className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-brand"
+          >
+            <option value="">No one asset</option>
+            {assets.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+          {autoAnalyze ? (
+            <span className="text-xs text-muted">
+              {assetId ? "The AI will analyse these photos as soon as they upload." : "Pick an asset to have the AI analyse these photos."}
+            </span>
+          ) : null}
         </div>
       ) : null}
 

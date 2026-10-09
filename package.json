@@ -20,7 +20,8 @@
     "dr:verify": "node --env-file=.env node_modules/.bin/tsx scripts/dr-verify.ts",
     "postinstall": "prisma generate",
     "db:deploy": "prisma migrate deploy",
-    "matterport:introspect": "node --env-file=.env node_modules/.bin/tsx scripts/matterport-introspect.ts"
+    "matterport:introspect": "node --env-file=.env node_modules/.bin/tsx scripts/matterport-introspect.ts",
+    "dronedeploy:introspect": "node --env-file=.env node_modules/.bin/tsx scripts/dronedeploy-introspect.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

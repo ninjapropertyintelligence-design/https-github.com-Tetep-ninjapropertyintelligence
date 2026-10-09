@@ -37,6 +37,7 @@ export type NavIconKey =
   | "retention"
   | "storage"
   | "usage"
+  | "rules"
   | "platform";
 
 export interface NavItem {
