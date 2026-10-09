@@ -9,6 +9,10 @@ const bodySchema = z.object({
   decision: z.enum(["confirm", "reject"]),
   // The reviewer's own score, when they disagree with the AI's.
   score: z.number().int().min(0).max(100).nullish(),
+  // The reviewer's own severity and repair estimate (cents), overriding the
+  // defect rule's for this one issue.
+  severity: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).nullish(),
+  repairCostCents: z.number().int().min(0).max(100_000_000_000).nullish(),
   note: z.string().max(1000).nullish(),
 });
 

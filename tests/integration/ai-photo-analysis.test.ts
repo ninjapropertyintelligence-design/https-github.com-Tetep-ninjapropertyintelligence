@@ -4,7 +4,9 @@ import { Role } from "@/generated/prisma/client";
 import { createCaptureJob, issueCaptureJob, outstandingDeliverables, getCaptureJob } from "@/lib/capture-job-service";
 import { createEvidence } from "@/lib/evidence-service";
 import { getStorageProvider } from "@/lib/storage";
-import { analyzeEvidencePhoto, getSitePhotoFindings, reviewAIFinding } from "@/lib/ai/photo-analysis";
+import { analyzeEvidencePhoto, getSitePhotoFindings, planConfirmation, reviewAIFinding } from "@/lib/ai/photo-analysis";
+import { listEffectiveDefectRules, resolveDefectRule, upsertDefectRule, validateDefectRule } from "@/lib/defect-rules";
+import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { __setAIProviderForTest } from "@/lib/ai/provider-factory";
 import type { AIProvider } from "@/lib/ai/provider";
 import { NullProvider } from "@/lib/ai/providers/null-provider";
@@ -67,6 +69,7 @@ function fakeProvider(output: unknown): AIProvider & { calls: number } {
 
 const RUSTY_RTU = {
   imageUsable: true,
+  defectClass: "hvac_corrosion",
   label: "Corroded condenser coil housing",
   description: "Heavy surface rust on the housing and a dented access panel.",
   conditionScore: 58,
@@ -116,6 +119,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await prisma.captureJob.deleteMany({ where: { organizationId: org.id } });
+  await prisma.issue.deleteMany({ where: { organizationId: org.id } });
+  await prisma.defectRule.deleteMany({ where: { organizationId: org.id } });
   await prisma.assetConditionHistory.deleteMany({ where: { assetId: asset.id } });
   await prisma.asset.update({ where: { id: asset.id }, data: { conditionScore: 90 } });
   const job = await createCaptureJob(staffCtx(), {
@@ -143,12 +148,16 @@ describe("the AI suggests", () => {
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
 
     expect(finding.status).toBe("SUGGESTED");
+    expect(finding.defectClass).toBe("hvac_corrosion");
     expect(finding.suggestedScore).toBe(58);
     expect(finding.suggestedSeverity).toBe("HIGH");
     expect(finding.assetId).toBe(asset.id);
     // The point of the feature: nothing moves until a person confirms.
     expect((await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } })).conditionScore).toBe(90);
     expect(await prisma.assetConditionHistory.count({ where: { assetId: asset.id } })).toBe(0);
+    // No Issue either: unverified detections never reach the table the
+    // scoring engine reads.
+    expect(await prisma.issue.count({ where: { organizationId: org.id } })).toBe(0);
     // And a suggestion does not satisfy the job's condition-scores deliverable.
     const job = (await prisma.captureJob.findFirstOrThrow({ where: { organizationId: org.id }, include: { sites: true } }));
     expect((await outstandingDeliverables(job.sites[0].id)).missing).toContain("CONDITION_SCORES");
@@ -183,6 +192,35 @@ describe("the AI suggests", () => {
     await expect(reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" })).rejects.toMatchObject({ status: 400 });
   });
 
+  it("keeps no class the rulebook does not know", async () => {
+    __setAIProviderForTest(fakeProvider({ ...RUSTY_RTU, defectClass: "alien_damage" }));
+    const photo = await vendorPhoto({ assetId: asset.id });
+    expect((await analyzeEvidencePhoto(vendorCtx(), photo.id)).defectClass).toBeNull();
+  });
+
+  it("offers the model exactly the organization's rulebook classes", async () => {
+    await upsertDefectRule(org.id, staff.id, {
+      defectClass: "signage_damage",
+      category: "ExteriorParking",
+      defaultSeverity: "LOW",
+      conditionHit: 5,
+      repairCostCents: 50_000,
+    });
+    let offered: string[] = [];
+    const provider = fakeProvider(RUSTY_RTU);
+    const inner = provider.analyzeImage;
+    provider.analyzeImage = async (params: Parameters<AIProvider["analyzeImage"]>[0]) => {
+      offered = (params.schema.properties.defectClass as { enum: string[] }).enum;
+      return inner(params);
+    };
+    __setAIProviderForTest(provider);
+    const photo = await vendorPhoto({ assetId: asset.id });
+    await analyzeEvidencePhoto(vendorCtx(), photo.id);
+    expect(offered).toContain("roof_shingle_damage");
+    expect(offered).toContain("signage_damage");
+    expect(offered).toContain("none");
+  });
+
   it("rejects an answer in the wrong shape rather than storing it", async () => {
     __setAIProviderForTest(fakeProvider({ ...RUSTY_RTU, conditionScore: 140 }));
     const photo = await vendorPhoto({ assetId: asset.id });
@@ -215,35 +253,133 @@ describe("the AI suggests", () => {
 });
 
 describe("a person confirms", () => {
-  it("applies the suggested score as AI-verified, with the photo as evidence", async () => {
+  it("applies the defect rule: condition hit, issue, cost — all in one go", async () => {
     __setAIProviderForTest(fakeProvider(RUSTY_RTU));
     const photo = await vendorPhoto({ assetId: asset.id });
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
 
     const reviewed = await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" });
 
+    // Platform default for hvac_corrosion: -15 condition, MEDIUM, $4,000.
+    // The AI suggested 58; the rule, not the model, decides the number.
     expect(reviewed.status).toBe("HUMAN_VERIFIED");
-    expect(reviewed.confirmedScore).toBe(58);
+    expect(reviewed.confirmedScore).toBe(75);
     const after = await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } });
-    expect(after.conditionScore).toBe(58);
+    expect(after.conditionScore).toBe(75);
     expect(after.validationStatus).toBe("AI_HUMAN_VERIFIED");
+
+    const issue = await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } });
+    expect(issue.severity).toBe("MEDIUM");
+    expect(issue.estimatedCost).toBe(400_000);
+    expect(issue.source).toBe("AI_SUGGESTED");
+    expect(issue.assetId).toBe(asset.id);
+    expect(issue.propertyId).toBe(site.id);
+    expect(issue.title).toBe("Hvac corrosion: RTU-01");
+    // The photo is the issue's evidence.
+    expect((await prisma.evidence.findUniqueOrThrow({ where: { id: photo.id } })).issueId).toBe(issue.id);
+
     const history = await prisma.assetConditionHistory.findFirstOrThrow({ where: { assetId: asset.id } });
     expect(history.source).toBe("AI_SUGGESTED");
     expect(history.evidenceId).toBe(photo.id);
     expect(history.changedByUserId).toBe(vendorUser.id);
+    expect(history.reason).toContain("rule took 15 off 90");
+
+    // The engine recalculated with the new issue's cost in capital exposure.
+    const snapshot = await getLatestHealthSnapshot(site.id);
+    expect(snapshot!.capitalExposure36mo).toBeGreaterThanOrEqual(400_000);
+
     // The confirmed rating is the vendor's condition-scores deliverable.
     const job = await getCaptureJob(staffCtx(), (await prisma.captureJob.findFirstOrThrow({ where: { organizationId: org.id } })).id);
     expect((await outstandingDeliverables(job.sites[0].id)).missing).not.toContain("CONDITION_SCORES");
   });
 
-  it("applies the reviewer's own score when they disagree, and records both", async () => {
+  it("uses the organization's own rule over the platform default", async () => {
+    await upsertDefectRule(org.id, staff.id, {
+      defectClass: "hvac_corrosion",
+      category: "HVAC",
+      defaultSeverity: "HIGH",
+      conditionHit: 40,
+      repairCostCents: 900_000,
+    });
     __setAIProviderForTest(fakeProvider(RUSTY_RTU));
     const photo = await vendorPhoto({ assetId: asset.id });
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
-    await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm", score: 70, note: "Rust is cosmetic" });
-    expect((await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } })).conditionScore).toBe(70);
+    const reviewed = await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" });
+    expect(reviewed.confirmedScore).toBe(50);
+    const issue = await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } });
+    expect(issue.severity).toBe("HIGH");
+    expect(issue.estimatedCost).toBe(900_000);
+  });
+
+  it("lets the reviewer's score win, but keeps the rule's severity and cost", async () => {
+    __setAIProviderForTest(fakeProvider(RUSTY_RTU));
+    const photo = await vendorPhoto({ assetId: asset.id });
+    const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
+    const reviewed = await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm", score: 82, note: "Rust is cosmetic" });
+    expect((await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } })).conditionScore).toBe(82);
     const history = await prisma.assetConditionHistory.findFirstOrThrow({ where: { assetId: asset.id } });
-    expect(history.reason).toContain("AI suggested 58, reviewer set 70");
+    expect(history.reason).toContain("reviewer set 82 (AI suggested 58)");
+    expect((await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } })).estimatedCost).toBe(400_000);
+  });
+
+  it("lets the reviewer set severity and cost by hand, and records that they did", async () => {
+    __setAIProviderForTest(fakeProvider(RUSTY_RTU));
+    const photo = await vendorPhoto({ assetId: asset.id });
+    const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
+    const reviewed = await reviewAIFinding(vendorCtx(), finding.id, {
+      decision: "confirm",
+      severity: "CRITICAL",
+      repairCostCents: 1_250_000,
+    });
+    // The rule still sets the score (90 - 15); the person set the rest.
+    expect(reviewed.confirmedScore).toBe(75);
+    const issue = await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } });
+    expect(issue.severity).toBe("CRITICAL");
+    expect(issue.estimatedCost).toBe(1_250_000);
+    expect(issue.description).toContain("severity set by reviewer to critical");
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityId: finding.id, action: "ai_finding.confirmed" } });
+    expect((audit.metadata as { overridden: unknown }).overridden).toEqual({ severity: true, cost: true });
+  });
+
+  it("with no rule, accepts the AI's score and invents no cost", async () => {
+    __setAIProviderForTest(fakeProvider({ ...RUSTY_RTU, defectClass: "none" }));
+    const photo = await vendorPhoto({ assetId: asset.id });
+    const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
+    const reviewed = await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" });
+    expect(reviewed.confirmedScore).toBe(58);
+    const issue = await prisma.issue.findUniqueOrThrow({ where: { id: reviewed.issueId! } });
+    expect(issue.estimatedCost).toBeNull();
+    expect(issue.severity).toBe("HIGH"); // the AI's severity, since no rule gives one
+    expect(issue.title).toBe(RUSTY_RTU.label);
+  });
+
+  it("commits nothing when any part of the confirmation fails", async () => {
+    __setAIProviderForTest(fakeProvider(RUSTY_RTU));
+    const photo = await vendorPhoto({ assetId: asset.id });
+    const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
+
+    // Make the LAST write of the transaction — the condition history row —
+    // fail inside the database. By then the finding has been claimed and the
+    // Issue created; both must roll back with it.
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION test_fail_history() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'forced failure for rollback test'; END $$ LANGUAGE plpgsql`);
+    await prisma.$executeRawUnsafe(
+      `CREATE TRIGGER test_fail_history BEFORE INSERT ON "AssetConditionHistory"
+       FOR EACH ROW WHEN (NEW."assetId" = '${asset.id}') EXECUTE FUNCTION test_fail_history()`,
+    );
+    try {
+      await expect(reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" })).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_history ON "AssetConditionHistory"`);
+      await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_history()`);
+    }
+
+    expect((await prisma.aIFinding.findUniqueOrThrow({ where: { id: finding.id } })).status).toBe("SUGGESTED");
+    expect(await prisma.issue.count({ where: { organizationId: org.id } })).toBe(0);
+    expect((await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } })).conditionScore).toBe(90);
+    // And it can still be confirmed once the problem is gone.
+    expect((await reviewAIFinding(vendorCtx(), finding.id, { decision: "confirm" })).status).toBe("HUMAN_VERIFIED");
   });
 
   it("changes nothing on rejection", async () => {
@@ -252,6 +388,8 @@ describe("a person confirms", () => {
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
     const reviewed = await reviewAIFinding(vendorCtx(), finding.id, { decision: "reject", note: "Wrong unit" });
     expect(reviewed.status).toBe("REJECTED");
+    expect(reviewed.issueId).toBeNull();
+    expect(await prisma.issue.count({ where: { organizationId: org.id } })).toBe(0);
     expect((await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } })).conditionScore).toBe(90);
     expect(await prisma.assetConditionHistory.count({ where: { assetId: asset.id } })).toBe(0);
   });
@@ -266,6 +404,7 @@ describe("a person confirms", () => {
     ]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(await prisma.assetConditionHistory.count({ where: { assetId: asset.id } })).toBe(1);
+    expect(await prisma.issue.count({ where: { organizationId: org.id } })).toBe(1);
   });
 
   it("lets staff confirm a vendor's finding, but never another vendor user", async () => {
@@ -292,5 +431,61 @@ describe("a person confirms", () => {
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
     await expect(reviewAIFinding(viewerCtx(), finding.id, { decision: "confirm" })).rejects.toMatchObject({ status: 403 });
     expect(await getSitePhotoFindings(viewerCtx(), photo.captureJobSiteId!)).toHaveLength(0);
+  });
+});
+
+describe("the rulebook", () => {
+  it("merges the organization's overrides and own classes over the platform defaults", async () => {
+    await upsertDefectRule(org.id, staff.id, {
+      defectClass: "roof_shingle_damage",
+      category: "Roof",
+      defaultSeverity: "CRITICAL",
+      conditionHit: 30,
+      repairCostCents: 2_000_000,
+    });
+    const rules = await listEffectiveDefectRules(org.id);
+    const shingle = rules.find((r) => r.defectClass === "roof_shingle_damage")!;
+    expect(shingle).toMatchObject({ source: "organization", conditionHit: 30 });
+    expect(rules.find((r) => r.defectClass === "facade_crack")!.source).toBe("platform");
+    expect(await resolveDefectRule(org.id, "no_such_class")).toBeNull();
+    expect(await resolveDefectRule(org.id, null)).toBeNull();
+  });
+
+  it("refuses a rule outside the scoring categories or with impossible numbers", () => {
+    const ok = { defectClass: "x_damage", category: "Roof" as const, defaultSeverity: "LOW" as const, conditionHit: 5, repairCostCents: 100 };
+    expect(() => validateDefectRule(ok)).not.toThrow();
+    expect(() => validateDefectRule({ ...ok, category: "Pavement" as never })).toThrow(/Category/);
+    expect(() => validateDefectRule({ ...ok, category: "Issues" as never })).toThrow(/Category/);
+    expect(() => validateDefectRule({ ...ok, conditionHit: 150 })).toThrow(/Condition hit/);
+    expect(() => validateDefectRule({ ...ok, repairCostCents: -1 })).toThrow(/Repair cost/);
+    expect(() => validateDefectRule({ ...ok, defectClass: "Roof Damage!" })).toThrow(/snake_case/);
+  });
+});
+
+describe("planConfirmation", () => {
+  const rule = { defectClass: "roof_shingle_damage", category: "Roof" as const, defaultSeverity: "HIGH" as const, conditionHit: 25, repairCostCents: 1_500_000, source: "platform" as const };
+  const base = { reviewerScore: null, currentScore: 85, suggestedScore: 40, suggestedSeverity: "CRITICAL" as const, rule };
+
+  it("takes the rule's hit off the current score, never below zero", () => {
+    expect(planConfirmation(base)).toMatchObject({ newScore: 60, basis: "rule", severity: "HIGH", estimatedCostCents: 1_500_000 });
+    expect(planConfirmation({ ...base, currentScore: 10 }).newScore).toBe(0);
+  });
+
+  it("puts the reviewer's severity and cost ahead of the rule's", () => {
+    expect(planConfirmation({ ...base, reviewerSeverity: "LOW", reviewerCostCents: 0 })).toMatchObject({
+      newScore: 60,
+      severity: "LOW",
+      estimatedCostCents: 0,
+      overridden: { severity: true, cost: true },
+    });
+  });
+
+  it("is the same answer every time for the same inputs", () => {
+    expect(planConfirmation(base)).toEqual(planConfirmation(base));
+  });
+
+  it("needs a score from the reviewer when the rule has nothing to subtract from", () => {
+    expect(() => planConfirmation({ ...base, currentScore: null })).toThrow(/no condition score/);
+    expect(planConfirmation({ ...base, currentScore: null, reviewerScore: 70 }).newScore).toBe(70);
   });
 });

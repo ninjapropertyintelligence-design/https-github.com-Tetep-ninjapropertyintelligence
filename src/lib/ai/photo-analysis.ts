@@ -5,11 +5,15 @@ import { evidenceScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { hasPermission } from "@/lib/permissions";
 import { getAIProvider } from "@/lib/ai/provider-factory";
 import { AIProviderNotConfiguredError, type JSONSchemaObject } from "@/lib/ai/provider";
-import { recordAssetConditionChange } from "@/lib/asset-condition";
+import { afterConditionChange, applyConditionChangeInTx } from "@/lib/asset-condition";
+import { emitEvent, EVENT_TYPES } from "@/lib/events";
+import { notifyPropertyStakeholders } from "@/lib/notifications";
+import { formatCents } from "@/lib/format";
 import { recordUsage } from "@/lib/cost-metering";
 import { writeAuditLog } from "@/lib/audit";
 import { logEvent } from "@/lib/observability";
 import { getStorageProvider } from "@/lib/storage";
+import { listEffectiveDefectRules, resolveDefectRule, type EffectiveDefectRule } from "@/lib/defect-rules";
 import {
   AIFindingStatus,
   IssueSeverity,
@@ -45,53 +49,68 @@ const SUPPORTED_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/we
 
 const SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 
+/** What the model answers when no rulebook class fits what it sees. */
+const NO_DEFECT_CLASS = "none";
+
 /**
  * What the model must return. Every property required and no numeric bounds
  * in the schema itself: that is the subset all three vendors' structured
  * output modes accept. Bounds are enforced by `analysisOutput` below instead.
+ *
+ * `defectClass` is an enum of the organization's rulebook classes, so the
+ * model can only name a class a rule exists for — never invent one.
  */
-const ANALYSIS_SCHEMA: JSONSchemaObject = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "imageUsable",
-    "label",
-    "description",
-    "conditionScore",
-    "severity",
-    "confidence",
-    "defects",
-    "recommendedAction",
-  ],
-  properties: {
-    imageUsable: {
-      type: "boolean",
-      description: "False when the photo is too dark, blurred, obstructed, or does not show this asset.",
-    },
-    label: { type: "string", description: "One-line headline of the main finding, under 80 characters." },
-    description: { type: "string", description: "Two to four sentences on what is visible and why it matters." },
-    conditionScore: { type: "integer", description: "Condition from 0 (failed) to 100 (new). 0 if imageUsable is false." },
-    severity: { type: "string", enum: [...SEVERITIES], description: "Severity of the worst defect seen." },
-    confidence: { type: "number", description: "Your confidence in the score, from 0 to 1." },
-    defects: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["label", "severity", "location"],
-        properties: {
-          label: { type: "string" },
-          severity: { type: "string", enum: [...SEVERITIES] },
-          location: { type: "string", description: "Where in the photo, e.g. 'lower left flashing'." },
+function analysisSchema(defectClasses: string[]): JSONSchemaObject {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "imageUsable",
+      "defectClass",
+      "label",
+      "description",
+      "conditionScore",
+      "severity",
+      "confidence",
+      "defects",
+      "recommendedAction",
+    ],
+    properties: {
+      imageUsable: {
+        type: "boolean",
+        description: "False when the photo is too dark, blurred, obstructed, or does not show this asset.",
+      },
+      defectClass: {
+        type: "string",
+        enum: [...defectClasses, NO_DEFECT_CLASS],
+        description: `The standard class of the most serious defect visible, or "${NO_DEFECT_CLASS}" if no listed class fits.`,
+      },
+      label: { type: "string", description: "One-line headline of the main finding, under 80 characters." },
+      description: { type: "string", description: "Two to four sentences on what is visible and why it matters." },
+      conditionScore: { type: "integer", description: "Condition from 0 (failed) to 100 (new). 0 if imageUsable is false." },
+      severity: { type: "string", enum: [...SEVERITIES], description: "Severity of the worst defect seen." },
+      confidence: { type: "number", description: "Your confidence in the score, from 0 to 1." },
+      defects: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["label", "severity", "location"],
+          properties: {
+            label: { type: "string" },
+            severity: { type: "string", enum: [...SEVERITIES] },
+            location: { type: "string", description: "Where in the photo, e.g. 'lower left flashing'." },
+          },
         },
       },
+      recommendedAction: { type: "string", description: "What a facilities manager should do next." },
     },
-    recommendedAction: { type: "string", description: "What a facilities manager should do next." },
-  },
-};
+  };
+}
 
 const analysisOutput = z.object({
   imageUsable: z.boolean(),
+  defectClass: z.string().max(64),
   label: z.string().min(1).max(200),
   description: z.string().max(4000),
   conditionScore: z.number().int().min(0).max(100),
@@ -114,6 +133,7 @@ Rules:
   65-79 Needs Attention: visible wear or early defects; plan maintenance.
   50-64 Poor: clear defects affecting function; repair soon.
   0-49 Critical: failed or failing, or a safety hazard; act now.
+- For defectClass, pick the listed class that best matches the most serious defect you can see. Use "none" if nothing visible fits a listed class; never force a match.
 - Be honest about uncertainty with the confidence value. A person will check your rating before it is used.`;
 
 function buildPrompt(asset: {
@@ -221,6 +241,8 @@ export async function analyzeEvidencePhoto(
     throw new ApiError(400, "This photo is larger than 5 MB; upload a smaller copy to analyse it");
   }
 
+  const defectClasses = (await listEffectiveDefectRules(ctx.organizationId)).map((r) => r.defectClass);
+
   const provider = getAIProvider();
   const startedAt = Date.now();
   let result;
@@ -229,7 +251,7 @@ export async function analyzeEvidencePhoto(
       system: SYSTEM_PROMPT,
       prompt: buildPrompt(asset),
       image: { mediaType: mimeType, base64: bytes.toString("base64") },
-      schema: ANALYSIS_SCHEMA,
+      schema: analysisSchema(defectClasses),
     });
   } catch (err) {
     if (err instanceof AIProviderNotConfiguredError) {
@@ -284,6 +306,12 @@ export async function analyzeEvidencePhoto(
     throw new ApiError(502, "The AI provider returned an answer in the wrong shape. Try again, or rate it by hand.");
   }
   const out = parsed.data;
+  // Structured outputs should already enforce the enum. Checked anyway: a
+  // class with no rule behind it would confirm into an issue with no numbers.
+  const defectClass =
+    out.imageUsable && out.defectClass !== NO_DEFECT_CLASS && defectClasses.includes(out.defectClass)
+      ? out.defectClass
+      : null;
 
   return prisma.aIFinding.create({
     data: {
@@ -291,6 +319,7 @@ export async function analyzeEvidencePhoto(
       evidenceId: evidence.id,
       assetId: asset.id,
       label: out.imageUsable ? out.label : `Photo not usable: ${out.label}`,
+      defectClass,
       description: out.description,
       // An unusable photo carries no score. The reviewer can still enter one
       // by hand, or reject it.
@@ -305,15 +334,89 @@ export async function analyzeEvidencePhoto(
   });
 }
 
+/** What confirming a finding will do, worked out before anything is written. */
+export interface ConfirmationPlan {
+  newScore: number;
+  /** Where the new score came from, recorded in the condition history. */
+  basis: "reviewer" | "rule" | "ai";
+  severity: IssueSeverity;
+  estimatedCostCents: number | null;
+  rule: EffectiveDefectRule | null;
+  /** Which of severity and cost the reviewer set by hand, for the audit trail. */
+  overridden: { severity: boolean; cost: boolean };
+}
+
+/**
+ * The arithmetic of a confirmation, as a pure function so it can be tested
+ * without a database. In order of precedence:
+ *
+ *   - a score the reviewer typed wins: a person's judgement over any rule;
+ *   - otherwise the defect rule takes its fixed `conditionHit` off the
+ *     asset's current score — predictable, and the same for every photo of
+ *     the same defect;
+ *   - with no rule, the AI's own suggested score, which the reviewer saw and
+ *     accepted.
+ *
+ * Severity and repair cost follow the same order: what the reviewer typed,
+ * then the rule, then (severity only) the AI's suggestion. A finding with no
+ * rule and no typed cost carries no cost rather than a made-up one.
+ */
+export function planConfirmation(params: {
+  reviewerScore: number | null | undefined;
+  reviewerSeverity?: IssueSeverity | null;
+  reviewerCostCents?: number | null;
+  currentScore: number | null;
+  suggestedScore: number | null;
+  suggestedSeverity: IssueSeverity | null;
+  rule: EffectiveDefectRule | null;
+}): ConfirmationPlan {
+  const { rule } = params;
+  const overridden = {
+    severity: params.reviewerSeverity != null,
+    cost: params.reviewerCostCents != null,
+  };
+  const severity = params.reviewerSeverity ?? rule?.defaultSeverity ?? params.suggestedSeverity ?? "MEDIUM";
+  const estimatedCostCents = params.reviewerCostCents ?? rule?.repairCostCents ?? null;
+  const common = { severity, estimatedCostCents, rule, overridden };
+
+  if (params.reviewerScore !== null && params.reviewerScore !== undefined) {
+    return { newScore: params.reviewerScore, basis: "reviewer", ...common };
+  }
+  if (rule) {
+    if (params.currentScore === null) {
+      throw new ApiError(400, "This asset has no condition score yet, so the rule has nothing to subtract from; enter a score");
+    }
+    return { newScore: Math.max(0, params.currentScore - rule.conditionHit), basis: "rule", ...common };
+  }
+  if (params.suggestedScore !== null) {
+    return { newScore: params.suggestedScore, basis: "ai", ...common };
+  }
+  throw new ApiError(400, "The AI gave no score for this photo; enter one to confirm, or reject it");
+}
+
+function humanizeClass(defectClass: string): string {
+  const words = defectClass.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 export async function reviewAIFinding(
   ctx: SessionContext,
   findingId: string,
-  input: { decision: "confirm" | "reject"; score?: number | null; note?: string | null },
+  input: {
+    decision: "confirm" | "reject";
+    score?: number | null;
+    severity?: IssueSeverity | null;
+    repairCostCents?: number | null;
+    note?: string | null;
+  },
 ) {
   assertMayRate(ctx);
   const finding = await prisma.aIFinding.findFirst({
     where: { id: findingId, organizationId: ctx.organizationId, evidence: { ...evidenceScopeWhere(ctx), ...vendorOwnsOnly(ctx) } },
-    include: { asset: { select: { id: true, name: true, propertyId: true, status: true } } },
+    include: {
+      asset: { select: { id: true, name: true, propertyId: true, status: true, conditionScore: true } },
+      evidence: { select: { id: true, issueId: true } },
+    },
   });
   if (!finding) throw new ApiError(404, "Finding not found");
   if (finding.status !== AIFindingStatus.SUGGESTED) throw new ApiError(409, "This finding has already been reviewed");
@@ -332,94 +435,182 @@ export async function reviewAIFinding(
       action: "ai_finding.rejected",
       entityType: "AIFinding",
       entityId: finding.id,
-      metadata: { suggestedScore: finding.suggestedScore },
+      metadata: { defectClass: finding.defectClass, suggestedScore: finding.suggestedScore },
     });
     return prisma.aIFinding.findUniqueOrThrow({ where: { id: finding.id } });
   }
 
-  if (!finding.asset || finding.asset.status !== "ACTIVE") {
+  const asset = finding.asset;
+  if (!asset || asset.status !== "ACTIVE") {
     throw new ApiError(409, "The asset this finding rates no longer exists or is inactive");
   }
-  const score = input.score ?? finding.suggestedScore;
-  if (score === null || score === undefined) {
-    throw new ApiError(400, "The AI gave no score for this photo; enter one to confirm, or reject it");
-  }
 
-  // Claimed before applying, so two reviewers confirming at once cannot both
-  // write a condition change.
-  const claimed = await prisma.aIFinding.updateMany({
-    where: { id: finding.id, status: AIFindingStatus.SUGGESTED },
-    data: {
-      status: AIFindingStatus.HUMAN_VERIFIED,
-      confirmedScore: score,
-      reviewedById: ctx.userId,
-      reviewedAt: new Date(),
-      reviewNote: note,
-    },
+  const rule = await resolveDefectRule(ctx.organizationId, finding.defectClass);
+  const plan = planConfirmation({
+    reviewerScore: input.score,
+    reviewerSeverity: input.severity,
+    reviewerCostCents: input.repairCostCents,
+    currentScore: asset.conditionScore,
+    suggestedScore: finding.suggestedScore,
+    suggestedSeverity: finding.suggestedSeverity,
+    rule,
   });
-  if (claimed.count === 0) throw new ApiError(409, "This finding has already been reviewed");
 
-  const adjusted = finding.suggestedScore !== null && score !== finding.suggestedScore;
-  try {
-    await recordAssetConditionChange({
-      assetId: finding.asset.id,
-      newScore: score,
+  const ruleText = rule
+    ? `Rule ${rule.defectClass} (${rule.source === "organization" ? "your organization's" : "platform default"}): ` +
+      `-${rule.conditionHit} condition, ${formatCents(rule.repairCostCents)} estimate, ${rule.defaultSeverity.toLowerCase()} severity.`
+    : "No defect rule applies.";
+  const overrideText = [
+    plan.overridden.severity ? `severity set by reviewer to ${plan.severity.toLowerCase()}` : null,
+    plan.overridden.cost && plan.estimatedCostCents !== null
+      ? `repair estimate set by reviewer to ${formatCents(plan.estimatedCostCents)}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
+  const basisText =
+    plan.basis === "reviewer"
+      ? `reviewer set ${plan.newScore}` + (finding.suggestedScore !== null ? ` (AI suggested ${finding.suggestedScore})` : "")
+      : plan.basis === "rule"
+        ? `rule took ${rule!.conditionHit} off ${asset.conditionScore}`
+        : `AI-suggested score ${plan.newScore} accepted`;
+
+  // Everything that must be true together commits together: the finding is
+  // claimed, its Issue exists, and the asset's condition has changed — or
+  // none of it happened. The claim is inside the transaction, so two people
+  // confirming at once cannot both get through.
+  const { issue, change } = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.aIFinding.updateMany({
+      where: { id: finding.id, status: AIFindingStatus.SUGGESTED },
+      data: {
+        status: AIFindingStatus.HUMAN_VERIFIED,
+        confirmedScore: plan.newScore,
+        reviewedById: ctx.userId,
+        reviewedAt: new Date(),
+        reviewNote: note,
+      },
+    });
+    if (claimed.count === 0) throw new ApiError(409, "This finding has already been reviewed");
+
+    const issue = await tx.issue.create({
+      data: {
+        organizationId: ctx.organizationId,
+        propertyId: asset.propertyId,
+        assetId: asset.id,
+        title: finding.defectClass ? `${humanizeClass(finding.defectClass)}: ${asset.name}` : finding.label,
+        description: [
+          finding.description,
+          `Confirmed from AI photo analysis. ${ruleText}` + (overrideText ? ` Overrides: ${overrideText}.` : ""),
+          note ? `Reviewer note: ${note}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        severity: plan.severity,
+        source: IssueSource.AI_SUGGESTED,
+        estimatedCost: plan.estimatedCostCents,
+        createdById: ctx.userId,
+      },
+    });
+    await tx.aIFinding.update({ where: { id: finding.id }, data: { issueId: issue.id } });
+    // The photo becomes the issue's evidence, unless it already belongs to another issue.
+    if (!finding.evidence.issueId) {
+      await tx.evidence.update({ where: { id: finding.evidence.id }, data: { issueId: issue.id } });
+    }
+
+    const change = await applyConditionChangeInTx(tx, {
+      assetId: asset.id,
+      newScore: plan.newScore,
       changedByUserId: ctx.userId,
       source: IssueSource.AI_SUGGESTED,
       validationStatus: ValidationStatus.AI_HUMAN_VERIFIED,
       evidenceId: finding.evidenceId,
-      reason:
-        `AI photo analysis confirmed: ${finding.label}` +
-        (adjusted ? ` (AI suggested ${finding.suggestedScore}, reviewer set ${score})` : "") +
-        (note ? ` — ${note}` : ""),
+      reason: `AI photo analysis confirmed: ${finding.label} — ${basisText}` + (note ? ` — ${note}` : ""),
     });
-  } catch (err) {
-    // Put the finding back so it can be confirmed again, rather than leaving
-    // it marked verified with no condition change behind it.
-    await prisma.aIFinding.update({
-      where: { id: finding.id },
-      data: { status: AIFindingStatus.SUGGESTED, confirmedScore: null, reviewedById: null, reviewedAt: null, reviewNote: null },
-    });
-    throw err;
-  }
-
-  await writeAuditLog({
-    organizationId: ctx.organizationId,
-    actorUserId: ctx.userId,
-    action: "ai_finding.confirmed",
-    entityType: "AIFinding",
-    entityId: finding.id,
-    metadata: { assetId: finding.asset.id, suggestedScore: finding.suggestedScore, confirmedScore: score },
+    return { issue, change };
   });
+
+  // After commit: the property snapshot (which now sees the new issue and the
+  // new condition together), events, audit and notifications.
+  await afterConditionChange(change, ctx.userId);
+  await Promise.all([
+    emitEvent({
+      organizationId: ctx.organizationId,
+      propertyId: asset.propertyId,
+      type: EVENT_TYPES.ISSUE_CREATED,
+      actorUserId: ctx.userId,
+      payload: { issueId: issue.id, title: issue.title, severity: issue.severity, aiFindingId: finding.id },
+    }),
+    writeAuditLog({
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.userId,
+      action: "ai_finding.confirmed",
+      entityType: "AIFinding",
+      entityId: finding.id,
+      metadata: {
+        assetId: asset.id,
+        issueId: issue.id,
+        defectClass: finding.defectClass,
+        ruleSource: rule?.source ?? null,
+        basis: plan.basis,
+        suggestedScore: finding.suggestedScore,
+        previousScore: asset.conditionScore,
+        confirmedScore: plan.newScore,
+        severity: plan.severity,
+        estimatedCostCents: plan.estimatedCostCents,
+        overridden: plan.overridden,
+      },
+    }),
+    issue.severity === "CRITICAL"
+      ? notifyPropertyStakeholders({
+          propertyId: asset.propertyId,
+          type: "ISSUE_CRITICAL",
+          title: `Critical issue: ${issue.title}`,
+          link: `/issues/${issue.id}`,
+        })
+      : Promise.resolve(),
+  ]);
 
   return prisma.aIFinding.findUniqueOrThrow({ where: { id: finding.id } });
 }
 
 /**
  * Photos on a capture-job site with their findings, for the review panel.
- * Vendors see only what they uploaded, matching what they may act on.
+ * Vendors see only what they uploaded, matching what they may act on. Each
+ * finding carries the rule that would apply and the asset's current score,
+ * so the reviewer sees exactly what Confirm will do before pressing it.
  */
 export async function getSitePhotoFindings(ctx: SessionContext, siteId: string) {
   if (!hasPermission(ctx.role, "canUploadEvidence")) return [];
-  return prisma.evidence.findMany({
-    where: {
-      captureJobSiteId: siteId,
-      type: { in: ["PHOTO", "DRONE_IMAGE"] },
-      mimeType: { in: SUPPORTED_MEDIA_TYPES },
-      ...evidenceScopeWhere(ctx),
-      ...vendorOwnsOnly(ctx),
-    },
-    select: {
-      id: true,
-      assetId: true,
-      createdAt: true,
-      captureShot: { select: { label: true } },
-      aiFindings: {
-        orderBy: { createdAt: "desc" },
-        include: { asset: { select: { id: true, name: true } } },
+  const [rows, rules] = await Promise.all([
+    prisma.evidence.findMany({
+      where: {
+        captureJobSiteId: siteId,
+        type: { in: ["PHOTO", "DRONE_IMAGE"] },
+        mimeType: { in: SUPPORTED_MEDIA_TYPES },
+        ...evidenceScopeWhere(ctx),
+        ...vendorOwnsOnly(ctx),
       },
-    },
-    orderBy: { createdAt: "asc" },
-    take: 200,
-  });
+      select: {
+        id: true,
+        assetId: true,
+        createdAt: true,
+        captureShot: { select: { label: true } },
+        aiFindings: {
+          orderBy: { createdAt: "desc" },
+          include: { asset: { select: { id: true, name: true, conditionScore: true } } },
+        },
+      },
+      orderBy: { createdAt: "asc" },
+      take: 200,
+    }),
+    listEffectiveDefectRules(ctx.organizationId),
+  ]);
+  const ruleByClass = new Map(rules.map((r) => [r.defectClass, r]));
+  return rows.map((row) => ({
+    ...row,
+    aiFindings: row.aiFindings.map((f) => ({
+      ...f,
+      rule: f.defectClass ? (ruleByClass.get(f.defectClass) ?? null) : null,
+    })),
+  }));
 }

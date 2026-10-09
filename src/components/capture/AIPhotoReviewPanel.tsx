@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { formatCents } from "@/lib/format";
 
 interface Defect {
   label: string;
@@ -21,6 +22,12 @@ export interface PhotoFinding {
   recommendedAction: string | null;
   confirmedScore: number | null;
   assetName: string | null;
+  defectClass: string | null;
+  /** The asset's score right now — what a rule would subtract from. */
+  currentScore: number | null;
+  /** The rule Confirm will apply, if the defect class has one. */
+  rule: { conditionHit: number; repairCostCents: number; defaultSeverity: string; source: string } | null;
+  issueId: string | null;
 }
 
 export interface SitePhoto {
@@ -48,10 +55,13 @@ export function AIPhotoReviewPanel({
   photos,
   assets,
   disabled,
+  canOpenIssues,
 }: {
   photos: SitePhoto[];
   assets: Array<{ id: string; name: string }>;
   disabled: boolean;
+  /** Vendors see only issues assigned to their company, so a link would 404. */
+  canOpenIssues: boolean;
 }) {
   if (photos.length === 0) return null;
   return (
@@ -62,7 +72,7 @@ export function AIPhotoReviewPanel({
       </p>
       <ul className="mt-2 space-y-3">
         {photos.map((photo) => (
-          <PhotoRow key={photo.id} photo={photo} assets={assets} disabled={disabled} />
+          <PhotoRow key={photo.id} photo={photo} assets={assets} disabled={disabled} canOpenIssues={canOpenIssues} />
         ))}
       </ul>
     </div>
@@ -73,18 +83,26 @@ function PhotoRow({
   photo,
   assets,
   disabled,
+  canOpenIssues,
 }: {
   photo: SitePhoto;
   assets: Array<{ id: string; name: string }>;
   disabled: boolean;
+  canOpenIssues: boolean;
 }) {
   const router = useRouter();
   const pending = photo.findings.find((f) => f.status === "SUGGESTED") ?? null;
   const reviewed = photo.findings.filter((f) => f.status !== "SUGGESTED");
 
   const [assetId, setAssetId] = useState(photo.assetId ?? "");
-  const [score, setScore] = useState(pending?.suggestedScore?.toString() ?? "");
+  // With a rule, the rule sets the score and the field is an optional
+  // override, so it starts empty. Without one, the AI's suggestion is what
+  // Confirm accepts, so it starts filled in for the reviewer to check.
+  const [score, setScore] = useState(pending && !pending.rule ? (pending.suggestedScore?.toString() ?? "") : "");
   const [note, setNote] = useState("");
+  // Empty means "use the rule's (or the AI's) value".
+  const [severity, setSeverity] = useState("");
+  const [cost, setCost] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,7 +131,13 @@ function PhotoRow({
   }
 
   const scoreValue = score.trim() === "" ? null : Number(score);
-  const scoreValid = scoreValue !== null && Number.isInteger(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
+  const scoreTyped = scoreValue !== null && Number.isInteger(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
+  const ruleApplies = Boolean(pending?.rule && pending.currentScore !== null);
+  // Confirmable with a valid typed score, or with an empty field when a rule
+  // will set the score.
+  const costValue = cost.trim() === "" ? null : Math.round(Number(cost) * 100);
+  const costValid = costValue === null || (Number.isFinite(costValue) && costValue >= 0);
+  const canConfirm = (score.trim() === "" ? ruleApplies : scoreTyped) && costValid;
 
   return (
     <li className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row">
@@ -164,16 +188,63 @@ function PhotoRow({
               <p className="text-xs text-muted">Recommended: {pending.recommendedAction}</p>
             ) : null}
 
+            <p className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground">
+              {pending.rule ? (
+                <>
+                  Confirming applies the{" "}
+                  <span className="font-medium">{pending.defectClass?.replace(/_/g, " ")}</span> rule
+                  {pending.rule.source === "organization" ? " (your organization's)" : " (platform default)"}:{" "}
+                  {pending.currentScore !== null
+                    ? `condition ${pending.currentScore} → ${Math.max(0, pending.currentScore - pending.rule.conditionHit)}`
+                    : `−${pending.rule.conditionHit} condition (no current score, so enter one)`}
+                  , {pending.rule.defaultSeverity.toLowerCase()} issue,{" "}
+                  {formatCents(pending.rule.repairCostCents)} repair estimate.
+                </>
+              ) : (
+                <>
+                  No defect rule applies{pending.defectClass ? ` to “${pending.defectClass.replace(/_/g, " ")}”` : ""}.
+                  Confirming sets the score below and opens an issue with no cost estimate.
+                </>
+              )}
+            </p>
+
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <label className="flex items-center gap-1.5 text-xs text-muted">
-                Score
+                {ruleApplies ? "Override score" : "Score"}
                 <input
                   type="number"
                   min={0}
                   max={100}
                   value={score}
+                  placeholder={ruleApplies && pending.currentScore !== null && pending.rule ? String(Math.max(0, pending.currentScore - pending.rule.conditionHit)) : ""}
                   onChange={(e) => setScore(e.target.value)}
                   className="w-20 rounded-lg border border-border bg-surface px-2 py-1 text-sm text-foreground outline-none focus:border-brand"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-muted">
+                Severity
+                <select
+                  value={severity}
+                  onChange={(e) => setSeverity(e.target.value)}
+                  className="rounded-lg border border-border bg-surface px-2 py-1 text-sm text-foreground outline-none focus:border-brand"
+                >
+                  <option value="">{pending.rule ? "Rule default" : "AI suggestion"}</option>
+                  {["LOW", "MEDIUM", "HIGH", "CRITICAL"].map((s) => (
+                    <option key={s} value={s}>
+                      {s.toLowerCase()}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-muted">
+                Cost $
+                <input
+                  type="number"
+                  min={0}
+                  value={cost}
+                  placeholder={pending.rule ? String(pending.rule.repairCostCents / 100) : "none"}
+                  onChange={(e) => setCost(e.target.value)}
+                  className="w-24 rounded-lg border border-border bg-surface px-2 py-1 text-sm text-foreground outline-none focus:border-brand"
                 />
               </label>
               <input
@@ -184,9 +255,19 @@ function PhotoRow({
               />
               <button
                 type="button"
-                disabled={disabled || busy !== null || !scoreValid}
+                disabled={disabled || busy !== null || !canConfirm}
                 onClick={() =>
-                  post(`/api/v1/ai-findings/${pending.id}/review`, { decision: "confirm", score: scoreValue, note }, "confirm")
+                  post(
+                    `/api/v1/ai-findings/${pending.id}/review`,
+                    {
+                      decision: "confirm",
+                      score: scoreValue,
+                      severity: severity || null,
+                      repairCostCents: costValue,
+                      note,
+                    },
+                    "confirm",
+                  )
                 }
                 className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
               >
@@ -234,10 +315,15 @@ function PhotoRow({
               <li key={f.id}>
                 {f.status === "REJECTED"
                   ? `Rejected: ${f.label}`
-                  : `Confirmed ${f.confirmedScore}/100 for ${f.assetName ?? "asset"}` +
-                    (f.suggestedScore !== null && f.confirmedScore !== f.suggestedScore
-                      ? ` (AI suggested ${f.suggestedScore})`
-                      : "")}
+                  : `Confirmed ${f.confirmedScore}/100 for ${f.assetName ?? "asset"}`}
+                {canOpenIssues && f.status !== "REJECTED" && f.issueId ? (
+                  <>
+                    {" · "}
+                    <a href={`/issues/${f.issueId}`} className="text-brand hover:underline">
+                      view issue
+                    </a>
+                  </>
+                ) : null}
               </li>
             ))}
           </ul>

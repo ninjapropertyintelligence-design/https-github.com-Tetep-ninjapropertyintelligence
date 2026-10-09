@@ -68,6 +68,17 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
             recommendedAction: f.recommendedAction,
             confirmedScore: f.confirmedScore,
             assetName: f.asset?.name ?? null,
+            defectClass: f.defectClass,
+            currentScore: f.asset?.conditionScore ?? null,
+            rule: f.rule
+              ? {
+                  conditionHit: f.rule.conditionHit,
+                  repairCostCents: f.rule.repairCostCents,
+                  defaultSeverity: f.rule.defaultSeverity,
+                  source: f.rule.source,
+                }
+              : null,
+            issueId: f.issueId,
           })),
         }));
         return [site.id, photos] as const;
@@ -215,6 +226,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     photos={photosBySite.get(site.id) ?? []}
                     assets={assetsByProperty.get(site.propertyId) ?? []}
                     disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
+                    canOpenIssues={!isVendor}
                   />
 
                   <CaptureSiteActions
