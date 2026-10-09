@@ -93,3 +93,43 @@ export function invitationEmail(params: {
     html: layout(lines, { label: "Accept invitation", url: params.acceptUrl }),
   };
 }
+
+export function roleChangedEmail(params: {
+  to: string;
+  name: string;
+  organizationName: string;
+  roleLabel: string;
+  changedBy: string;
+  appUrl: string;
+}): EmailMessage {
+  const lines = [
+    `Hi ${params.name},`,
+    `${params.changedBy} changed your access in ${params.organizationName}. You are now ${params.roleLabel}.`,
+    "What you can see and do has changed to match. If this looks wrong, contact your administrator.",
+  ];
+  return {
+    to: params.to,
+    subject: `Your access in ${params.organizationName} changed`,
+    text: [lines[0], "", lines[1], "", lines[2], "", params.appUrl].join("\n"),
+    html: layout(lines, { label: "Open " + PRODUCT_NAME, url: params.appUrl }),
+  };
+}
+
+export function removedFromOrganizationEmail(params: {
+  to: string;
+  name: string;
+  organizationName: string;
+  removedBy: string;
+}): EmailMessage {
+  const lines = [
+    `Hi ${params.name},`,
+    `${params.removedBy} removed you from ${params.organizationName} on ${PRODUCT_NAME}. You no longer have access to its properties.`,
+    "If you think this is a mistake, contact your administrator.",
+  ];
+  return {
+    to: params.to,
+    subject: `You were removed from ${params.organizationName}`,
+    text: lines.join("\n\n"),
+    html: layout(lines),
+  };
+}
