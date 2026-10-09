@@ -75,6 +75,20 @@ function vendorCtx(): SessionContext {
 }
 
 beforeAll(async () => {
+  // Self-sufficient on an unseeded database, as CI's is: the capture kinds
+  // exercised here are entitlement-gated, and the flags must exist as
+  // platform definitions for an organization to have them at all.
+  for (const key of ["drone_processing", "matterport", "image_360"]) {
+    await prisma.featureFlag.upsert({
+      where: { key },
+      create: { key, description: `${key} (test)`, defaultEnabled: true },
+      update: {},
+    });
+  }
+  // Linking a space by id needs only a viewer key, and the provider reads it
+  // once, lazily. A placeholder is enough: nothing here calls Matterport.
+  process.env.MATTERPORT_SDK_KEY ||= "test-sdk-key";
+
   org = await prisma.organization.create({ data: { name: `CJ ${suffix}`, slug: `cj-${suffix}` } });
   vendor = await prisma.vendor.create({
     data: { organizationId: org.id, name: `Capture Co ${suffix}`, trade: "Capture" },
