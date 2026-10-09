@@ -380,6 +380,11 @@ model User {
   mfaEnabledAt     DateTime?
   mfaLastVerifiedAt DateTime?
 
+  /// When the password last changed. A session that signed in before this is
+  /// refused (see `getSessionContext`), which is what makes a reset actually
+  /// lock out whoever had the old password.
+  passwordChangedAt DateTime?
+
   memberships            Membership[]
   auditLogs              AuditLog[]              @relation("AuditActor")
   events                 Event[]                 @relation("EventActor")
@@ -403,8 +408,31 @@ model User {
   legalHoldsPlaced       LegalHold[]             @relation("LegalHoldPlacedBy")
   deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
   webhookEndpoints       WebhookEndpoint[]       @relation("WebhookCreatedBy")
+  passwordResetTokens    PasswordResetToken[]
 
   @@index([email])
+}
+
+/// A single-use password reset link.
+///
+/// Only a SHA-256 of the token is stored. The token itself exists in exactly
+/// one place — the email — so a database read does not hand anyone a way into
+/// an account. A random 256-bit token needs no salt or slow hash: there is
+/// nothing to brute-force.
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  userId      String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  /// Set when the token is redeemed, or when a newer request or a completed
+  /// reset supersedes it. A token with this set is dead.
+  usedAt      DateTime?
+  requestedIp String?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 /**

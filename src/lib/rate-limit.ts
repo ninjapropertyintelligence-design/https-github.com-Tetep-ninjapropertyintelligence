@@ -38,6 +38,14 @@ export interface RateLimitRule {
 export const AUTH_RULE: RateLimitRule = { limit: 10, windowMs: 15 * 60 * 1000 };
 /** Enrollment/verification by an already-authenticated user. */
 export const MFA_ACTION_RULE: RateLimitRule = { limit: 20, windowMs: 15 * 60 * 1000 };
+/**
+ * Reset requests send email, so they are limited harder than sign-in: five
+ * per account or address per hour is plenty for a person and useless for
+ * someone trying to flood an inbox.
+ */
+export const PASSWORD_RESET_REQUEST_RULE: RateLimitRule = { limit: 5, windowMs: 60 * 60 * 1000 };
+/** Guesses at a reset token, per address. A 256-bit token makes this belt and braces. */
+export const PASSWORD_RESET_SUBMIT_RULE: RateLimitRule = { limit: 10, windowMs: 15 * 60 * 1000 };
 
 export function checkRateLimit(key: string, rule: RateLimitRule, nowMs: number = Date.now()): RateLimitResult {
   const existing = store.get(key);

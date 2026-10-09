@@ -220,3 +220,14 @@ export async function canAccessProperty(ctx: SessionContext, propertyId: string)
   });
   return !!property;
 }
+
+
+/**
+ * True when a session was issued before the password last changed, and so
+ * must no longer be honoured. A session with no recorded sign-in time
+ * predates this check; once a password has changed it is treated as old.
+ */
+export function sessionPredatesPasswordChange(authTime: number | undefined, passwordChangedAt: Date | null): boolean {
+  if (!passwordChangedAt) return false;
+  return typeof authTime !== "number" || authTime < passwordChangedAt.getTime();
+}

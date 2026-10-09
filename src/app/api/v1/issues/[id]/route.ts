@@ -6,6 +6,7 @@ import { updateIssueSchema } from "@/lib/validation";
 import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recalculatePropertyHealth } from "@/lib/scoring";
+import { notifyUser } from "@/lib/notifications";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -89,14 +90,12 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
       metadata: { fields: Object.keys(input) },
     }),
     input.assigneeId && input.assigneeId !== existing.assigneeId
-      ? prisma.notification.create({
-          data: {
-            organizationId: ctx.organizationId,
-            userId: input.assigneeId,
-            type: "ISSUE_ASSIGNED",
-            title: `Assigned: ${updated.title}`,
-            link: `/issues/${updated.id}`,
-          },
+      ? notifyUser({
+          organizationId: ctx.organizationId,
+          userId: input.assigneeId,
+          type: "ISSUE_ASSIGNED",
+          title: `Assigned: ${updated.title}`,
+          link: `/issues/${updated.id}`,
         })
       : Promise.resolve(),
   ]);
