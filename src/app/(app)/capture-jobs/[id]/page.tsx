@@ -8,6 +8,7 @@ import { CaptureSiteActions } from "@/components/capture/CaptureSiteActions";
 import { CaptureUploadPanel } from "@/components/capture/CaptureUploadPanel";
 import { AIPhotoReviewPanel, type SitePhoto } from "@/components/capture/AIPhotoReviewPanel";
 import { getSitePhotoFindings } from "@/lib/ai/photo-analysis";
+import { parseStoredBox } from "@/lib/ai/bounding-box";
 import { prisma } from "@/lib/prisma";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
@@ -79,6 +80,11 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                 }
               : null,
             issueId: f.issueId,
+            // Parsed here, server side: the column is JSON, and the client
+            // should only ever receive a box that is safe to draw.
+            boundingBox: parseStoredBox(f.boundingBox),
+            imageWidth: f.imageWidth,
+            imageHeight: f.imageHeight,
           })),
         }));
         return [site.id, photos] as const;

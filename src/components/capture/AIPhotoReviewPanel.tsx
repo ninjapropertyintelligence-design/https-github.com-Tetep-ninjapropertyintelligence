@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { formatCents } from "@/lib/format";
+import type { NormalizedBox } from "@/lib/ai/bounding-box";
+import { FindingImageOverlay, type OverlayBox } from "@/components/ai/FindingImageOverlay";
 
 interface Defect {
   label: string;
@@ -28,6 +30,10 @@ export interface PhotoFinding {
   /** The rule Confirm will apply, if the defect class has one. */
   rule: { conditionHit: number; repairCostCents: number; defaultSeverity: string; source: string } | null;
   issueId: string | null;
+  /** Normalized 0-1, top-left origin; null when the detector gave no box. */
+  boundingBox: NormalizedBox | null;
+  imageWidth: number | null;
+  imageHeight: number | null;
 }
 
 export interface SitePhoto {
@@ -94,6 +100,24 @@ function PhotoRow({
   const pending = photo.findings.find((f) => f.status === "SUGGESTED") ?? null;
   const reviewed = photo.findings.filter((f) => f.status !== "SUGGESTED");
 
+  // Every finding on this photo that has a box, rejected ones excepted: a
+  // rejected box is the AI being wrong, and drawing it would mislead.
+  const boxes: OverlayBox[] = photo.findings
+    .filter((f) => f.boundingBox && f.status !== "REJECTED")
+    .map((f) => ({
+      id: f.id,
+      box: f.boundingBox!,
+      label: `${f.defectClass ? f.defectClass.replace(/_/g, " ") : f.label}${
+        f.confidence !== null && f.status === "SUGGESTED" ? ` ${Math.round(f.confidence * 100)}%` : ""
+      }`,
+      severity: f.suggestedSeverity,
+      state: f.status === "SUGGESTED" ? "pending" : "confirmed",
+    }));
+  const hasBoxes = boxes.length > 0;
+  // The pixel size the boxes were measured on, from whichever finding has it.
+  const dims = photo.findings.find((f) => f.imageWidth && f.imageHeight) ?? null;
+  const [expanded, setExpanded] = useState(false);
+
   const [assetId, setAssetId] = useState(photo.assetId ?? "");
   // With a rule, the rule sets the score and the field is an optional
   // override, so it starts empty. Without one, the AI's suggestion is what
@@ -140,14 +164,28 @@ function PhotoRow({
   const canConfirm = (score.trim() === "" ? ruleApplies : scoreTyped) && costValid;
 
   return (
-    <li className="flex flex-col gap-3 rounded-lg border border-border p-3 sm:flex-row">
-      {/* eslint-disable-next-line @next/next/no-img-element -- tenant-scoped bytes from our own route, not a static asset */}
-      <img
-        src={`/api/v1/evidence/${photo.id}/content`}
-        alt={photo.label}
-        className="h-28 w-full shrink-0 rounded-md border border-border object-cover sm:w-40"
-        loading="lazy"
-      />
+    <li className={`flex flex-col gap-3 rounded-lg border border-border p-3 ${expanded ? "" : "sm:flex-row"}`}>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        title={expanded ? "Shrink photo" : "Enlarge photo"}
+        aria-label={expanded ? "Shrink photo" : "Enlarge photo"}
+        aria-expanded={expanded}
+        className={`group relative shrink-0 cursor-zoom-in text-left ${
+          expanded ? "w-full cursor-zoom-out" : hasBoxes ? "w-full sm:w-72" : "w-full sm:w-40"
+        }`}
+      >
+        <FindingImageOverlay
+          src={`/api/v1/evidence/${photo.id}/content`}
+          alt={photo.label}
+          imageWidth={dims?.imageWidth ?? null}
+          imageHeight={dims?.imageHeight ?? null}
+          boxes={boxes}
+        />
+        <span className="absolute bottom-1.5 right-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100">
+          {expanded ? "Shrink" : "Enlarge"}
+        </span>
+      </button>
 
       <div className="min-w-0 flex-1 space-y-2 text-sm">
         <p className="truncate text-xs text-muted">{photo.label}</p>
@@ -173,6 +211,7 @@ function PhotoRow({
                 {pending.suggestedScore !== null ? "/100" : ""}
               </span>
               {pending.confidence !== null ? ` · ${Math.round(pending.confidence * 100)}% confident` : ""}
+              {pending.boundingBox ? " · outlined on the photo" : ""}
             </p>
             {pending.description ? <p className="text-foreground">{pending.description}</p> : null}
             {pending.defects.length > 0 ? (

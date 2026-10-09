@@ -50,6 +50,14 @@ body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
-* {
-  border-color: var(--border);
+/*
+ * The default border colour, in the base layer. Unlayered, this rule beat
+ * every utility — Tailwind v4 puts utilities in a cascade layer, and
+ * unlayered CSS outranks all layers — so `border-red-200`, `border-green-500`
+ * and every other border colour in the app silently rendered as this grey.
+ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 }
