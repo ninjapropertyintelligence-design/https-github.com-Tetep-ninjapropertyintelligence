@@ -34,6 +34,7 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   items.push({ label: "Issues", href: "/issues", section: "Manage", icon: "issue" });
   if (can(ctx, "canPerformAssessments")) {
     items.push({ label: "Assessments", href: "/assessments", section: "Manage", icon: "assessment" });
+    items.push({ label: "AI findings", href: "/ai-findings", section: "Manage", icon: "ai" });
   }
   if (can(ctx, "canManageProperties")) {
     items.push({ label: "Import", href: "/imports", section: "Manage", icon: "import" });
@@ -60,6 +61,9 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   items.push({ label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" });
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });
+  }
+  if (can(ctx, "canManageAssessmentTemplates")) {
+    items.push({ label: "Defect rules", href: "/settings/defect-rules", section: "Administration", icon: "assessment" });
   }
   if (can(ctx, "canViewAuditLogs")) {
     items.push({ label: "Retention", href: "/settings/retention", section: "Administration", icon: "retention" });
