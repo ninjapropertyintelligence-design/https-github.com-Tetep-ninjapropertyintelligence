@@ -71,3 +71,25 @@ export function notificationEmail(params: {
     html: layout(lines, params.url ? { label: "Open in " + PRODUCT_NAME, url: params.url } : undefined),
   };
 }
+
+export function invitationEmail(params: {
+  to: string;
+  inviterName: string;
+  organizationName: string;
+  roleLabel: string;
+  acceptUrl: string;
+  expiresInDays: number;
+}): EmailMessage {
+  const lines = [
+    "Hi,",
+    `${params.inviterName} has invited you to join ${params.organizationName} on ${PRODUCT_NAME} as ${params.roleLabel}.`,
+    `Use the link below to accept. It expires in ${params.expiresInDays} days.`,
+    "If you were not expecting this, you can ignore this email.",
+  ];
+  return {
+    to: params.to,
+    subject: `${params.inviterName} invited you to ${params.organizationName}`,
+    text: [lines[0], "", lines[1], "", lines[2], "", params.acceptUrl, "", lines[3]].join("\n"),
+    html: layout(lines, { label: "Accept invitation", url: params.acceptUrl }),
+  };
+}

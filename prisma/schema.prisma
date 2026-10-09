@@ -409,6 +409,7 @@ model User {
   deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
   webhookEndpoints       WebhookEndpoint[]       @relation("WebhookCreatedBy")
   passwordResetTokens    PasswordResetToken[]
+  sentInvitations        Invitation[]            @relation("InvitationInvitedBy")
 
   @@index([email])
 }
@@ -572,6 +573,7 @@ model Organization {
   storageTieringPolicy StorageTieringPolicy?
   storageObjects       StorageObject[]
   captureJobs          CaptureJob[]
+  invitations          Invitation[]
 
   @@index([slug])
 }
@@ -940,6 +942,7 @@ model Vendor {
   issues      Issue[]
   memberships Membership[]
   captureJobs CaptureJob[]
+  invitations Invitation[]
 
   @@index([organizationId])
 }
@@ -2187,4 +2190,39 @@ model CaptureShot {
   /// and the order ambiguous.
   @@unique([siteId, sequence])
   @@index([siteId])
+}
+
+/// An invitation to join an organization, sent by email.
+///
+/// Carries everything the membership will be — role, vendor company, access
+/// scopes — so accepting it creates exactly what the admin chose and nothing
+/// the invitee could alter. As with password resets, only a SHA-256 of the
+/// token is stored; the link in the email is the only copy.
+model Invitation {
+  id             String    @id @default(cuid())
+  organizationId String
+  /// Lower-cased. One pending invitation per address per organization.
+  email          String
+  name           String?
+  role           Role
+  /// Required when role = VENDOR: the company the invitee works for.
+  vendorId       String?
+  /// The access grants the membership will get, as
+  /// [{ scopeType, portfolioId | regionId | propertyId }]. Re-checked against
+  /// the organization on acceptance, so a portfolio deleted in the meantime
+  /// is dropped rather than resurrected.
+  grants         Json      @default("[]")
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  invitedById    String?
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor       Vendor?      @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  invitedBy    User?        @relation("InvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([email])
 }
