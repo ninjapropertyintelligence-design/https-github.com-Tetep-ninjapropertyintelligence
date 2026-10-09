@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatCents } from "@/lib/format";
 import type { NormalizedBox } from "@/lib/ai/bounding-box";
 import { FindingImageOverlay, type OverlayBox } from "@/components/ai/FindingImageOverlay";
@@ -40,6 +40,8 @@ export interface SitePhoto {
   id: string;
   assetId: string | null;
   label: string;
+  /** Automatic analysis queued on upload, if there was one. */
+  analysis: { status: string; error: string | null } | null;
   findings: PhotoFinding[];
 }
 
@@ -57,6 +59,15 @@ const SEVERITY_STYLE: Record<string, string> = {
  * the score field is pre-filled but editable, so confirming is a judgement
  * rather than a click-through. Nothing changes the asset until Confirm.
  */
+const POLL_EVERY_MS = 4000;
+const POLL_FOR_MS = 3 * 60 * 1000;
+
+/** Queued on upload and not finished yet, with nothing to review so far. */
+function isAnalysing(photo: SitePhoto): boolean {
+  const status = photo.analysis?.status;
+  return (status === "QUEUED" || status === "RUNNING") && !photo.findings.some((f) => f.status === "SUGGESTED");
+}
+
 export function AIPhotoReviewPanel({
   photos,
   assets,
@@ -69,6 +80,21 @@ export function AIPhotoReviewPanel({
   /** Vendors see only issues assigned to their company, so a link would 404. */
   canOpenIssues: boolean;
 }) {
+  const router = useRouter();
+  // While the AI is working on a just-uploaded photo, refresh every few
+  // seconds so its suggestion appears without the vendor reloading. Bounded:
+  // a job stuck in the queue must not poll the server forever.
+  const analysing = photos.some((p) => isAnalysing(p));
+  useEffect(() => {
+    if (!analysing) return;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (Date.now() - started > POLL_FOR_MS) clearInterval(timer);
+      else router.refresh();
+    }, POLL_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [analysing, router]);
+
   if (photos.length === 0) return null;
   return (
     <div className="mt-4">
@@ -328,8 +354,22 @@ function PhotoRow({
               </button>
             </div>
           </div>
+        ) : isAnalysing(photo) ? (
+          <p className="flex items-center gap-2 text-sm text-foreground" role="status">
+            <span
+              aria-hidden
+              className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-brand border-t-transparent"
+            />
+            The AI is analysing this photo. Its suggestion will appear here for you to confirm or reject.
+          </p>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
+            {(photo.analysis?.status === "FAILED" || photo.analysis?.status === "SKIPPED") && reviewed.length === 0 ? (
+              <p className="w-full text-xs text-amber-700">
+                Automatic analysis did not finish{photo.analysis.error ? `: ${photo.analysis.error}` : ""}. You can try
+                again below, or rate the asset by hand.
+              </p>
+            ) : null}
             <select
               value={assetId}
               onChange={(e) => setAssetId(e.target.value)}

@@ -45,7 +45,7 @@ import {
  */
 export const MAX_ANALYZE_BYTES = 5 * 1024 * 1024;
 
-const SUPPORTED_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+export const SUPPORTED_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
 const SEVERITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 
@@ -176,14 +176,46 @@ function assertMayRate(ctx: SessionContext): void {
   }
 }
 
+/** Analysis on request: the "Analyse with AI" button. Checks who is asking, then runs it. */
 export async function analyzeEvidencePhoto(
   ctx: SessionContext,
   evidenceId: string,
   options: { assetId?: string | null } = {},
 ) {
   assertMayRate(ctx);
-  const evidence = await prisma.evidence.findFirst({
+  const visible = await prisma.evidence.findFirst({
     where: { id: evidenceId, ...evidenceScopeWhere(ctx), ...vendorOwnsOnly(ctx) },
+    select: { id: true },
+  });
+  if (!visible) throw new ApiError(404, "Evidence not found");
+  return runPhotoAnalysis({
+    organizationId: ctx.organizationId,
+    evidenceId: visible.id,
+    assetId: options.assetId ?? null,
+    requestedById: ctx.userId,
+  });
+}
+
+/**
+ * The analysis itself, with no session. Who may analyse what is decided
+ * BEFORE this is called — by `analyzeEvidencePhoto` for the button, and at
+ * upload time for the automatic queue — so this only re-checks what must
+ * hold whoever asked: the photo and asset belong to this organization and
+ * the asset is on the photo's property.
+ *
+ * Errors are ApiErrors whose status says whether trying again could help:
+ * 502 (the provider failed or answered badly) may succeed next time;
+ * 4xx and 503 (not configured) will not.
+ */
+export async function runPhotoAnalysis(params: {
+  organizationId: string;
+  evidenceId: string;
+  assetId: string | null;
+  requestedById: string;
+}) {
+  const { organizationId } = params;
+  const evidence = await prisma.evidence.findFirst({
+    where: { id: params.evidenceId, organizationId },
     select: {
       id: true,
       propertyId: true,
@@ -209,13 +241,13 @@ export async function analyzeEvidencePhoto(
     throw new ApiError(400, "This photo is larger than 5 MB; upload a smaller copy to analyse it");
   }
 
-  const assetId = options.assetId ?? evidence.assetId;
+  const assetId = params.assetId ?? evidence.assetId;
   if (!assetId) throw new ApiError(400, "Choose which asset this photo shows");
 
   const asset = await prisma.asset.findFirst({
     // The asset has to be on the photo's own property: a photo of one
     // building must not be able to rate an asset in another.
-    where: { id: assetId, organizationId: ctx.organizationId, propertyId: evidence.propertyId ?? "__none__", status: "ACTIVE" },
+    where: { id: assetId, organizationId, propertyId: evidence.propertyId ?? "__none__", status: "ACTIVE" },
     select: {
       id: true,
       name: true,
@@ -241,7 +273,7 @@ export async function analyzeEvidencePhoto(
     throw new ApiError(400, "This photo is larger than 5 MB; upload a smaller copy to analyse it");
   }
 
-  const defectClasses = (await listEffectiveDefectRules(ctx.organizationId)).map((r) => r.defectClass);
+  const defectClasses = (await listEffectiveDefectRules(organizationId)).map((r) => r.defectClass);
 
   const provider = getAIProvider();
   const startedAt = Date.now();
@@ -259,7 +291,7 @@ export async function analyzeEvidencePhoto(
     }
     logEvent("ai.provider_call", {
       ok: false,
-      organizationId: ctx.organizationId,
+      organizationId: organizationId,
       provider: provider.name,
       durationMs: Date.now() - startedAt,
       errorMessage: err instanceof Error ? err.message : "unknown",
@@ -269,7 +301,7 @@ export async function analyzeEvidencePhoto(
 
   // Metered before validation: the call was made and billed whatever it returned.
   await recordUsage({
-    organizationId: ctx.organizationId,
+    organizationId: organizationId,
     propertyId: evidence.propertyId,
     metricType: UsageMetricType.AI_REQUEST,
     quantity: 1,
@@ -278,7 +310,7 @@ export async function analyzeEvidencePhoto(
   });
   if (result.usage) {
     await recordUsage({
-      organizationId: ctx.organizationId,
+      organizationId: organizationId,
       propertyId: evidence.propertyId,
       metricType: UsageMetricType.AI_INPUT_TOKENS,
       quantity: result.usage.inputTokens,
@@ -286,7 +318,7 @@ export async function analyzeEvidencePhoto(
       metadata: { provider: provider.name },
     });
     await recordUsage({
-      organizationId: ctx.organizationId,
+      organizationId: organizationId,
       propertyId: evidence.propertyId,
       metricType: UsageMetricType.AI_OUTPUT_TOKENS,
       quantity: result.usage.outputTokens,
@@ -296,7 +328,7 @@ export async function analyzeEvidencePhoto(
   }
   logEvent("ai.provider_call", {
     ok: true,
-    organizationId: ctx.organizationId,
+    organizationId: organizationId,
     provider: provider.name,
     durationMs: Date.now() - startedAt,
   });
@@ -315,7 +347,7 @@ export async function analyzeEvidencePhoto(
 
   return prisma.aIFinding.create({
     data: {
-      organizationId: ctx.organizationId,
+      organizationId: organizationId,
       evidenceId: evidence.id,
       assetId: asset.id,
       label: out.imageUsable ? out.label : `Photo not usable: ${out.label}`,
@@ -329,7 +361,7 @@ export async function analyzeEvidencePhoto(
       defects: out.imageUsable ? out.defects : [],
       recommendedAction: out.recommendedAction,
       provider: provider.name,
-      requestedById: ctx.userId,
+      requestedById: params.requestedById,
     },
   });
 }
@@ -598,6 +630,7 @@ export async function getSitePhotoFindings(ctx: SessionContext, siteId: string) 
         assetId: true,
         createdAt: true,
         captureShot: { select: { label: true } },
+        analysisJob: { select: { status: true, lastError: true } },
         aiFindings: {
           orderBy: { createdAt: "desc" },
           include: { asset: { select: { id: true, name: true, conditionScore: true } } },

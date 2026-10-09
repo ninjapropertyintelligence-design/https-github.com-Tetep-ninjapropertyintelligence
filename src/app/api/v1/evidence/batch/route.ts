@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { startAutoAnalysis } from "@/lib/ai/start-auto-analysis";
 import { withApiHandler } from "@/lib/api-utils";
 import { createEvidenceBatch } from "@/lib/evidence-service";
 import { z } from "zod";
@@ -44,5 +45,6 @@ export const POST = withApiHandler(async (ctx, req) => {
     ctx,
     items.map((i) => ({ ...i, metadata: i.metadata as Record<string, unknown> })),
   );
+  await startAutoAnalysis(ctx, result.ids);
   return NextResponse.json(result, { status: 201 });
 });

@@ -61,3 +61,22 @@ test("a role without financial visibility cannot reach the rulebook", async ({ p
   await page.goto("/settings/defect-rules");
   await expect(page).toHaveURL(/dashboard/);
 });
+
+test("an Owner switches automatic photo analysis off and back on", async ({ page }) => {
+  await loginAs(page, "owner@demo.com");
+  await page.goto("/settings/defect-rules");
+  const toggle = page.getByRole("switch", { name: "Analyse vendor photos automatically" });
+  const before = await toggle.getAttribute("aria-checked");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", before === "true" ? "false" : "true");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-checked", before ?? "true");
+});
+
+test("a Viewer cannot change automatic photo analysis", async ({ page }) => {
+  await loginAs(page, "viewer@demo.com");
+  await page.goto("/settings/defect-rules");
+  await expect(page.getByRole("switch", { name: "Analyse vendor photos automatically" })).toBeDisabled();
+  const res = await page.request.put("/api/v1/photo-analysis/settings", { data: { autoAnalyzePhotos: false } });
+  expect(res.status()).toBe(403);
+});

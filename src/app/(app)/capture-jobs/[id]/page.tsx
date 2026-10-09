@@ -57,6 +57,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
           id: row.id,
           assetId: row.assetId,
           label: row.captureShot?.label ?? `Photo uploaded ${formatDate(row.createdAt)}`,
+          analysis: row.analysisJob ? { status: row.analysisJob.status, error: row.analysisJob.lastError } : null,
           findings: row.aiFindings.map((f) => ({
             id: f.id,
             status: f.status,
@@ -91,9 +92,14 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       }),
     ),
   );
+  const isVendor = ctx.role === Role.VENDOR;
+  // A vendor needs a site's assets to say which one their photos show, so
+  // they are loaded for every site the vendor can upload to; anyone else
+  // only needs them where there are photos to rate.
   const assetsByProperty = new Map<string, Array<{ id: string; name: string }>>();
   for (const site of job.sites) {
-    if ((photosBySite.get(site.id) ?? []).length === 0 || assetsByProperty.has(site.propertyId)) continue;
+    const needed = isVendor || (photosBySite.get(site.id) ?? []).length > 0;
+    if (!needed || assetsByProperty.has(site.propertyId)) continue;
     assetsByProperty.set(
       site.propertyId,
       await prisma.asset.findMany({
@@ -104,7 +110,10 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     );
   }
 
-  const isVendor = ctx.role === Role.VENDOR;
+  const autoAnalyze = isVendor
+    ? ((await prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }))
+        ?.autoAnalyzePhotos ?? false)
+    : false;
   const canReview = can(ctx, "canReviewCaptures");
 
   return (
@@ -225,6 +234,8 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                         captured: shot._count.evidence > 0,
                       }))}
                       disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
+                      assets={assetsByProperty.get(site.propertyId) ?? []}
+                      autoAnalyze={autoAnalyze}
                     />
                   ) : null}
 

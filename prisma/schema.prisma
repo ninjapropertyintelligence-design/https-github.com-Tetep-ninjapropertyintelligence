@@ -538,6 +538,11 @@ model Organization {
   // impersonation session against this organization at all, and any session
   // already running stops being honoured on the next request.
   allowSupportAccess Boolean          @default(true)
+  // When true, a vendor's capture-job photo uploaded against a named asset is
+  // sent for AI analysis on its own, so a suggestion is waiting for review.
+  // Each analysis is a paid AI call, so an organization can switch it off and
+  // keep the manual "Analyse with AI" button only.
+  autoAnalyzePhotos  Boolean          @default(true)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
@@ -795,6 +800,7 @@ model Asset {
   exteriorMarkers      ExteriorMarker[]
   documentChunks       DocumentChunk[]
   aiFindings           AIFinding[]
+  analysisJobs         PhotoAnalysisJob[]
 
   @@unique([organizationId, customerAssetId])
   @@index([organizationId])
@@ -1093,6 +1099,7 @@ model Evidence {
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
+  analysisJob          PhotoAnalysisJob?
   exteriorMarkers      ExteriorMarker[]
 
   @@index([organizationId])
@@ -1461,6 +1468,43 @@ model AIFinding {
   @@index([evidenceId])
   @@index([assetId])
   @@index([status])
+}
+
+enum PhotoAnalysisJobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  /// Will not be retried: AI not configured, or the photo cannot be analysed.
+  SKIPPED
+}
+
+/// A photo waiting for automatic AI analysis, queued when a vendor uploads it
+/// against an asset. The queue is a table rather than an in-memory promise so
+/// that work survives a function timing out or an instance restarting: the
+/// upload request starts processing straight away, and a sweep picks up
+/// whatever that did not finish.
+model PhotoAnalysisJob {
+  id             String                 @id @default(cuid())
+  organizationId String
+  /// One job per photo: uploading never queues the same photo twice.
+  evidenceId     String                 @unique
+  assetId        String
+  requestedById  String
+  status         PhotoAnalysisJobStatus @default(QUEUED)
+  attempts       Int                    @default(0)
+  lastError      String?
+  /// The finding the analysis produced, once DONE.
+  findingId      String?
+  startedAt      DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  asset    Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
+  @@index([organizationId])
 }
 
 /// An organization's override of one platform default defect rule (see

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { startAutoAnalysis } from "@/lib/ai/start-auto-analysis";
 import { prisma } from "@/lib/prisma";
 import { withApiHandler } from "@/lib/api-utils";
 import { evidenceScopeWhere } from "@/lib/tenant-scope";
@@ -67,5 +68,6 @@ export const POST = withApiHandler(async (ctx, req) => {
     ...input,
     metadata: input.metadata as Record<string, unknown>,
   });
+  await startAutoAnalysis(ctx, [evidence.id]);
   return NextResponse.json(evidence, { status: 201 });
 });

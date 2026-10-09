@@ -26,6 +26,7 @@ export type ObservabilityEvent =
   | "geocoding.request"
   | "ai.tool_call"
   | "ai.provider_call"
+  | "ai.photo_analysis_job"
   | "document.index_job"
   | "report.generate"
   | "email.send";

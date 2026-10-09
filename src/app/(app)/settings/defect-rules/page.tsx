@@ -4,6 +4,8 @@ import { DEFAULT_DEFECT_RULES, listEffectiveDefectRules } from "@/lib/defect-rul
 import { SCORING_CATEGORIES } from "@/lib/scoring-categories";
 import { DefectRulesManager } from "@/components/settings/DefectRulesManager";
 import { recordProductEvent } from "@/lib/analytics";
+import { prisma } from "@/lib/prisma";
+import { AutoAnalysisToggle } from "@/components/settings/AutoAnalysisToggle";
 
 /**
  * The defect rulebook: what a CONFIRMED AI photo finding does to the
@@ -17,7 +19,10 @@ export default async function DefectRulesPage() {
   if (!ctx.organizationId || !can(ctx, "canViewFinancialExposure")) redirect("/dashboard");
 
   await recordProductEvent(ctx, "defect_rules.viewed");
-  const rules = await listEffectiveDefectRules(ctx.organizationId);
+  const [rules, org] = await Promise.all([
+    listEffectiveDefectRules(ctx.organizationId),
+    prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }),
+  ]);
   const unpriced = rules.filter((r) => r.repairCostCents === null).length;
 
   return (
@@ -33,6 +38,8 @@ export default async function DefectRulesPage() {
         estimate, which flows into capital exposure. The AI never decides these numbers. Changes apply to findings
         confirmed from now on; issues already created keep the numbers they were created with.
       </p>
+
+      <AutoAnalysisToggle enabled={org?.autoAnalyzePhotos ?? false} canEdit={can(ctx, "canManageProperties")} />
 
       {unpriced > 0 ? (
         <p className="max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
