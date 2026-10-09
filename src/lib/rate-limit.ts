@@ -48,6 +48,8 @@ export const PASSWORD_RESET_REQUEST_RULE: RateLimitRule = { limit: 5, windowMs: 
 export const PASSWORD_RESET_SUBMIT_RULE: RateLimitRule = { limit: 10, windowMs: 15 * 60 * 1000 };
 /** Guesses at an invitation token, per address. */
 export const INVITATION_ACCEPT_RULE: RateLimitRule = { limit: 10, windowMs: 15 * 60 * 1000 };
+/** AI photo analysis: each call is a paid vision request, so a stuck retry loop must not run up a bill. */
+export const PHOTO_ANALYSIS_RULE: RateLimitRule = { limit: 60, windowMs: 15 * 60 * 1000 };
 
 export function checkRateLimit(key: string, rule: RateLimitRule, nowMs: number = Date.now()): RateLimitResult {
   const existing = store.get(key);

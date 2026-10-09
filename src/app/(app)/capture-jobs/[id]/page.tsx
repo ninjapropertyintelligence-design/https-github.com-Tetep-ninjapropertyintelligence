@@ -6,6 +6,9 @@ import { ApiError } from "@/lib/api-error";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { CaptureSiteActions } from "@/components/capture/CaptureSiteActions";
 import { CaptureUploadPanel } from "@/components/capture/CaptureUploadPanel";
+import { AIPhotoReviewPanel, type SitePhoto } from "@/components/capture/AIPhotoReviewPanel";
+import { getSitePhotoFindings } from "@/lib/ai/photo-analysis";
+import { prisma } from "@/lib/prisma";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
 
@@ -41,6 +44,48 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       job.sites.map(async (site) => [site.id, (await outstandingDeliverables(site.id)).missing] as const),
     ),
   );
+
+  // Photos with their AI findings, and the assets each site's photos can be
+  // rated against. Loaded per site so a vendor's view stays scoped to their
+  // own uploads (see `getSitePhotoFindings`).
+  const photosBySite = new Map<string, SitePhoto[]>(
+    await Promise.all(
+      job.sites.map(async (site) => {
+        const rows = await getSitePhotoFindings(ctx, site.id);
+        const photos: SitePhoto[] = rows.map((row) => ({
+          id: row.id,
+          assetId: row.assetId,
+          label: row.captureShot?.label ?? `Photo uploaded ${formatDate(row.createdAt)}`,
+          findings: row.aiFindings.map((f) => ({
+            id: f.id,
+            status: f.status,
+            label: f.label,
+            description: f.description,
+            suggestedScore: f.suggestedScore,
+            suggestedSeverity: f.suggestedSeverity,
+            confidence: f.confidence,
+            defects: Array.isArray(f.defects) ? (f.defects as unknown as SitePhoto["findings"][number]["defects"]) : [],
+            recommendedAction: f.recommendedAction,
+            confirmedScore: f.confirmedScore,
+            assetName: f.asset?.name ?? null,
+          })),
+        }));
+        return [site.id, photos] as const;
+      }),
+    ),
+  );
+  const assetsByProperty = new Map<string, Array<{ id: string; name: string }>>();
+  for (const site of job.sites) {
+    if ((photosBySite.get(site.id) ?? []).length === 0 || assetsByProperty.has(site.propertyId)) continue;
+    assetsByProperty.set(
+      site.propertyId,
+      await prisma.asset.findMany({
+        where: { propertyId: site.propertyId, organizationId: ctx.organizationId, status: "ACTIVE" },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
+    );
+  }
 
   const isVendor = ctx.role === Role.VENDOR;
   const canReview = can(ctx, "canReviewCaptures");
@@ -165,6 +210,12 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                       disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
                     />
                   ) : null}
+
+                  <AIPhotoReviewPanel
+                    photos={photosBySite.get(site.id) ?? []}
+                    assets={assetsByProperty.get(site.propertyId) ?? []}
+                    disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
+                  />
 
                   <CaptureSiteActions
                     jobId={job.id}

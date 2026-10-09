@@ -793,6 +793,7 @@ model Asset {
   matterportReferences MatterportReference[]
   exteriorMarkers      ExteriorMarker[]
   documentChunks       DocumentChunk[]
+  aiFindings           AIFinding[]
 
   @@unique([organizationId, customerAssetId])
   @@index([organizationId])
@@ -1398,22 +1399,48 @@ model ExteriorMarker {
 }
 
 // ---------------------------------------------------------------------------
-// AI vision / findings (architecture only — no automatic defect detection yet)
+// AI vision / findings — photo analysis that SUGGESTS a condition rating.
+// A suggestion never moves a score on its own: a person confirms it first,
+// and only then does it go through `recordAssetConditionChange`.
 // ---------------------------------------------------------------------------
 
 model AIFinding {
-  id           String          @id @default(cuid())
-  evidenceId   String
-  label        String
-  description  String?
-  status       AIFindingStatus @default(SUGGESTED)
-  reviewedById String?
-  reviewedAt   DateTime?
-  createdAt    DateTime        @default(now())
+  id             String          @id @default(cuid())
+  organizationId String
+  evidenceId     String
+  /// The asset the photo was analysed against. Null when the asset has since
+  /// been deleted; the finding stays as a record of what was suggested.
+  assetId        String?
+  /// One-line headline of what the model saw, e.g. "Ponding water near drain".
+  label          String
+  description    String?
+  status         AIFindingStatus @default(SUGGESTED)
+
+  /// 0-100, the same scale as Asset.conditionScore.
+  suggestedScore     Int?
+  suggestedSeverity  IssueSeverity?
+  /// 0-1, the model's own confidence. Shown to the reviewer, never used to
+  /// auto-apply anything.
+  confidence         Float?
+  /// [{ label, severity, location }] — individual defects seen in the photo.
+  defects            Json            @default("[]")
+  recommendedAction  String?
+  provider           String?
+  requestedById      String?
+
+  /// What the reviewer actually applied — may differ from the suggestion.
+  confirmedScore Int?
+  reviewNote     String?
+  reviewedById   String?
+  reviewedAt     DateTime?
+  createdAt      DateTime        @default(now())
 
   evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  asset    Asset?   @relation(fields: [assetId], references: [id], onDelete: SetNull)
 
+  @@index([organizationId, status])
   @@index([evidenceId])
+  @@index([assetId])
   @@index([status])
 }
 
