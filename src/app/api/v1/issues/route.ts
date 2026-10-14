@@ -6,7 +6,7 @@ import { issueScopeWhere, propertyScopeWhere } from "@/lib/session-context";
 import { createIssueSchema } from "@/lib/validation";
 import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
-import { notifyPropertyStakeholders } from "@/lib/notifications";
+import { notifyPropertyStakeholders, notifyUser } from "@/lib/notifications";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 
 // GET /api/v1/issues?propertyId=&severity=&status=&assigneeId=&vendorId=&search=&page=&pageSize=
@@ -114,15 +114,13 @@ export const POST = withApiHandler(async (ctx, req) => {
         })
       : Promise.resolve(),
     issue.assigneeId
-      ? prisma.notification.create({
-          data: {
-            organizationId: ctx.organizationId,
-            userId: issue.assigneeId,
-            type: "ISSUE_ASSIGNED",
-            title: `Assigned: ${issue.title}`,
-            body: property.name,
-            link: `/issues/${issue.id}`,
-          },
+      ? notifyUser({
+          organizationId: ctx.organizationId,
+          userId: issue.assigneeId,
+          type: "ISSUE_ASSIGNED",
+          title: `Assigned: ${issue.title}`,
+          body: property.name,
+          link: `/issues/${issue.id}`,
         })
       : Promise.resolve(),
   ]);

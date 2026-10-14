@@ -316,21 +316,51 @@ export async function getLatestHealthSnapshot(propertyId: string) {
 }
 
 /** Efficient "latest snapshot per property" fetch for portfolio-scale dashboards. */
-export async function getLatestHealthSnapshots(propertyIds: string[]) {
+/**
+ * Postgres sends bind parameters with a 16-bit count, so a statement cannot
+ * carry more than 65,535 of them. This query spends one per property id, so
+ * an organization with ~65k properties made it fail outright — measured:
+ * 65,000 ids succeeded, 70,000 returned `08P01 bind message has 4464
+ * parameter formats but 0 parameters`, a protocol error that says nothing
+ * about the real cause.
+ *
+ * Chunking well below the ceiling keeps the failure impossible rather than
+ * merely unlikely. 20,000 also keeps each statement's text a sane size.
+ */
+const SNAPSHOT_ID_CHUNK = 20_000;
+
+export interface LatestHealthSnapshot {
+  id: string;
+  propertyId: string;
+  healthScore: number;
+  riskScore: number;
+  dataConfidenceScore: number;
+  capitalExposure12mo: number;
+  capitalExposure24mo: number;
+  capitalExposure36mo: number;
+  computedAt: Date;
+}
+
+export async function getLatestHealthSnapshots(
+  propertyIds: string[],
+): Promise<LatestHealthSnapshot[]> {
   if (propertyIds.length === 0) return [];
-  return prisma.$queryRaw<
-    Array<{
-      id: string;
-      propertyId: string;
-      healthScore: number;
-      riskScore: number;
-      dataConfidenceScore: number;
-      capitalExposure12mo: number;
-      capitalExposure24mo: number;
-      capitalExposure36mo: number;
-      computedAt: Date;
-    }>
-  >(Prisma.sql`
+
+  if (propertyIds.length > SNAPSHOT_ID_CHUNK) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < propertyIds.length; i += SNAPSHOT_ID_CHUNK) {
+      chunks.push(propertyIds.slice(i, i + SNAPSHOT_ID_CHUNK));
+    }
+    // Sequential, not Promise.all: the point of chunking is to bound the work
+    // in flight, and firing every chunk at once would put the load back.
+    const results: LatestHealthSnapshot[] = [];
+    for (const chunk of chunks) {
+      results.push(...(await getLatestHealthSnapshots(chunk)));
+    }
+    return results;
+  }
+
+  return prisma.$queryRaw<LatestHealthSnapshot[]>(Prisma.sql`
     SELECT DISTINCT ON ("propertyId") "id", "propertyId", "healthScore", "riskScore",
       "dataConfidenceScore", "capitalExposure12mo", "capitalExposure24mo", "capitalExposure36mo", "computedAt"
     FROM "PropertyHealthSnapshot"

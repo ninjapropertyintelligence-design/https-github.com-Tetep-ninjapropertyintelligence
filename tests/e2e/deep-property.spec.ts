@@ -54,8 +54,12 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   const interior = page.locator("main");
   await expect(
     interior.getByText(
-      // no credentials            | SDK key only                  | linked space
-      /Matterport is not configured|pasting its space ID|Space ID:/,
+      // Four honest states, one per credential shape this can run under:
+      //   no credentials          -> "Matterport is not configured"
+      //   SDK key only            -> the paste-a-space-ID form
+      //   API credentials, no link -> a Connect / Retry button
+      //   a linked space          -> "Space ID:"
+      /Matterport is not configured|pasting its space ID|Connect Matterport|Retry Connection|Space ID:/,
     ).first(),
   ).toBeVisible();
 
@@ -63,10 +67,54 @@ test("Deep property workflow: Store #1052 end-to-end across every tab", async ({
   // fabricated "Connected" without real API credentials behind it.
   await expect(interior.getByText("Status:")).toBeVisible();
 
-  // Exterior: real seeded drone dataset (two on-disk JPEGs) must render.
+  // Exterior: the seeded drone dataset must render — six generated JPEGs
+  // and an orthomosaic, which is the canvas markers are dropped onto. The
+  // orthomosaic matters: without one the tab falls back to the first raw
+  // photo, which is how the capture card ended up looking empty.
   await page.goto(`/properties/${propertyId}?tab=exterior`);
   await expect(page.getByText("Capture Summary")).toBeVisible();
-  await expect(page.getByText(/Photos \(2\)/)).toBeVisible();
+  await expect(page.getByText(/Photos \(6\)/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Add Marker" })).toBeVisible();
+
+  // 360: the two seeded panoramas must be listed and selectable. The
+  // assertion is on the list, not on the canvas — WebGL availability varies
+  // by machine, and a headless runner without it would turn a real feature
+  // regression into a test that only ever proved the GPU was present.
+  await page.goto(`/properties/${propertyId}?tab=360`);
+  await expect(page.getByRole("button", { name: /north-lot-360\.jpg/ })).toBeVisible();
+  const southPanorama = page.getByRole("button", { name: /south-entrance-360\.jpg/ });
+  await expect(southPanorama).toBeVisible();
+  await southPanorama.click();
+  await expect(southPanorama).toHaveAttribute("aria-current", "true");
+
+  // The bytes themselves, over HTTP, as this logged-in user. This is the
+  // check that would have caught the first 360 deploy: the panoramas were in
+  // the database and in the bucket, and the viewer still could not draw them,
+  // because a presigned storage URL is cross-origin and carries no CORS
+  // headers, which WebGL will not texture from. Asserting on the row or on
+  // the storage object proves neither the content type nor the origin.
+  const evidenceList = await page.request.get(`/api/v1/evidence?propertyId=${propertyId}`);
+  expect(evidenceList.ok()).toBe(true);
+  const items = (await evidenceList.json()).data.items as Array<{
+    id: string;
+    type: string;
+    storageKey: string;
+  }>;
+  // One of the SEEDED panoramas specifically, not merely the newest. The
+  // capture-job spec uploads tiny fixture panoramas to this same property,
+  // and the list comes back newest first — picking the first IMAGE_360 meant
+  // this asserted against a 160-byte test file and failed on its size.
+  const panoramaRow = items.find((i) => i.type === "IMAGE_360" && /360\.jpg$/.test(i.storageKey));
+  expect(panoramaRow, "the seed must have registered a 360 panorama").toBeTruthy();
+
+  const bytes = await page.request.get(`/api/v1/evidence/${panoramaRow!.id}/content`);
+  expect(bytes.status()).toBe(200);
+  expect(bytes.headers()["content-type"]).toBe("image/jpeg");
+  const body = await bytes.body();
+  // A real JPEG, not an error page rendered with a 200.
+  expect(body.length).toBeGreaterThan(10000);
+  expect(body[0]).toBe(0xff);
+  expect(body[1]).toBe(0xd8);
 
   // Assets -> open the canonical Asset detail page for RTU-04.
   await page.goto(`/properties/${propertyId}?tab=assets`);

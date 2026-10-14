@@ -77,7 +77,7 @@ export class ManualUploadPhotogrammetryProvider implements PhotogrammetryProvide
       outputType: o.outputType,
       storageKey: o.storageKey,
       mimeType: o.mimeType ?? undefined,
-      sizeBytes: o.sizeBytes ?? undefined,
+      sizeBytes: o.sizeBytes === null ? undefined : Number(o.sizeBytes),
       checksum: o.checksum ?? undefined,
       metadata: (o.metadata as Record<string, unknown>) ?? undefined,
     }));

@@ -29,16 +29,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const navItems = getNavItems(ctx);
   const roleLabel = ctx.isPlatformAdmin && !ctx.organizationId ? "Platform Admin" : ROLE_LABELS[ctx.role];
 
+  // The shell bar spans the full width above the sidebar, rather than sitting
+  // beside it: the product identity and global search belong to the whole
+  // application, not to the content column.
   return (
-    <div className="flex min-h-screen">
-      <Sidebar items={navItems} orgName={ctx.organizationName || "Platform Console"} roleLabel={roleLabel} />
-      <div className="flex min-h-screen flex-1 flex-col">
-        {/* Spec §45 "Show visible indicator" — above the header, on every page. */}
-        {ctx.impersonation ? (
-          <ImpersonationBanner info={ctx.impersonation} organizationName={ctx.organizationName} />
-        ) : null}
-        <Header userName={ctx.userName} showAI={can(ctx, "canViewAI")} />
-        <main className="flex-1 overflow-auto p-6">{children}</main>
+    <div className="flex h-screen flex-col">
+      {/* Spec §45 "Show visible indicator" — above everything, on every page. */}
+      {ctx.impersonation ? (
+        <ImpersonationBanner info={ctx.impersonation} organizationName={ctx.organizationName} />
+      ) : null}
+      <Header userName={ctx.userName} showAI={can(ctx, "canViewAI")} />
+      <div className="flex min-h-0 flex-1">
+        <Sidebar items={navItems} orgName={ctx.organizationName || "Platform Console"} roleLabel={roleLabel} />
+        <main className="min-w-0 flex-1 overflow-auto p-6">{children}</main>
       </div>
     </div>
   );

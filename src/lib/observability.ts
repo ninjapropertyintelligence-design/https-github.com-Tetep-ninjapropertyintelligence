@@ -11,13 +11,30 @@
 export type ObservabilityEvent =
   | "matterport.api_call"
   | "matterport.sync"
+  | "dronedeploy.api_call"
+  /** One auto-import pass over one organization's DroneDeploy account. */
+  | "dronedeploy.import_run"
+  /** One export copied from DroneDeploy into our storage. */
+  | "dronedeploy.export_copy"
   | "drone.upload"
+  /**
+   * Emitted when a client supplied a checksum but the object store could not
+   * report one back, so the integrity check could not be performed. Distinct
+   * from a failed check: nothing is known to be wrong, but nothing was proven
+   * right either, and that distinction needs to survive into the logs.
+   */
+  | "drone.upload.checksum_unverified"
+  | "storage.register_failed"
+  | "usage.record_failed"
+  | "analytics.record_failed"
   | "drone.processing_job"
   | "geocoding.request"
   | "ai.tool_call"
   | "ai.provider_call"
+  | "ai.photo_analysis_job"
   | "document.index_job"
-  | "report.generate";
+  | "report.generate"
+  | "email.send";
 
 export interface ObservabilityFields {
   organizationId?: string;

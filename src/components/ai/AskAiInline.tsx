@@ -85,7 +85,10 @@ export function AskAiInline({
         {error ? <p className="mt-3 text-sm text-[var(--band-critical)]">{error}</p> : null}
 
         {answer ? (
-          <div className="mt-4 rounded-lg border border-border bg-background p-4">
+          // Identified so a test can assert on the answer itself. Matching the
+          // answer text page-wide also matches the suggestion chips and the
+          // recent-query log, which carry the same words by construction.
+          <div data-testid="ai-answer" className="mt-4 rounded-lg border border-border bg-background p-4">
             <p className="whitespace-pre-wrap text-sm text-foreground">{answer}</p>
             {!configured ? (
               <p className="mt-2 text-xs text-muted">AI is not configured in this environment — see note above.</p>

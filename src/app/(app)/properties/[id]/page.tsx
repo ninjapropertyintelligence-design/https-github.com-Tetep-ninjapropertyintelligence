@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getSessionContext, propertyScopeWhere, can, SessionContext } from "@/lib/session-context";
+import { getSessionContext, propertyScopeWhere, captureReviewWhere, can, SessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { getLatestHealthSnapshot, getDataConfidenceWarnings, CategoryBreakdownEntry } from "@/lib/scoring";
 import { ScoringCategory } from "@/lib/scoring-categories";
 import { getPropertyInteriorStatus } from "@/lib/matterport-service";
 import { getPropertyExteriorData } from "@/lib/drone-service";
+import { getSiteMapData } from "@/lib/site-map";
+import { getProperty360Data } from "@/lib/image-360-service";
+import { openRouteForProperty } from "@/lib/capture-job-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SeverityBadge, StatusBadge } from "@/components/ui/Badge";
@@ -17,6 +20,10 @@ import { DocumentSearchBox } from "@/components/property/DocumentSearchBox";
 import { AskAiInline } from "@/components/ai/AskAiInline";
 import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
 import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
+import { SiteMap } from "@/components/property/SiteMap";
+import { Photo360Gallery } from "@/components/media/Photo360Gallery";
+import { NearbyProperties } from "@/components/property/NearbyProperties";
+import { recordProductEvent } from "@/lib/analytics";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -28,16 +35,22 @@ export default async function PropertyDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; capture?: string }>;
 }) {
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
 
   const { id } = await params;
-  const { tab = "overview" } = await searchParams;
+  const { tab = "overview", capture } = await searchParams;
 
   const property = await loadProperty(id, ctx);
   if (!property) notFound();
+
+  // Product analytics (§105). After the scope check: a blocked request is
+  // not a property view, and recording one would inflate adoption with
+  // access failures. Awaited but never able to throw, and flagged
+  // automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "property.viewed");
 
   const health = await getLatestHealthSnapshot(property.id);
 
@@ -66,12 +79,24 @@ export default async function PropertyDetailPage({
 
       <PropertyTabs propertyId={property.id} active={tab} />
 
-      <TabContent propertyId={property.id} tab={tab} propertyName={property.name} ctx={ctx} />
+      <TabContent propertyId={property.id} tab={tab} captureId={capture} propertyName={property.name} ctx={ctx} />
     </div>
   );
 }
 
-async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: string; tab: string; propertyName: string; ctx: SessionContext }) {
+async function TabContent({
+  propertyId,
+  tab,
+  captureId,
+  propertyName,
+  ctx,
+}: {
+  propertyId: string;
+  tab: string;
+  captureId?: string;
+  propertyName: string;
+  ctx: SessionContext;
+}) {
   const canViewAI = ctx.permissions.includes("canViewAI");
   switch (tab) {
     case "assets":
@@ -84,12 +109,16 @@ async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: 
       return <DocumentsTab propertyId={propertyId} />;
     case "history":
       return <HistoryTab propertyId={propertyId} />;
+    case "site-map":
+      return <SiteMapTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "interior":
       return <InteriorTab propertyId={propertyId} ctx={ctx} />;
+    case "360":
+      return <Photo360Tab propertyId={propertyId} ctx={ctx} />;
     case "exterior":
-      return <ExteriorTab propertyId={propertyId} ctx={ctx} />;
+      return <ExteriorTab propertyId={propertyId} captureId={captureId} ctx={ctx} />;
     case "digital-twin":
-      return <DigitalTwinTab propertyId={propertyId} />;
+      return <DigitalTwinTab propertyId={propertyId} ctx={ctx} />;
     case "projects":
       return (
         <EmptyState
@@ -106,11 +135,11 @@ async function TabContent({ propertyId, tab, propertyName, ctx }: { propertyId: 
         <EmptyState title="AI is not enabled for your role" />
       );
     default:
-      return <OverviewTabLoader propertyId={propertyId} />;
+      return <OverviewTabLoader propertyId={propertyId} ctx={ctx} />;
   }
 }
 
-async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
+async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const [property, health, openIssueCount, criticalIssueCount, assetCount, criticalAssetCount, lastAssessment, matterportLink, droneCapture, warnings] =
     await Promise.all([
       prisma.property.findUniqueOrThrow({ where: { id: propertyId } }),
@@ -120,28 +149,43 @@ async function OverviewTabLoader({ propertyId }: { propertyId: string }) {
       prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
       prisma.asset.count({ where: { propertyId, status: "ACTIVE", criticalityScore: { gte: 4 } } }),
       prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
-      prisma.matterportPropertyLink.findFirst({ where: { propertyId }, orderBy: { linkedAt: "desc" } }),
-      prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" }, orderBy: { capturedAt: "desc" } }),
+      prisma.matterportPropertyLink.findFirst({
+        where: { propertyId, ...captureReviewWhere(ctx) },
+        orderBy: { linkedAt: "desc" },
+      }),
+      prisma.droneCapture.findFirst({
+        where: { propertyId, status: "READY", ...captureReviewWhere(ctx) },
+        orderBy: { capturedAt: "desc" },
+      }),
       getDataConfidenceWarnings(propertyId),
     ]);
 
   return (
-    <OverviewTab
-      property={property}
-      health={
-        health
-          ? {
-              ...health,
-              categoryBreakdown: health.categoryBreakdown as unknown as Record<ScoringCategory, CategoryBreakdownEntry>,
-            }
-          : null
-      }
-      counts={{ openIssues: openIssueCount, criticalIssues: criticalIssueCount, assetCount, criticalAssetCount }}
-      lastAssessment={lastAssessment?.completedAt ?? null}
-      lastInteriorCapture={matterportLink?.linkedAt ?? null}
-      lastExteriorCapture={droneCapture?.capturedAt ?? null}
-      warnings={warnings}
-    />
+    <div className="space-y-4">
+      <OverviewTab
+        property={property}
+        health={
+          health
+            ? {
+                ...health,
+                categoryBreakdown: health.categoryBreakdown as unknown as Record<ScoringCategory, CategoryBreakdownEntry>,
+              }
+            : null
+        }
+        counts={{ openIssues: openIssueCount, criticalIssues: criticalIssueCount, assetCount, criticalAssetCount }}
+        lastAssessment={lastAssessment?.completedAt ?? null}
+        lastInteriorCapture={matterportLink?.linkedAt ?? null}
+        lastExteriorCapture={droneCapture?.capturedAt ?? null}
+        warnings={warnings}
+      />
+      {/* Spatial (§11): this ordering is computed by PostGIS, not in JS. */}
+      <NearbyProperties
+        ctx={ctx}
+        propertyId={propertyId}
+        latitude={property.latitude}
+        longitude={property.longitude}
+      />
+    </div>
   );
 }
 
@@ -309,6 +353,37 @@ async function HistoryTab({ propertyId }: { propertyId: string }) {
   );
 }
 
+async function SiteMapTab({
+  propertyId,
+  captureId,
+  ctx,
+}: {
+  propertyId: string;
+  captureId?: string;
+  ctx: SessionContext;
+}) {
+  const data = await getSiteMapData(ctx, propertyId, captureId);
+  return (
+    <SiteMap
+      token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
+      property={data.property}
+      captures={data.captures.map((c) => ({
+        id: c.id,
+        capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
+        droneModel: c.droneModel,
+        status: c.status,
+      }))}
+      selectedCaptureId={data.selectedCaptureId}
+      // Serialised here: a Date does not survive the server/client boundary
+      // as a Date, and formatting on the server would pin the output to the
+      // server's locale rather than the viewer's.
+      lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
+      totalMedia={data.totalMedia}
+      layers={data.layers}
+    />
+  );
+}
+
 async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const status = await getPropertyInteriorStatus(ctx, propertyId);
   return (
@@ -321,9 +396,40 @@ async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
   );
 }
 
-async function ExteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const [{ captures, markers }, assets, issues] = await Promise.all([
-    getPropertyExteriorData(ctx, propertyId),
+async function Photo360Tab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const [{ panoramas, enabled, location }, route] = await Promise.all([
+    getProperty360Data(ctx, propertyId),
+    openRouteForProperty(ctx, propertyId),
+  ]);
+  return (
+    <Photo360Gallery
+      propertyId={propertyId}
+      enabled={enabled}
+      location={location}
+      route={route ? { label: route.jobTitle, shots: route.shots } : null}
+      canImport={can(ctx, "canUploadEvidence") && can(ctx, "canPerformCapture")}
+      panoramas={panoramas.map((p) => ({
+        ...p,
+        // Serialised here: a Date does not cross the server/client boundary as
+        // a Date, and formatting it on the server would pin the output to the
+        // server's locale rather than the viewer's.
+        capturedAt: p.capturedAt ? p.capturedAt.toISOString() : null,
+      }))}
+    />
+  );
+}
+
+async function ExteriorTab({
+  propertyId,
+  captureId,
+  ctx,
+}: {
+  propertyId: string;
+  captureId?: string;
+  ctx: SessionContext;
+}) {
+  const [{ captures, markers, selectedCaptureId }, assets, issues] = await Promise.all([
+    getPropertyExteriorData(ctx, propertyId, captureId),
     prisma.asset.findMany({ where: { propertyId, status: "ACTIVE" }, select: { id: true, name: true }, take: 200 }),
     prisma.issue.findMany({
       where: { propertyId, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } },
@@ -335,6 +441,7 @@ async function ExteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
     <ExteriorManager
       propertyId={propertyId}
       captures={captures as unknown as DroneCaptureData[]}
+      selectedCaptureId={selectedCaptureId}
       markers={markers as unknown as MarkerData[]}
       canPerformCapture={can(ctx, "canPerformCapture")}
       canManageAssets={can(ctx, "canManageAssets")}
@@ -344,9 +451,12 @@ async function ExteriorTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
   );
 }
 
-async function DigitalTwinTab({ propertyId }: { propertyId: string }) {
+async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const pointClouds = await prisma.droneOutput.findMany({
-    where: { outputType: { in: ["POINT_CLOUD", "MESH_3D"] }, dataset: { capture: { propertyId } } },
+    where: {
+      outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
+      dataset: { capture: { propertyId, ...captureReviewWhere(ctx) } },
+    },
   });
   return (
     <Card>

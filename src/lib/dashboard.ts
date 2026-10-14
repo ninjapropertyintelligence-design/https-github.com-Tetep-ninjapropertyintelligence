@@ -14,39 +14,63 @@ import { healthBandFor } from "@/lib/scoring-categories";
 export async function getPortfolioDashboard(ctx: SessionContext) {
   const scopedWhere = propertyScopeWhere(ctx);
 
-  const properties = await prisma.property.findMany({
-    where: scopedWhere,
-    select: { id: true },
-  });
-  const propertyIds = properties.map((p) => p.id);
+  /**
+   * The counts below filter through the `property` RELATION rather than an
+   * `IN (...)` list of ids.
+   *
+   * This is not a style preference. Postgres sends bind parameters with a
+   * 16-bit count, so one parameter per property put a hard ceiling on the
+   * whole dashboard: measured against synthetic portfolios, Prisma refused at
+   * 65,000 ids with "The query parameter limit supported by your database is
+   * exceeded" and the raw snapshot query failed at 70,000 with a bare
+   * protocol error. An organization that grew past ~65k properties would have
+   * found its dashboard simply stopped loading.
+   *
+   * A relation filter pushes the same scope into a join, so the statement
+   * carries a handful of parameters no matter how large the portfolio is.
+   * `propertyScopeWhere` remains the single authority on what is visible.
+   */
+  const [
+    propertyIds,
+    totalProperties,
+    totalAssets,
+    criticalAssets,
+    openIssues,
+    criticalIssues,
+    recentEvents,
+  ] = await Promise.all([
+    prisma.property.findMany({ where: scopedWhere, select: { id: true } }).then((rows) => rows.map((r) => r.id)),
+    prisma.property.count({ where: scopedWhere }),
+    prisma.asset.count({ where: { property: scopedWhere, status: "ACTIVE" } }),
+    prisma.asset.count({
+      where: { property: scopedWhere, status: "ACTIVE", criticalityScore: { gte: 4 } },
+    }),
+    prisma.issue.count({
+      where: {
+        property: scopedWhere,
+        status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] },
+      },
+    }),
+    prisma.issue.count({
+      where: {
+        property: scopedWhere,
+        severity: "CRITICAL",
+        status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] },
+      },
+    }),
+    prisma.event.findMany({
+      where: { property: scopedWhere },
+      orderBy: { createdAt: "desc" },
+      take: 15,
+      include: { property: { select: { id: true, name: true } }, actor: { select: { name: true } } },
+    }),
+  ]);
 
-  const [snapshots, totalAssets, criticalAssets, openIssues, criticalIssues, recentEvents] =
-    await Promise.all([
-      getLatestHealthSnapshots(propertyIds),
-      prisma.asset.count({ where: { propertyId: { in: propertyIds }, status: "ACTIVE" } }),
-      prisma.asset.count({
-        where: { propertyId: { in: propertyIds }, status: "ACTIVE", criticalityScore: { gte: 4 } },
-      }),
-      prisma.issue.count({
-        where: {
-          propertyId: { in: propertyIds },
-          status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] },
-        },
-      }),
-      prisma.issue.count({
-        where: {
-          propertyId: { in: propertyIds },
-          severity: "CRITICAL",
-          status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] },
-        },
-      }),
-      prisma.event.findMany({
-        where: { propertyId: { in: propertyIds } },
-        orderBy: { createdAt: "desc" },
-        take: 15,
-        include: { property: { select: { id: true, name: true } }, actor: { select: { name: true } } },
-      }),
-    ]);
+  // Still id-based, because the snapshot query is raw SQL and keeping the
+  // scope in Prisma means it cannot drift from the rule everything else uses.
+  // `getLatestHealthSnapshots` chunks internally so the ceiling above cannot
+  // reappear here.
+  const snapshots = await getLatestHealthSnapshots(propertyIds);
 
   const bandCounts: Record<string, number> = {
     Excellent: 0,
@@ -93,17 +117,17 @@ export async function getPortfolioDashboard(ctx: SessionContext) {
 
   const assessedProperties = await prisma.assessment.groupBy({
     by: ["propertyId"],
-    where: { propertyId: { in: propertyIds }, status: "COMPLETED" },
+    where: { property: scopedWhere, status: "COMPLETED" },
     _max: { completedAt: true },
   });
   const overdueThreshold = new Date(Date.now() - 365 * 86400000);
   const assessmentsOverdue = assessedProperties.filter(
     (a) => !a._max.completedAt || a._max.completedAt < overdueThreshold,
   ).length;
-  const neverAssessed = propertyIds.length - assessedProperties.length;
+  const neverAssessed = totalProperties - assessedProperties.length;
 
   return {
-    totalProperties: propertyIds.length,
+    totalProperties,
     bandCounts,
     portfolioHealthScore: snapshots.length ? Math.round((healthSum / snapshots.length) * 10) / 10 : 0,
     portfolioRiskScore: snapshots.length ? Math.round((riskSum / snapshots.length) * 10) / 10 : 0,

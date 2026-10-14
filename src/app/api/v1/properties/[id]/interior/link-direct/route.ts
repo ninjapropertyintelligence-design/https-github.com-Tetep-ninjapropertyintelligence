@@ -13,20 +13,12 @@ const schema = z.object({
   name: z.string().max(200).optional(),
 });
 
-/** Pulls the space ID out of a Showcase URL, or returns the input unchanged. */
-function normalizeSpaceId(input: string): string {
-  const trimmed = input.trim();
-  const match = trimmed.match(/[?&]m=([A-Za-z0-9]+)/);
-  if (match) return match[1];
-  return trimmed;
-}
-
 // POST /api/v1/properties/[id]/interior/link-direct — link a Matterport space
 // by ID without a Model API call (viewer-only path; see linkSpaceByIdDirect).
 export const POST = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
   requirePermission(ctx, "canPerformCapture");
   const { id } = await params;
   const input = schema.parse(await req.json());
-  const link = await linkSpaceByIdDirect(ctx, id, normalizeSpaceId(input.externalSpaceId), input.name);
+  const link = await linkSpaceByIdDirect(ctx, id, input.externalSpaceId, input.name);
   return NextResponse.json(link, { status: 201 });
 });

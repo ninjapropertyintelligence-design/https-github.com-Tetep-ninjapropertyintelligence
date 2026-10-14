@@ -1,0 +1,382 @@
+import { prisma } from "@/lib/prisma";
+import { ApiError } from "@/lib/api-error";
+import { Prisma, StorageObjectKind, type Evidence, type EvidenceType } from "@/generated/prisma/client";
+import { propertyScopeWhere, reviewSiteIdForUpload, type SessionContext } from "@/lib/tenant-scope";
+import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
+import { emitEvent, EVENT_TYPES } from "@/lib/events";
+import { recordUsage } from "@/lib/cost-metering";
+import { FEATURE_FLAGS, requireFeature } from "@/lib/feature-flags";
+import { hasPermission } from "@/lib/permissions";
+
+/**
+ * Evidence registration.
+ *
+ * This lives in the service layer rather than in the route because two of the
+ * things it does — the entitlement check and the usage meter — must hold on
+ * every path that can create evidence, not only on the one HTTP handler that
+ * happens to exist today. The same reasoning as tenant scope and as the
+ * Matterport/drone gates.
+ */
+
+export interface CreateEvidenceInput {
+  type: EvidenceType;
+  storageKey: string;
+  thumbnailKey?: string | null;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+  propertyId?: string | null;
+  assetId?: string | null;
+  issueId?: string | null;
+  assessmentId?: string | null;
+  captureDate?: Date | null;
+  /** The shot position this file was taken from, when it was taken on a route. */
+  captureShotId?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Evidence types that are a *sellable capture kind* rather than an ordinary
+ * attachment, and the flag each one is sold under.
+ *
+ * A plain PHOTO or DOCUMENT is part of every plan — gating those would stop
+ * an inspector attaching a picture to an issue, which is the product's floor,
+ * not an upsell. A 360 panorama is different: it is the third capture kind
+ * alongside Matterport and drone, priced separately, and it is uploaded
+ * through this same endpoint.
+ */
+/**
+ * Authorization for writing evidence, as opposed to the entitlement below.
+ *
+ * These routes carried NO permission check at all — tenant scope was the only
+ * gate. VIEWER is an org-wide role, so it passes scope for every property in
+ * the organization: the read-only role could write evidence anywhere in the
+ * tenant. Not a cross-tenant leak, but "read-only that writes" is exactly
+ * what a customer's security review finds.
+ *
+ * `canPerformCapture` would have been the wrong fix. A facilities manager
+ * attaching a photo to an issue is the floor of the product and does not hold
+ * it, so requiring it here would trade an authorization hole for a broken
+ * core workflow. Hence a permission of its own, held by every role that can
+ * act on a property and by no read-only role.
+ *
+ * Capture kinds need BOTH: anyone who can act may attach a photo, but a 360
+ * panorama or a drone image is sellable capture work.
+ */
+function assertMayWriteEvidence(ctx: SessionContext, types: Iterable<EvidenceType>): void {
+  if (!hasPermission(ctx.role, "canUploadEvidence")) {
+    throw new ApiError(403, "Missing permission: canUploadEvidence");
+  }
+  for (const type of types) {
+    if (CAPTURE_KIND_FLAG[type] && !hasPermission(ctx.role, "canPerformCapture")) {
+      throw new ApiError(403, "Missing permission: canPerformCapture");
+    }
+  }
+}
+
+const CAPTURE_KIND_FLAG: Partial<Record<EvidenceType, (typeof FEATURE_FLAGS)[keyof typeof FEATURE_FLAGS]>> = {
+  IMAGE_360: FEATURE_FLAGS.IMAGE_360,
+};
+
+/**
+ * Every asset a file names must be on that file's own property.
+ *
+ * The asset id was taken on trust. That let a photo of one building name an
+ * asset in another — harmless while the link was a label, but automatic AI
+ * analysis now rates the named asset from the photo, so a wrong link would
+ * put one building's damage on another building's equipment.
+ */
+async function assertAssetsOnProperties(
+  organizationId: string,
+  items: Array<{ assetId?: string | null; propertyId?: string | null }>,
+): Promise<void> {
+  const named = items.filter((i): i is { assetId: string; propertyId?: string | null } => !!i.assetId);
+  if (named.length === 0) return;
+  const assets = await prisma.asset.findMany({
+    where: { id: { in: [...new Set(named.map((i) => i.assetId))] }, organizationId },
+    select: { id: true, propertyId: true },
+  });
+  const propertyOf = new Map(assets.map((a) => [a.id, a.propertyId]));
+  for (const item of named) {
+    if (!item.propertyId || propertyOf.get(item.assetId) !== item.propertyId) {
+      throw new ApiError(400, "A file names an asset that is not on its property");
+    }
+  }
+}
+
+export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
+  // Permission first: "you may not do this at all" is a truer answer than
+  // "your organization has not bought this" for someone who could never do
+  // it whatever the plan says.
+  assertMayWriteEvidence(ctx, [input.type]);
+
+  // Then the entitlement, still BEFORE the property lookup, so an
+  // organization that has not bought 360 capture is told that rather than
+  // being told its own property is invalid.
+  const flag = CAPTURE_KIND_FLAG[input.type];
+  if (flag) await requireFeature(ctx, flag);
+
+  if (input.propertyId) {
+    const property = await prisma.property.findFirst({
+      where: { AND: [{ id: input.propertyId }, propertyScopeWhere(ctx)] },
+    });
+    if (!property) throw new ApiError(400, "Invalid propertyId, or you don't have access to it");
+  }
+
+  await assertAssetsOnProperties(ctx.organizationId, [input]);
+
+  // A shot id from another site would otherwise mark that site's route
+  // complete with imagery taken somewhere else.
+  if (input.captureShotId) {
+    if (!input.propertyId) throw new ApiError(400, "A shot position needs the site it belongs to");
+    await assertShotBelongsToProperty(input.captureShotId, input.propertyId);
+  }
+
+  // A vendor's upload is held for review against the job site it delivers.
+  const captureJobSiteId = input.propertyId ? await reviewSiteIdForUpload(ctx, input.propertyId) : null;
+
+  const evidence = await prisma.evidence.create({
+    data: {
+      organizationId: ctx.organizationId,
+      propertyId: input.propertyId ?? null,
+      assetId: input.assetId ?? null,
+      issueId: input.issueId ?? null,
+      assessmentId: input.assessmentId ?? null,
+      type: input.type,
+      storageKey: input.storageKey,
+      thumbnailKey: input.thumbnailKey ?? null,
+      mimeType: input.mimeType ?? null,
+      sizeBytes: input.sizeBytes ?? null,
+      captureDate: input.captureDate ?? null,
+      captureShotId: input.captureShotId ?? null,
+      captureJobSiteId,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
+      uploadedById: ctx.userId,
+    },
+  });
+
+  await registerStorageObjectBestEffort({
+    organizationId: ctx.organizationId,
+    storageKey: evidence.storageKey,
+    kind: StorageObjectKind.EVIDENCE,
+    sizeBytes: evidence.sizeBytes === null ? null : Number(evidence.sizeBytes),
+    objectCreatedAt: evidence.createdAt,
+  });
+
+  await learnShotLocations([evidence]);
+
+  // Metered per panorama, not per byte: the bytes are already sampled into
+  // GB-months by the storage meter, and counting them here too would bill the
+  // same object twice under two names. What a 360 plan sells is the right to
+  // capture panoramas.
+  if (evidence.type === "IMAGE_360") {
+    await recordUsage({
+      organizationId: ctx.organizationId,
+      propertyId: evidence.propertyId,
+      metricType: "IMAGE_360_CAPTURE",
+      quantity: 1,
+      source: "evidence.create",
+      metadata: { evidenceId: evidence.id },
+    });
+  }
+
+  if (evidence.propertyId) {
+    await emitEvent({
+      organizationId: ctx.organizationId,
+      propertyId: evidence.propertyId,
+      type: EVENT_TYPES.EVIDENCE_UPLOADED,
+      actorUserId: ctx.userId,
+      payload: { evidenceId: evidence.id, type: evidence.type },
+    });
+  }
+
+  return evidence;
+}
+
+/**
+ * The most files one batch may carry.
+ *
+ * A drone flight is several hundred images, so registering them one HTTP call
+ * at a time is the real blocker on subcontractor upload, not permissions. The
+ * ceiling exists because `createMany` spends one bind parameter per column per
+ * row and Postgres sends those with a 16-bit count — 500 rows of ~15 columns
+ * is ~7,500, comfortably under the 65,535 limit with room for the shape to
+ * grow.
+ */
+export const MAX_EVIDENCE_BATCH = 500;
+
+/**
+ * Checks a shot position belongs to the site the file is being filed under.
+ *
+ * Deliberately a local query rather than an import from the capture-job
+ * service: this is five lines, and importing it would pull that module's
+ * whole graph — the drone service, the scoring engine — into every evidence
+ * upload for no benefit, and make a cycle between the two services.
+ */
+async function assertShotBelongsToProperty(shotId: string, propertyId: string): Promise<void> {
+  const shot = await prisma.captureShot.findFirst({
+    where: { id: shotId, site: { propertyId } },
+    select: { id: true },
+  });
+  if (!shot) throw new ApiError(400, "That shot position does not belong to this site");
+}
+
+/**
+ * Gives an unpinned shot position the location of the first geotagged photo
+ * taken at it.
+ *
+ * This is how a route acquires pins without anyone placing them: the first
+ * visit is matched by walking order or by hand, and from then on every
+ * photo carrying GPS can be matched by location — on this job and, because
+ * new jobs inherit pins by position name, on every later one. Conditional on
+ * the shot still having no pin, so it never moves one a person placed.
+ */
+async function learnShotLocations(
+  items: Array<{ captureShotId?: string | null; latitude?: number | null; longitude?: number | null }>,
+): Promise<void> {
+  const firstByShot = new Map<string, { latitude: number; longitude: number }>();
+  for (const item of items) {
+    if (!item.captureShotId || item.latitude == null || item.longitude == null) continue;
+    if (!firstByShot.has(item.captureShotId)) {
+      firstByShot.set(item.captureShotId, { latitude: item.latitude, longitude: item.longitude });
+    }
+  }
+  for (const [shotId, point] of firstByShot) {
+    await prisma.captureShot.updateMany({
+      where: { id: shotId, latitude: null, longitude: null },
+      data: point,
+    });
+  }
+}
+
+/**
+ * Registers many evidence files in one call.
+ *
+ * Not a loop over `createEvidence`: the entitlement check and the property
+ * lookup happen once for the whole batch rather than once per file, which for
+ * 500 drone images is the difference between two queries and a thousand.
+ *
+ * The batch is all-or-nothing on validation — one bad property id rejects the
+ * call rather than registering 400 files and failing on the 401st, which
+ * would leave the caller unable to tell what landed.
+ */
+export async function createEvidenceBatch(
+  ctx: SessionContext,
+  items: CreateEvidenceInput[],
+): Promise<{ created: number; ids: string[] }> {
+  if (items.length === 0) throw new ApiError(400, "No files to register");
+  if (items.length > MAX_EVIDENCE_BATCH) {
+    throw new ApiError(400, `A batch may carry at most ${MAX_EVIDENCE_BATCH} files; this one has ${items.length}`);
+  }
+
+  const types = new Set(items.map((i) => i.type));
+  assertMayWriteEvidence(ctx, types);
+
+  // Gate once, on the distinct capture kinds present.
+  for (const type of types) {
+    const flag = CAPTURE_KIND_FLAG[type];
+    if (flag) await requireFeature(ctx, flag);
+  }
+
+  // Scope once, on the distinct properties present.
+  const propertyIds = [...new Set(items.map((i) => i.propertyId).filter((id): id is string => !!id))];
+  if (propertyIds.length > 0) {
+    const allowed = await prisma.property.findMany({
+      where: { AND: [{ id: { in: propertyIds } }, propertyScopeWhere(ctx)] },
+      select: { id: true },
+    });
+    if (allowed.length !== propertyIds.length) {
+      throw new ApiError(400, "One or more files name a property that does not exist, or that you can't access");
+    }
+  }
+
+  await assertAssetsOnProperties(ctx.organizationId, items);
+
+  for (const item of items) {
+    if (!item.captureShotId) continue;
+    if (!item.propertyId) throw new ApiError(400, "A shot position needs the site it belongs to");
+    await assertShotBelongsToProperty(item.captureShotId, item.propertyId);
+  }
+
+  // Resolved once per property, not per file: a 400-file batch is one or two
+  // sites, not 400 lookups.
+  const reviewSites = new Map<string, string | null>();
+  for (const propertyId of propertyIds) {
+    reviewSites.set(propertyId, await reviewSiteIdForUpload(ctx, propertyId));
+  }
+
+  const createdAt = new Date();
+  await prisma.evidence.createMany({
+    data: items.map((input) => ({
+      organizationId: ctx.organizationId,
+      propertyId: input.propertyId ?? null,
+      assetId: input.assetId ?? null,
+      issueId: input.issueId ?? null,
+      assessmentId: input.assessmentId ?? null,
+      type: input.type,
+      storageKey: input.storageKey,
+      thumbnailKey: input.thumbnailKey ?? null,
+      mimeType: input.mimeType ?? null,
+      sizeBytes: input.sizeBytes ?? null,
+      captureDate: input.captureDate ?? null,
+      captureShotId: input.captureShotId ?? null,
+      captureJobSiteId: input.propertyId ? (reviewSites.get(input.propertyId) ?? null) : null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
+      uploadedById: ctx.userId,
+      createdAt,
+    })),
+    // Re-uploading a manifest must not duplicate rows. The storage key carries
+    // a UUID, so a genuine second file is never skipped by this.
+    skipDuplicates: true,
+  });
+
+  const created = await prisma.evidence.findMany({
+    where: { organizationId: ctx.organizationId, storageKey: { in: items.map((i) => i.storageKey) } },
+    select: { id: true, storageKey: true, type: true, sizeBytes: true, propertyId: true, createdAt: true },
+  });
+
+  for (const row of created) {
+    await registerStorageObjectBestEffort({
+      organizationId: ctx.organizationId,
+      storageKey: row.storageKey,
+      kind: StorageObjectKind.EVIDENCE,
+      sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
+      objectCreatedAt: row.createdAt,
+    });
+  }
+
+  await learnShotLocations(items);
+
+  // Metered per panorama here too. A bulk upload of 40 panoramas is 40
+  // billable captures — charging once per batch would let a customer avoid
+  // the meter by uploading in bigger batches.
+  for (const row of created.filter((r) => r.type === "IMAGE_360")) {
+    await recordUsage({
+      organizationId: ctx.organizationId,
+      propertyId: row.propertyId,
+      metricType: "IMAGE_360_CAPTURE",
+      quantity: 1,
+      source: "evidence.batch",
+      metadata: { evidenceId: row.id },
+    });
+  }
+
+  // One event per property, not per file: 500 events would bury the property
+  // history under a single upload.
+  for (const propertyId of propertyIds) {
+    await emitEvent({
+      organizationId: ctx.organizationId,
+      propertyId,
+      type: EVENT_TYPES.EVIDENCE_UPLOADED,
+      actorUserId: ctx.userId,
+      payload: { count: created.filter((r) => r.propertyId === propertyId).length, batch: true },
+    });
+  }
+
+  return { created: created.length, ids: created.map((r) => r.id) };
+}

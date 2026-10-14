@@ -1,22 +1,40 @@
 import { AIProvider } from "@/lib/ai/provider";
 import { AnthropicProvider } from "@/lib/ai/providers/anthropic-provider";
 import { OpenAIProvider } from "@/lib/ai/providers/openai-provider";
+import { GeminiProvider } from "@/lib/ai/providers/gemini-provider";
 import { NullProvider } from "@/lib/ai/providers/null-provider";
 
 /**
  * Provider selection: `AI_PROVIDER` env var today ("anthropic" | "openai" |
- * "none"), defaulting to "anthropic". Organization-level override is the
+ * "gemini" | "none"), defaulting to "anthropic". Organization-level override is the
  * natural next step (a column on Organization read here before the env
  * var) — not built yet since nothing in the product surfaces it, but this
  * is the single choke point where that would plug in without touching any
  * caller.
  */
+let providerOverride: AIProvider | null = null;
+
+/**
+ * Tests only. CI runs with no AI key, so without this the suggest-then-confirm
+ * flow could only ever be tested as far as "not configured". Same pattern as
+ * `__setStorageProviderForTest`.
+ */
+export function __setAIProviderForTest(next: AIProvider | null): void {
+  providerOverride = next;
+}
+
 export function getAIProvider(): AIProvider {
+  if (providerOverride) return providerOverride;
   const selected = (process.env.AI_PROVIDER ?? "anthropic").toLowerCase();
 
   if (selected === "openai") {
     const apiKey = process.env.OPENAI_API_KEY;
     return apiKey ? new OpenAIProvider(apiKey) : new NullProvider("openai");
+  }
+
+  if (selected === "gemini") {
+    const apiKey = process.env.GEMINI_API_KEY;
+    return apiKey ? new GeminiProvider(apiKey) : new NullProvider("gemini");
   }
 
   if (selected === "none") {

@@ -3,6 +3,7 @@ import { can, getSessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { ASSET_FIELDS, PROPERTY_FIELDS } from "@/lib/import/fields";
 import { ImportWizard } from "@/components/import/ImportWizard";
+import { recordProductEvent } from "@/lib/analytics";
 
 /**
  * Bulk import (spec §68/§69), the step between "Organization Created" and
@@ -13,6 +14,9 @@ export default async function ImportsPage() {
   if (!ctx) redirect("/login");
   if (!ctx.organizationId || !can(ctx, "canManageProperties")) redirect("/dashboard");
 
+  // Product analytics (§105). Awaited but never able to throw, and
+  // flagged automatically when the viewer is support impersonating.
+  await recordProductEvent(ctx, "import.wizard_started");
   const [portfolios, jobs] = await Promise.all([
     prisma.portfolio.findMany({
       where: { organizationId: ctx.organizationId },

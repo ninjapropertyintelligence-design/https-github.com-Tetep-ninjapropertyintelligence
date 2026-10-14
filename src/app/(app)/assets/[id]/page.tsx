@@ -7,6 +7,7 @@ import { StatTile } from "@/components/ui/StatTile";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { formatCents, formatDate } from "@/lib/format";
 import { ConditionUpdateForm } from "@/components/asset/ConditionUpdateForm";
+import { recordProductEvent } from "@/lib/analytics";
 
 export default async function AssetDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -18,6 +19,12 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
     include: { property: { select: { id: true, name: true } }, system: true, conditionHistory: { orderBy: { changedAt: "desc" }, take: 20, include: { changedBy: { select: { name: true } } } } },
   });
   if (!asset) notFound();
+
+  // Product analytics (§105). After the scope check: a blocked request is
+  // not an asset view, and recording one would inflate adoption with access
+  // failures. Awaited but never able to throw, and flagged automatically
+  // when the viewer is support impersonating.
+  await recordProductEvent(ctx, "asset.viewed");
 
   const [openIssues, documents] = await Promise.all([
     prisma.issue.findMany({ where: { assetId: asset.id, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } } }),

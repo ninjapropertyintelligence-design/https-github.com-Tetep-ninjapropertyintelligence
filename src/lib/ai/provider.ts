@@ -25,9 +25,43 @@ export interface AIToolCallRecord {
   args: unknown;
 }
 
+/**
+ * Token usage for a whole tool loop, summed across every iteration.
+ *
+ * Summing matters: each iteration resends the entire conversation so far, so
+ * a five-step agentic answer costs far more than its last request reports.
+ * Reading usage off the final response alone would undercount badly, and the
+ * undercount grows with exactly the long tool-using conversations that cost
+ * the most.
+ */
+export interface AITokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface AIToolLoopResult {
   answer: string;
   toolCalls: AIToolCallRecord[];
+  /**
+   * Undefined when the provider reported no usage at all. Undefined is not
+   * zero: zero would be metered as a free call, when in truth the cost is
+   * simply unknown. Callers must preserve that distinction.
+   */
+  usage?: AITokenUsage;
+}
+
+/** An image handed to a vision call, already read into memory by the caller. */
+export interface AIImageInput {
+  /** e.g. "image/jpeg". Providers accept jpeg, png, gif and webp. */
+  mediaType: string;
+  base64: string;
+}
+
+export interface AIStructuredImageResult {
+  /** Parsed JSON, not yet validated — the caller owns validating it against its schema. */
+  output: unknown;
+  /** Undefined when the provider reported none; see `AITokenUsage`. */
+  usage?: AITokenUsage;
 }
 
 export type AIToolExecutor = (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -38,6 +72,19 @@ export interface AIProvider {
   supportsStructuredOutput(): boolean;
   /** Single-shot text generation, no tools. */
   generateResponse(params: { system: string; prompt: string }): Promise<string>;
+  /**
+   * One image plus a prompt in, JSON matching `schema` out. Used by photo
+   * analysis, which needs a machine-readable answer (a score, a severity),
+   * not prose. The schema is plain JSON Schema with every property required
+   * and `additionalProperties: false`, which is the strictest form all three
+   * vendors accept.
+   */
+  analyzeImage(params: {
+    system: string;
+    prompt: string;
+    image: AIImageInput;
+    schema: JSONSchemaObject;
+  }): Promise<AIStructuredImageResult>;
   /** Agentic tool-calling loop: the model calls tools, the caller's `executeTool` runs them, repeat until the model stops. */
   runToolLoop(params: {
     system: string;

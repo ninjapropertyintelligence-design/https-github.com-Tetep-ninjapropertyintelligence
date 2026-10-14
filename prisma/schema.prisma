@@ -122,6 +122,50 @@ enum AssessmentStatus {
   COMPLETED
 }
 
+/// What kind of capture a shot position expects.
+///
+/// Only the kinds a person stands somewhere to take. A drone flight is not a
+/// position and a Matterport walkthrough is not a position, so neither gets a
+/// shot — trying to route them would be pretending the model knows something
+/// it does not.
+enum CaptureShotKind {
+  PHOTO
+  IMAGE_360
+}
+
+/// Lifecycle of a capture job. DRAFT is invisible to the vendor: a job being
+/// assembled must not appear as work they owe. ACCEPTED and CANCELLED end the
+/// vendor's access to the sites, which is why access is derived from this
+/// status rather than from a standing grant someone has to remember to revoke.
+enum CaptureJobStatus {
+  DRAFT
+  ISSUED
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+  CANCELLED
+}
+
+enum CaptureJobSiteStatus {
+  PENDING
+  IN_PROGRESS
+  SUBMITTED
+  ACCEPTED
+  REJECTED
+}
+
+/// What a site owes before it can be submitted. CONDITION_SCORES is the one
+/// that matters most: imagery alone never moves a property's health score,
+/// because the score is computed from asset condition. A capture job that
+/// does not ask for condition scores buys pictures and changes no number.
+enum CaptureDeliverable {
+  DRONE
+  MATTERPORT
+  IMAGE_360
+  PHOTOS
+  CONDITION_SCORES
+}
+
 enum ValidationStatus {
   AUTO_CALCULATED
   HUMAN_OBSERVED
@@ -162,6 +206,9 @@ enum NotificationType {
   ASSESSMENT_OVERDUE
   PROCESSING_COMPLETED
   PROCESSING_FAILED
+  CAPTURE_SUBMITTED
+  CAPTURE_ACCEPTED
+  CAPTURE_REJECTED
   REPORT_READY
   USER_INVITED
 }
@@ -244,13 +291,35 @@ enum SubscriptionComponentType {
   PREMIUM_INTEGRATION
 }
 
+/**
+ * What is being metered (spec §49).
+ *
+ * Storage is split per tier because the tiers are priced roughly an order of
+ * magnitude apart — billing a deep-archived gigabyte at the standard rate
+ * would overstate cost by ~20x, which is the whole point of having tiered it.
+ *
+ * AI is split into requests and tokens because both cost money on different
+ * axes, and a provider that reports no token usage can still be metered
+ * honestly as a request rather than recorded as zero tokens (i.e. as free).
+ */
 enum UsageMetricType {
-  STORAGE_GB
+  STORAGE_STANDARD_GB_MONTH
+  STORAGE_IA_GB_MONTH
+  STORAGE_ARCHIVE_GB_MONTH
+  STORAGE_DEEP_ARCHIVE_GB_MONTH
   BANDWIDTH_GB
   PROCESSING_JOB
   AI_REQUEST
-  AI_TOKENS
+  AI_INPUT_TOKENS
+  AI_OUTPUT_TOKENS
   MATTERPORT_ALLOCATION
+  /// One 360 panorama registered. Counted per image, not per byte: storage is
+  /// already metered separately, and what a customer buys with a 360 plan is
+  /// the right to capture panoramas, not the gigabytes they happen to occupy.
+  IMAGE_360_CAPTURE
+  GEOCODING_REQUEST
+  DOCUMENT_INDEX_JOB
+  REPORT_GENERATION
   DB_USAGE
 }
 
@@ -311,9 +380,15 @@ model User {
   mfaEnabledAt     DateTime?
   mfaLastVerifiedAt DateTime?
 
+  /// When the password last changed. A session that signed in before this is
+  /// refused (see `getSessionContext`), which is what makes a reset actually
+  /// lock out whoever had the old password.
+  passwordChangedAt DateTime?
+
   memberships            Membership[]
   auditLogs              AuditLog[]              @relation("AuditActor")
   events                 Event[]                 @relation("EventActor")
+  productEvents          ProductEvent[]          @relation("ProductEventActor")
   notifications          Notification[]
   savedViews             SavedView[]
   assignedIssues         Issue[]                 @relation("IssueAssignee")
@@ -327,12 +402,38 @@ model User {
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
   mfaRecoveryCodes       MfaRecoveryCode[]
+  createdCaptureJobs     CaptureJob[]            @relation("CaptureJobCreatedBy")
+  reviewedCaptureSites   CaptureJobSite[]        @relation("CaptureJobSiteReviewedBy")
   impersonationSessions  ImpersonationSession[]  @relation("ImpersonationAdmin")
   legalHoldsPlaced       LegalHold[]             @relation("LegalHoldPlacedBy")
   deletionRequests       DeletionRequest[]       @relation("DeletionRequestedBy")
   webhookEndpoints       WebhookEndpoint[]       @relation("WebhookCreatedBy")
+  passwordResetTokens    PasswordResetToken[]
+  sentInvitations        Invitation[]            @relation("InvitationInvitedBy")
 
   @@index([email])
+}
+
+/// A single-use password reset link.
+///
+/// Only a SHA-256 of the token is stored. The token itself exists in exactly
+/// one place — the email — so a database read does not hand anyone a way into
+/// an account. A random 256-bit token needs no salt or slow hash: there is
+/// nothing to brute-force.
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  userId      String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  /// Set when the token is redeemed, or when a newer request or a completed
+  /// reset supersedes it. A token with this set is dead.
+  usedAt      DateTime?
+  requestedIp String?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 /**
@@ -437,6 +538,11 @@ model Organization {
   // impersonation session against this organization at all, and any session
   // already running stops being honoured on the next request.
   allowSupportAccess Boolean          @default(true)
+  // When true, a vendor's capture-job photo uploaded against a named asset is
+  // sent for AI analysis on its own, so a suggestion is waiting for review.
+  // Each analysis is a paid AI call, so an organization can switch it off and
+  // keep the manual "Analyse with AI" button only.
+  autoAnalyzePhotos  Boolean          @default(true)
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
@@ -452,9 +558,14 @@ model Organization {
   notifications        Notification[]
   featureFlagOverrides FeatureFlagOverride[]
   scoringWeights       ScoringCategoryWeight[]
+  defectRules          DefectRule[]
   matterportConnection MatterportConnection?
+  droneDeployConnection DroneDeployConnection?
+  droneDeployImports    DroneDeployImport[]
   subscription         OrganizationSubscription?
   usageRecords         UsageRecord[]
+  costRates            CostRate[]
+  productEvents        ProductEvent[]
   onboardingProgress   OnboardingProgress?
   importJobs           ImportJob[]
   savedViews           SavedView[]
@@ -467,6 +578,10 @@ model Organization {
   webhookEndpoints     WebhookEndpoint[]
   legalHolds           LegalHold[]
   deletionRequests     DeletionRequest[]
+  storageTieringPolicy StorageTieringPolicy?
+  storageObjects       StorageObject[]
+  captureJobs          CaptureJob[]
+  invitations          Invitation[]
 
   @@index([slug])
 }
@@ -547,10 +662,34 @@ model Property {
   healthSnapshots PropertyHealthSnapshot[]
   matterportLinks MatterportPropertyLink[]
   droneCaptures   DroneCapture[]
+  droneDeployImports DroneDeployImport[]
+  captureJobSites CaptureJobSite[]
   accessGrants    AccessGrant[]
   exteriorMarkers ExteriorMarker[]
   documentChunks  DocumentChunk[]
   legalHolds      LegalHold[]
+  usageRecords    UsageRecord[]
+
+  /**
+   * Derived geography for spatial queries (§11). Prisma has no geography
+   * type, so this is Unsupported: it is unreadable and unwritable through the
+   * client, which is correct — it is a GENERATED column that Postgres
+   * maintains from latitude/longitude, and nothing should ever write it.
+   *
+   * It is declared here despite being unusable because omitting it makes
+   * `prisma migrate diff` emit a DROP COLUMN for it and a DROP INDEX for its
+   * GiST index on the very next migration.
+   *
+   * Spatial reads therefore go through raw SQL — see src/lib/spatial.ts.
+   */
+  geo Unsupported("geography(Point, 4326)")?
+
+  /**
+   * Declared so `migrate diff` does not drop it. Without this line every
+   * future migration emits DROP INDEX for it, and a radius search silently
+   * degrades from an index lookup to a full table scan.
+   */
+  @@index([geo], type: Gist)
 
   @@unique([organizationId, customerPropertyId])
   @@index([organizationId])
@@ -663,6 +802,8 @@ model Asset {
   matterportReferences MatterportReference[]
   exteriorMarkers      ExteriorMarker[]
   documentChunks       DocumentChunk[]
+  aiFindings           AIFinding[]
+  analysisJobs         PhotoAnalysisJob[]
 
   @@unique([organizationId, customerAssetId])
   @@index([organizationId])
@@ -777,6 +918,7 @@ model Issue {
   evidence        Evidence[]
   documents       Document[]
   exteriorMarkers ExteriorMarker[]
+  aiFinding       AIFinding?
 
   @@index([organizationId])
   @@index([propertyId])
@@ -811,6 +953,8 @@ model Vendor {
 
   issues      Issue[]
   memberships Membership[]
+  captureJobs CaptureJob[]
+  invitations Invitation[]
 
   @@index([organizationId])
 }
@@ -927,13 +1071,21 @@ model Evidence {
   source       IssueSource  @default(MANUAL)
   captureDate  DateTime?
   uploadedById String
+  /// The shot position this satisfies, when it was taken against a route.
+  captureShotId String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
   latitude     Float?
   longitude    Float?
 
   storageKey   String
   thumbnailKey String?
   mimeType     String?
-  sizeBytes    Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes    BigInt?
   metadata     Json    @default("{}")
 
   createdAt DateTime @default(now())
@@ -945,15 +1097,20 @@ model Evidence {
   assessment       Assessment?       @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
   assessmentAnswer AssessmentAnswer? @relation(fields: [assessmentAnswerId], references: [id], onDelete: SetNull)
   uploadedBy       User              @relation("EvidenceUploadedBy", fields: [uploadedById], references: [id])
+  captureShot      CaptureShot?      @relation(fields: [captureShotId], references: [id], onDelete: SetNull)
+  captureJobSite   CaptureJobSite?   @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
 
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
+  analysisJob          PhotoAnalysisJob?
   exteriorMarkers      ExteriorMarker[]
 
   @@index([organizationId])
   @@index([propertyId])
   @@index([assetId])
   @@index([issueId])
+  @@index([captureShotId])
+  @@index([captureJobSiteId])
   @@index([type])
 }
 
@@ -999,7 +1156,8 @@ model DocumentVersion {
   versionNumber    Int
   originalFilename String
   mimeType         String
-  sizeBytes        Int
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes        BigInt
   storageKey       String
   thumbnailKey     String?
   uploadedById     String
@@ -1084,13 +1242,20 @@ model MatterportPropertyLink {
   linkedAt   DateTime @default(now())
   operator   String?
   notes      String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
 
-  property   Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  space      MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
-  references MatterportReference[]
+  property       Property              @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  space          MatterportSpace       @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  captureJobSite CaptureJobSite?       @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  references     MatterportReference[]
 
   @@unique([propertyId, spaceId])
   @@index([propertyId])
+  @@index([captureJobSiteId])
 }
 
 // Associates a point/tag within a Matterport space to a graph entity.
@@ -1125,13 +1290,21 @@ model DroneCapture {
   droneModel   String?
   status       DroneCaptureStatus @default(CREATED)
   notes        String?
+  /// The capture-job site this was delivered against, when a subcontractor
+  /// delivered it. Until that site is ACCEPTED the record is visible only to
+  /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
+  /// the organization captured itself, which needs no review.
+  captureJobSiteId String?
   createdAt    DateTime           @default(now())
   updatedAt    DateTime           @updatedAt
 
-  property Property       @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  datasets DroneDataset[]
+  property          Property           @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  captureJobSite    CaptureJobSite?    @relation(fields: [captureJobSiteId], references: [id], onDelete: SetNull)
+  datasets          DroneDataset[]
+  droneDeployImport DroneDeployImport?
 
   @@index([propertyId])
+  @@index([captureJobSiteId])
   @@index([status])
 }
 
@@ -1156,7 +1329,8 @@ model DroneImage {
   storageKey   String
   thumbnailKey String?
   mimeType     String?
-  sizeBytes    Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes    BigInt?
   checksum     String? // sha256 of the uploaded bytes, verified against client-reported value
   latitude     Float?
   longitude    Float?
@@ -1192,7 +1366,8 @@ model DroneOutput {
   outputType DroneOutputType
   storageKey String
   mimeType   String?
-  sizeBytes  Int?
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes  BigInt?
   checksum   String?
   metadata   Json            @default("{}")
   createdAt  DateTime        @default(now())
@@ -1202,6 +1377,101 @@ model DroneOutput {
 
   @@index([datasetId])
   @@index([outputType])
+}
+
+// ---------------------------------------------------------------------------
+// DroneDeploy auto-import. DroneDeploy does the photogrammetry; these rows
+// track pulling its finished maps into DroneCapture/DroneOutput, so the rest
+// of the app sees an imported flight exactly as it sees a manual upload.
+// ---------------------------------------------------------------------------
+
+/// One per organization: that organization's own DroneDeploy account.
+model DroneDeployConnection {
+  id             String    @id @default(cuid())
+  organizationId String    @unique
+  /// AES-256-GCM, see lib/integrations/crypto.ts. Never returned to a client.
+  apiKeyEnc      String
+  status         String    @default("CONNECTED") // CONNECTED | ERROR | DISCONNECTED
+  errorMessage   String?
+  /// Maps created before this are never imported. Defaults to the moment of
+  /// connecting, so connecting an account with five years of maps does not
+  /// silently copy five years of maps into storage.
+  importSince    DateTime  @default(now())
+  /// How far a map's location may be from a property for it to be filed
+  /// there without a human choosing.
+  matchRadiusMeters Int    @default(300)
+  lastPolledAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+enum DroneDeployImportStatus {
+  /// No property within the match radius; waiting for a person to choose.
+  UNMATCHED
+  /// Filed to a property; exports requested and not all copied yet.
+  IMPORTING
+  IMPORTED
+  FAILED
+  /// A person decided this map does not belong in the platform.
+  IGNORED
+}
+
+/// One DroneDeploy map (a "MapPlan") and what has happened to it here.
+model DroneDeployImport {
+  id             String                  @id @default(cuid())
+  organizationId String
+  externalPlanId String
+  planName       String?
+  planCreatedAt  DateTime?
+  latitude       Float?
+  longitude      Float?
+  status         DroneDeployImportStatus @default(UNMATCHED)
+  propertyId     String?
+  /// "GPS" when matched automatically, "MANUAL" when a person chose.
+  matchedBy      String?
+  matchDistanceMeters Float?
+  captureId      String?                 @unique
+  errorMessage   String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  capture      DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  exports      DroneDeployExportImport[]
+
+  @@unique([organizationId, externalPlanId])
+  @@index([organizationId, status])
+}
+
+enum DroneDeployExportStatus {
+  /// Asked DroneDeploy to build it; not ready yet.
+  REQUESTED
+  /// Copied into our storage and registered as a DroneOutput.
+  IMPORTED
+  FAILED
+}
+
+/// One layer (orthomosaic, elevation, point cloud) of one imported map.
+model DroneDeployExportImport {
+  id               String                  @id @default(cuid())
+  importId         String
+  layer            String
+  outputType       DroneOutputType
+  externalExportId String?
+  status           DroneDeployExportStatus @default(REQUESTED)
+  droneOutputId    String?
+  attempts         Int                     @default(0)
+  errorMessage     String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  import DroneDeployImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, layer])
+  @@index([status])
 }
 
 // A user-placed pin on an exterior photo or orthomosaic, referencing the
@@ -1237,23 +1507,129 @@ model ExteriorMarker {
 }
 
 // ---------------------------------------------------------------------------
-// AI vision / findings (architecture only — no automatic defect detection yet)
+// AI vision / findings — photo analysis that SUGGESTS a condition rating.
+// A suggestion never moves a score on its own: a person confirms it first,
+// and only then does it go through `recordAssetConditionChange`.
 // ---------------------------------------------------------------------------
 
 model AIFinding {
-  id           String          @id @default(cuid())
-  evidenceId   String
-  label        String
-  description  String?
-  status       AIFindingStatus @default(SUGGESTED)
-  reviewedById String?
-  reviewedAt   DateTime?
-  createdAt    DateTime        @default(now())
+  id             String          @id @default(cuid())
+  organizationId String
+  evidenceId     String
+  /// The asset the photo was analysed against. Null when the asset has since
+  /// been deleted; the finding stays as a record of what was suggested.
+  assetId        String?
+  /// One-line headline of what the model saw, e.g. "Ponding water near drain".
+  label          String
+  description    String?
+  status         AIFindingStatus @default(SUGGESTED)
+
+  /// 0-100, the same scale as Asset.conditionScore.
+  suggestedScore    Int?
+  suggestedSeverity IssueSeverity?
+  /// 0-1, the model's own confidence. Shown to the reviewer, never used to
+  /// auto-apply anything.
+  confidence        Float?
+  /// [{ label, severity, location }] — individual defects seen in the photo.
+  defects           Json           @default("[]")
+  recommendedAction String?
+  provider          String?
+  requestedById     String?
+
+  /// Standard defect class, e.g. "roof_shingle_damage" — the key into
+  /// DefectRule. Null when the model saw nothing it could classify.
+  defectClass String?
+  /// Where the defect is, NORMALIZED to 0-1 of the image's width and height
+  /// ({ x, y, w, h }, x/y the top-left corner) so an overlay lands in the
+  /// right place at any display size. Null when the detector gives no box
+  /// (the vision-LLM path); a box detector such as Roboflow fills it.
+  boundingBox Json?
+  /// Pixel size of the image the box was measured on.
+  imageWidth  Int?
+  imageHeight Int?
+
+  /// What the reviewer actually applied — may differ from the suggestion.
+  confirmedScore Int?
+  reviewNote     String?
+  reviewedById   String?
+  reviewedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  /// The Issue created when this finding was confirmed. Set in the same
+  /// transaction as the confirmation; null for suggested and rejected ones.
+  issueId String? @unique
 
   evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  asset    Asset?   @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  issue    Issue?   @relation(fields: [issueId], references: [id], onDelete: SetNull)
 
+  @@index([organizationId, status])
   @@index([evidenceId])
+  @@index([assetId])
   @@index([status])
+}
+
+enum PhotoAnalysisJobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+  /// Will not be retried: AI not configured, or the photo cannot be analysed.
+  SKIPPED
+}
+
+/// A photo waiting for automatic AI analysis, queued when a vendor uploads it
+/// against an asset. The queue is a table rather than an in-memory promise so
+/// that work survives a function timing out or an instance restarting: the
+/// upload request starts processing straight away, and a sweep picks up
+/// whatever that did not finish.
+model PhotoAnalysisJob {
+  id             String                 @id @default(cuid())
+  organizationId String
+  /// One job per photo: uploading never queues the same photo twice.
+  evidenceId     String                 @unique
+  assetId        String
+  requestedById  String
+  status         PhotoAnalysisJobStatus @default(QUEUED)
+  attempts       Int                    @default(0)
+  lastError      String?
+  /// The finding the analysis produced, once DONE.
+  findingId      String?
+  startedAt      DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  asset    Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
+  @@index([organizationId])
+}
+
+/// An organization's override of one platform default defect rule (see
+/// `DEFAULT_DEFECT_RULES` in src/lib/defect-rules.ts). Same arrangement as
+/// ScoringCategoryWeight: defaults are code, overrides are rows. A rule turns
+/// a CONFIRMED AI finding into fixed, auditable numbers; the model never
+/// decides a penalty or a cost.
+model DefectRule {
+  id              String        @id @default(cuid())
+  organizationId  String
+  defectClass     String
+  /// One of the scoring categories (Roof, HVAC, ...), validated on write.
+  category        String
+  defaultSeverity IssueSeverity
+  /// Points subtracted from the asset's condition score on confirmation.
+  conditionHit    Int
+  /// Repair estimate in cents, like every other cost in this schema. Null
+  /// when the organization has not set one: no estimate, not a free repair.
+  repairCostCents Int?
+  updatedById     String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, defectClass])
 }
 
 model AIQueryLog {
@@ -1637,18 +2013,122 @@ model SubscriptionItem {
   @@index([subscriptionId])
 }
 
+/**
+ * One metered unit of consumption (spec §49).
+ *
+ * Deliberately stores QUANTITY ONLY, never a cost. Cost is derived at report
+ * time from the CostRate that was in effect at `recordedAt`. Denormalising a
+ * cost here would freeze every historical row against whatever rate happened
+ * to be configured on the day it was written, so correcting a mistyped rate
+ * could never be applied to the periods it corrupted. This is internal
+ * cost-to-serve, not a customer invoice that has to stay frozen once issued.
+ *
+ * `propertyId` is null when the consumption genuinely belongs to no single
+ * property (an org-wide AI question, a platform job). That null is meaningful
+ * and must survive into the report as unattributed overhead rather than being
+ * quietly spread across properties — see summarizePropertyCogs.
+ */
 model UsageRecord {
   id             String          @id @default(cuid())
   organizationId String
   propertyId     String?
   metricType     UsageMetricType
   quantity       Float
+  /** Which subsystem recorded this, for tracing a surprising number back. */
+  source         String?
   recordedAt     DateTime        @default(now())
   metadata       Json            @default("{}")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property?    @relation(fields: [propertyId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, metricType, recordedAt])
+  @@index([organizationId, propertyId, recordedAt])
+  @@index([organizationId, recordedAt])
+}
+
+/**
+ * A versioned unit cost (spec §50).
+ *
+ * Rates are versioned by effective window rather than mutated in place: a
+ * report for last month must price last month's usage at last month's rate.
+ * Editing a rate row in place would silently rewrite history.
+ *
+ * `organizationId` null is the platform default; an organization-specific row
+ * overrides it for that organization only.
+ *
+ * Costs are in MICROS (millionths of a currency unit), not cents, because
+ * per-token AI costs are several orders of magnitude below a cent — at cent
+ * precision every token rounds to zero and the entire AI line reads as free.
+ */
+model CostRate {
+  id             String          @id @default(cuid())
+  organizationId String?
+  metricType     UsageMetricType
+  unitCostMicros Int
+  currency       String          @default("USD")
+  effectiveFrom  DateTime
+  /** Null means "still in effect". */
+  effectiveTo    DateTime?
+  note           String?
+  createdAt      DateTime        @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, metricType, effectiveFrom])
+  @@index([metricType, effectiveFrom])
+}
+
+// ---------------------------------------------------------------------------
+// Product analytics (spec §105)
+// ---------------------------------------------------------------------------
+
+/**
+ * A product-usage event: someone used a feature.
+ *
+ * THIS IS A THIRD THING, deliberately separate from the two event streams
+ * that already exist, because conflating them breaks all three:
+ *
+ *  - `Event` records business facts about the portfolio ("issue.created").
+ *    It is domain data a customer can act on, and it is not emitted when
+ *    someone merely *looks* at something — which is most of what product
+ *    analytics is about.
+ *  - `AuditLog` is a compliance record of sensitive actions, with IP
+ *    addresses. It answers "who did this" under scrutiny. Product analytics
+ *    is high-volume and disposable; letting it share that table would drown
+ *    the audit trail and force one retention policy onto two things that
+ *    need different ones.
+ *
+ * `impersonated` is the field that keeps these numbers honest. Platform
+ * support can view a customer's account (§45), and while impersonating,
+ * `ctx.organizationId` is the CUSTOMER's — so without this flag our own
+ * staff's clicks would be indistinguishable from customer engagement and
+ * would inflate every adoption and active-user figure we report.
+ *
+ * `metadata` is for low-cardinality dimensions only (a step number, a tab
+ * name). No free text and no PII: this table must not quietly become a
+ * second copy of the customer's data with a weaker retention policy.
+ */
+model ProductEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  /** Null for system-triggered activity that no user performed. */
+  userId         String?
+  /** A key from the closed vocabulary in src/lib/analytics.ts, not free text. */
+  feature        String
+  /** True when platform support performed this while impersonating (§45). */
+  impersonated   Boolean  @default(false)
+  role           Role?
+  metadata       Json     @default("{}")
+  occurredAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation("ProductEventActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, occurredAt])
+  @@index([organizationId, feature, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([feature, occurredAt])
 }
 
 // ---------------------------------------------------------------------------
@@ -1727,4 +2207,243 @@ model ImportRowResult {
 
   @@index([importJobId])
   @@index([importJobId, action])
+}
+
+// ---------------------------------------------------------------------------
+// Storage lifecycle tiering (spec §51)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an object currently lives. These map onto S3 storage classes, but the
+ * names are deliberately ours: not every backing store has all of them, and
+ * some (Supabase Storage, Cloudflare R2) have none at all. The provider
+ * reports what it supports and the runner records what actually happened —
+ * never what was intended.
+ */
+enum StorageTier {
+  STANDARD
+  INFREQUENT_ACCESS
+  ARCHIVE
+  DEEP_ARCHIVE
+}
+
+/**
+ * Which kind of record owns an object. The tier ledger is deliberately
+ * uniform across object kinds rather than a `tier` column bolted onto each of
+ * DroneImage/DroneOutput/DocumentVersion/Evidence, because cost reporting
+ * (§49/§50) wants one table to sum, not a four-way union.
+ */
+enum StorageObjectKind {
+  DRONE_IMAGE
+  DRONE_OUTPUT
+  DOCUMENT_VERSION
+  EVIDENCE
+}
+
+/** An archived object cannot be read until it is restored, and restore is asynchronous. */
+enum StorageRestoreState {
+  NOT_REQUESTED
+  IN_PROGRESS
+  AVAILABLE
+  FAILED
+}
+
+model StorageTieringPolicy {
+  id             String @id @default(cuid())
+  organizationId String @unique
+
+  // Off by default. Tiering changes read semantics for archived objects, so
+  // it is opt-in rather than something a customer discovers after the fact.
+  enabled Boolean @default(false)
+
+  // Age in days after which an object becomes eligible for each tier. Null
+  // means "never move it there", which is why these are nullable rather than
+  // sentinel zeroes.
+  infrequentAccessAfterDays Int? @default(90)
+  archiveAfterDays          Int? @default(365)
+  deepArchiveAfterDays      Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * The tier ledger: one row per stored object, recording where it actually is.
+ *
+ * `sizeBytes` is copied here rather than joined. That is not duplicated
+ * business data — stored objects are immutable once written, so this is a
+ * point-in-time record of what was transitioned, and it is what makes a
+ * cost-by-tier rollup a single indexed scan instead of a four-table union.
+ */
+model StorageObject {
+  id             String            @id @default(cuid())
+  organizationId String
+  storageKey     String
+  kind           StorageObjectKind
+  /** BigInt: a 32-bit Int caps a single object at 2.147 GB, which drone point clouds and orthomosaics routinely exceed. */
+  sizeBytes      BigInt?
+
+  currentTier        StorageTier @default(STANDARD)
+  // When the underlying object was created, which is what age is measured
+  // from — not when this ledger row was written, since backfilled rows would
+  // otherwise all look brand new and never become eligible.
+  objectCreatedAt    DateTime
+  lastTransitionedAt DateTime?
+
+  restoreState       StorageRestoreState @default(NOT_REQUESTED)
+  restoreRequestedAt DateTime?
+  restoreExpiresAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, storageKey])
+  @@index([organizationId, currentTier])
+  // Drives the "what is due for transition" scan.
+  @@index([organizationId, objectCreatedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Capture jobs
+// ---------------------------------------------------------------------------
+
+/// Work ordered from a capture subcontractor: go to these sites, produce these
+/// deliverables, by this date.
+///
+/// This model is also the subcontractor's AUTHORIZATION. A vendor has no
+/// property access of its own — `propertyScopeWhere` grants access to exactly
+/// the sites on their open jobs, so access begins when the job is issued and
+/// ends when it is accepted or cancelled. Nobody has to remember to revoke a
+/// grant, which is the failure mode of handing contractors standing accounts.
+model CaptureJob {
+  id             String           @id @default(cuid())
+  organizationId String
+  /// Null while a job is being drafted before a vendor is chosen.
+  vendorId       String?
+  title          String
+  instructions   String?
+  status         CaptureJobStatus @default(DRAFT)
+  dueDate        DateTime?
+  issuedAt       DateTime?
+  submittedAt    DateTime?
+  closedAt       DateTime?
+  createdById    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor       Vendor?          @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  createdBy    User?            @relation("CaptureJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  sites        CaptureJobSite[]
+
+  @@index([organizationId, status])
+  @@index([vendorId, status])
+}
+
+/// One property on a capture job, with its own status so a 40-site job can be
+/// delivered and reviewed site by site rather than all-or-nothing.
+model CaptureJobSite {
+  id              String               @id @default(cuid())
+  jobId           String
+  propertyId      String
+  deliverables    CaptureDeliverable[]
+  status          CaptureJobSiteStatus @default(PENDING)
+  notes           String?
+  submittedAt     DateTime?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  rejectionReason String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  job        CaptureJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  property   Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  reviewedBy User?         @relation("CaptureJobSiteReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  shots      CaptureShot[]
+
+  /// What the vendor delivered against this site. Held back from the rest of
+  /// the organization until the site is accepted.
+  evidence        Evidence[]
+  droneCaptures   DroneCapture[]
+  matterportLinks MatterportPropertyLink[]
+
+  /// A site appears on a job once. Two rows would let one submission satisfy
+  /// the other and make the completion count wrong.
+  @@unique([jobId, propertyId])
+  @@index([propertyId])
+}
+
+/// One position on a site that must be captured — "north lot", "main
+/// entrance", "roof north-east".
+///
+/// This is what makes a portfolio comparable over time. A technician who
+/// stands in the same six places at every visit produces a time series; one
+/// who shoots wherever they like produces pictures. A capital plan is built
+/// on the former.
+///
+/// A shot is satisfied by evidence actually attached to it, never by a
+/// checkbox — same rule as the job's deliverables, for the same reason.
+model CaptureShot {
+  id        String          @id @default(cuid())
+  siteId    String
+  label     String
+  kind      CaptureShotKind @default(IMAGE_360)
+  /// Walking order. The list is a route, so the order is part of the data.
+  sequence  Int
+  required  Boolean         @default(true)
+  notes     String?
+  /// Where on the site this position is. Optional: a route can be walked by
+  /// order alone. When set, imported photos are matched to the position by
+  /// their GPS. Placed by staff on a map, carried over from the last job at the
+  /// same site, or learned from the first geotagged photo taken there.
+  latitude  Float?
+  longitude Float?
+  createdAt DateTime        @default(now())
+
+  site     CaptureJobSite @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  evidence Evidence[]
+
+  /// Two shots at the same position in one route would make the count wrong
+  /// and the order ambiguous.
+  @@unique([siteId, sequence])
+  @@index([siteId])
+}
+
+/// An invitation to join an organization, sent by email.
+///
+/// Carries everything the membership will be — role, vendor company, access
+/// scopes — so accepting it creates exactly what the admin chose and nothing
+/// the invitee could alter. As with password resets, only a SHA-256 of the
+/// token is stored; the link in the email is the only copy.
+model Invitation {
+  id             String    @id @default(cuid())
+  organizationId String
+  /// Lower-cased. One pending invitation per address per organization.
+  email          String
+  name           String?
+  role           Role
+  /// Required when role = VENDOR: the company the invitee works for.
+  vendorId       String?
+  /// The access grants the membership will get, as
+  /// [{ scopeType, portfolioId | regionId | propertyId }]. Re-checked against
+  /// the organization on acceptance, so a portfolio deleted in the meantime
+  /// is dropped rather than resurrected.
+  grants         Json      @default("[]")
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  invitedById    String?
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vendor       Vendor?      @relation(fields: [vendorId], references: [id], onDelete: SetNull)
+  invitedBy    User?        @relation("InvitationInvitedBy", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([email])
 }

@@ -1,0 +1,82 @@
+import { NextResponse } from "next/server";
+import { withApiHandler, ApiError, requirePermission } from "@/lib/api-utils";
+import {
+  resolveDroneTargetForSite,
+  reviewCaptureSite,
+  setShotLocations,
+  submitCaptureSite,
+  submitConditionScores,
+} from "@/lib/capture-job-service";
+import { contextForCaptureJob } from "@/lib/tenant-scope";
+import { z } from "zod";
+
+type RouteParams = { params: Promise<{ id: string; siteId: string }> };
+
+const bodySchema = z.discriminatedUnion("action", [
+  // The subcontractor's actual deliverable. Imagery never moves a property's
+  // health score — asset condition does — so this is the call that makes the
+  // number change.
+  z.object({
+    action: z.literal("conditions"),
+    scores: z
+      .array(
+        z.object({
+          assetId: z.string().min(1),
+          score: z.number().min(0).max(100),
+          reason: z.string().max(500).nullish(),
+          evidenceId: z.string().nullish(),
+        }),
+      )
+      .min(1)
+      .max(500),
+  }),
+  // Resolves where drone files for this site belong, creating the capture
+  // and dataset only if there isn't one already in flight.
+  z.object({ action: z.literal("drone-target") }),
+  z.object({ action: z.literal("submit") }),
+  // Pins for the route's positions, so imported photos can be matched by GPS.
+  // A null pair clears a pin.
+  z.object({
+    action: z.literal("shot-locations"),
+    locations: z
+      .array(
+        z.object({
+          shotId: z.string().min(1),
+          latitude: z.number().nullable(),
+          longitude: z.number().nullable(),
+        }),
+      )
+      .min(1)
+      .max(50),
+  }),
+  z.object({
+    action: z.literal("review"),
+    accept: z.boolean(),
+    reason: z.string().max(1000).nullish(),
+  }),
+]);
+
+export const POST = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
+  const { id, siteId } = await params;
+  // The platform team works across customers; this binds it to the job's own.
+  const ctx = await contextForCaptureJob(session, id);
+  const body = bodySchema.parse(await req.json());
+
+  switch (body.action) {
+    case "conditions":
+      return NextResponse.json(await submitConditionScores(ctx, id, siteId, body.scores));
+    case "drone-target":
+      return NextResponse.json(await resolveDroneTargetForSite(ctx, id, siteId));
+    case "submit":
+      return NextResponse.json(await submitCaptureSite(ctx, id, siteId));
+    case "shot-locations":
+      requirePermission(ctx, "canManageCaptureJobs");
+      return NextResponse.json(await setShotLocations(ctx, id, siteId, body.locations));
+    case "review":
+      return NextResponse.json(
+        await reviewCaptureSite(ctx, id, siteId, { accept: body.accept, reason: body.reason }),
+      );
+    default:
+      throw new ApiError(400, "Unsupported action");
+  }
+});

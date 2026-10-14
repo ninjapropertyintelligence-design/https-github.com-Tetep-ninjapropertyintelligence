@@ -1,18 +1,18 @@
 import crypto from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import bcrypt from "bcryptjs";
 import { prisma } from "../src/lib/prisma";
 import { recalculatePropertyHealth } from "../src/lib/scoring";
 import { DEFAULT_CATEGORY_WEIGHTS } from "../src/lib/scoring-categories";
-
-// A tiny (43-byte) but fully valid 1x1 JPEG — real bytes on real disk, not a
-// fake placeholder string, so verifyUpload()/checksum logic behaves exactly
-// as it would for a genuine drone photo upload.
-const MINIMAL_JPEG = Buffer.from(
-  "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=",
-  "base64",
-);
+import { getStorageProvider } from "../src/lib/storage";
+import {
+  renderOrthomosaic,
+  renderRoofDetail,
+  renderFacade,
+  renderDefectEvidence,
+  renderPanorama360,
+  buildingMeshPly,
+  sitePointCloudXyz,
+} from "./seed-media";
 
 /**
  * Seeds:
@@ -29,7 +29,8 @@ async function main() {
   const flags: Array<{ key: string; description: string; defaultEnabled: boolean }> = [
     { key: "matterport", description: "Matterport interior capture integration", defaultEnabled: true },
     { key: "drone_processing", description: "Drone/photogrammetry capture + processing", defaultEnabled: true },
-    { key: "point_cloud", description: "Point cloud / mesh 3D viewer", defaultEnabled: false },
+    { key: "image_360", description: "360° panorama capture (handheld/tripod 360 cameras)", defaultEnabled: true },
+    { key: "point_cloud", description: "Point cloud / mesh 3D viewer", defaultEnabled: true },
     { key: "offline_mobile", description: "Offline-capable field app", defaultEnabled: false },
     { key: "owner_ai", description: "Executive/Owner AI ('Ask My Portfolio')", defaultEnabled: true },
     { key: "portfolio_ai", description: "Portfolio-wide AI across dashboards", defaultEnabled: true },
@@ -469,7 +470,14 @@ async function main() {
   await recalculatePropertyHealth(pilot.id);
 
   console.log("Seeding a real drone exterior capture for the pilot property...");
-  const localStorageRoot = path.join(process.cwd(), ".local-storage");
+  // Seeded capture files go through the configured StorageProvider, not
+  // straight to disk. Writing with fs here worked locally by accident —
+  // the seed and the app shared a filesystem — but when the seed runs from
+  // a build container (STORAGE_PROVIDER=s3) those bytes land on a disk that
+  // is discarded, leaving DroneImage/DroneOutput rows whose files 404. All
+  // three files below are tiny, which is what makes writeBytes appropriate;
+  // real capture uploads still use signed direct upload (spec §36).
+  const storage = getStorageProvider();
   let capture = await prisma.droneCapture.findFirst({ where: { propertyId: pilot.id } });
   if (!capture) {
     capture = await prisma.droneCapture.create({
@@ -492,101 +500,166 @@ async function main() {
 
   const existingImageCount = await prisma.droneImage.count({ where: { datasetId: dataset.id } });
   if (existingImageCount === 0) {
-    const checksum = crypto.createHash("sha256").update(MINIMAL_JPEG).digest("hex");
-    const photoSpecs = [
-      { label: "roof-east-wing-01.jpg", lat: 39.0999, lng: -94.5784 },
-      { label: "facade-front-01.jpg", lat: 39.0995, lng: -94.5788 },
+    // Six frames with real content at realistic dimensions, spread around
+    // the building so the Site Map has a genuine scatter rather than two
+    // coincident pins. Coordinates are offsets from the pilot property, at
+    // roughly the spacing of a real flight grid.
+    const photoSpecs: Array<{ label: string; lat: number; lng: number; render: () => Promise<Buffer> }> = [
+      { label: "roof-east-wing-01.jpg", lat: 39.09985, lng: -94.57835, render: () => renderRoofDetail(101, false) },
+      { label: "roof-east-wing-02.jpg", lat: 39.09978, lng: -94.57848, render: () => renderRoofDetail(202, true) },
+      { label: "roof-west-wing-01.jpg", lat: 39.09992, lng: -94.57882, render: () => renderRoofDetail(303, false) },
+      { label: "roof-centre-01.jpg", lat: 39.09970, lng: -94.57866, render: () => renderRoofDetail(404, true) },
+      { label: "facade-front-01.jpg", lat: 39.09948, lng: -94.57872, render: () => renderFacade(505) },
+      { label: "facade-north-01.jpg", lat: 39.10002, lng: -94.57861, render: () => renderFacade(606) },
     ];
     for (const spec of photoSpecs) {
+      const bytes = await spec.render();
       const key = `${org.id}/${crypto.randomUUID()}-${spec.label}`;
-      const filePath = path.join(localStorageRoot, key);
-      await mkdir(path.dirname(filePath), { recursive: true });
-      await writeFile(filePath, MINIMAL_JPEG);
+      await storage.writeBytes(key, bytes);
       await prisma.droneImage.create({
         data: {
           datasetId: dataset.id,
           storageKey: key,
           mimeType: "image/jpeg",
-          sizeBytes: MINIMAL_JPEG.byteLength,
-          checksum,
+          sizeBytes: bytes.byteLength,
+          checksum: crypto.createHash("sha256").update(bytes).digest("hex"),
           latitude: spec.lat,
           longitude: spec.lng,
           capturedAt: capture.capturedAt,
         },
       });
     }
-    console.log(`  Wrote ${photoSpecs.length} real JPEG file(s) under .local-storage/${org.id}/`);
+    console.log(`  Wrote ${photoSpecs.length} generated JPEG(s) via ${storage.constructor.name} under ${org.id}/`);
   }
 
-  // A real, valid ASCII PLY mesh (tetrahedron) and a real XYZ point cloud
-  // grid — genuine parseable 3D files, not placeholders, so the in-browser
-  // Object3DViewer has something real to render on the seeded pilot property.
-  const existingMesh = await prisma.droneOutput.findFirst({ where: { datasetId: dataset.id, outputType: "MESH_3D" } });
-  if (!existingMesh) {
-    const plyMesh = [
-      "ply",
-      "format ascii 1.0",
-      "element vertex 4",
-      "property float x",
-      "property float y",
-      "property float z",
-      "element face 4",
-      "property list uchar int vertex_indices",
-      "end_header",
-      "0 0 0",
-      "1 0 0",
-      "0 1 0",
-      "0 0 1",
-      "3 0 1 2",
-      "3 0 1 3",
-      "3 0 2 3",
-      "3 1 2 3",
-      "",
-    ].join("\n");
-    const plyBuffer = Buffer.from(plyMesh, "utf-8");
-    const plyKey = `${org.id}/${crypto.randomUUID()}-roof-mesh.ply`;
-    await mkdir(path.dirname(path.join(localStorageRoot, plyKey)), { recursive: true });
-    await writeFile(path.join(localStorageRoot, plyKey), plyBuffer);
+  /**
+   * Outputs are written through one helper because the three differ only in
+   * type, extension and payload. Each is generated, not surveyed — see
+   * prisma/seed-media.ts.
+   */
+  async function upsertOutput(
+    outputType: "ORTHOMOSAIC" | "MESH_3D" | "POINT_CLOUD",
+    filename: string,
+    mimeType: string,
+    produce: () => Promise<Buffer> | Buffer,
+    metadata: Record<string, unknown>,
+  ) {
+    const existing = await prisma.droneOutput.findFirst({ where: { datasetId: dataset!.id, outputType } });
+    if (existing) return;
+    const bytes = await produce();
+    const key = `${org.id}/${crypto.randomUUID()}-${filename}`;
+    await storage.writeBytes(key, bytes);
     await prisma.droneOutput.create({
       data: {
-        datasetId: dataset.id,
-        outputType: "MESH_3D",
-        storageKey: plyKey,
-        mimeType: "application/octet-stream",
-        sizeBytes: plyBuffer.byteLength,
-        checksum: crypto.createHash("sha256").update(plyBuffer).digest("hex"),
-        metadata: { source: "seed", format: "ply" },
+        datasetId: dataset!.id,
+        outputType,
+        storageKey: key,
+        mimeType,
+        sizeBytes: bytes.byteLength,
+        checksum: crypto.createHash("sha256").update(bytes).digest("hex"),
+        metadata: { source: "seed", synthetic: true, ...metadata },
       },
     });
-    console.log(`  Wrote 1 real PLY mesh under .local-storage/${org.id}/`);
+    console.log(`  Wrote ${outputType} (${(bytes.byteLength / 1024).toFixed(0)} KB) via ${storage.constructor.name}`);
   }
 
-  const existingPointCloud = await prisma.droneOutput.findFirst({ where: { datasetId: dataset.id, outputType: "POINT_CLOUD" } });
-  if (!existingPointCloud) {
-    const xyzLines: string[] = [];
-    for (let x = 0; x <= 4; x++) {
-      for (let y = 0; y <= 4; y++) {
-        for (const z of [0, 2]) {
-          xyzLines.push(`${x} ${y} ${z}`);
-        }
-      }
+  // The orthomosaic is the Exterior tab's marker canvas — without one, that
+  // tab renders its "add a marker" control over the first raw photo, which
+  // is why the capture card looked empty.
+  await upsertOutput("ORTHOMOSAIC", "roof-orthomosaic.jpg", "image/jpeg", renderOrthomosaic, {
+    format: "jpeg",
+    widthPx: 1600,
+    heightPx: 1200,
+  });
+
+  await upsertOutput(
+    "MESH_3D",
+    "site-mesh.ply",
+    "application/octet-stream",
+    () => Buffer.from(buildingMeshPly(), "utf-8"),
+    { format: "ply", hasVertexColors: true },
+  );
+
+  await upsertOutput(
+    "POINT_CLOUD",
+    "site-point-cloud.xyz",
+    "text/plain",
+    () => Buffer.from(sitePointCloudXyz(), "utf-8"),
+    { format: "xyz", hasVertexColors: true },
+  );
+
+  // Geotagged evidence attached to the two seeded issues. Evidence is the
+  // only other model in the schema carrying coordinates, so this is what
+  // makes the Site Map's second placeable layer real rather than an empty
+  // toggle.
+  const existingEvidence = await prisma.evidence.count({ where: { propertyId: pilot.id } });
+  if (existingEvidence === 0) {
+    const rtuIssue = await prisma.issue.findFirst({ where: { organizationId: org.id, title: "RTU-04 compressor vibration" } });
+    const roofIssue = await prisma.issue.findFirst({ where: { organizationId: org.id, title: "East wing roof membrane failure" } });
+    const evidenceSpecs = [
+      { issueId: rtuIssue?.id, label: "rtu-04-corrosion.jpg", lat: 39.09981, lng: -94.57852, seed: 711 },
+      { issueId: roofIssue?.id, label: "east-wing-ponding.jpg", lat: 39.09976, lng: -94.57841, seed: 822 },
+    ];
+    for (const spec of evidenceSpecs) {
+      const bytes = await renderDefectEvidence(spec.seed);
+      const key = `${org.id}/${crypto.randomUUID()}-${spec.label}`;
+      await storage.writeBytes(key, bytes);
+      await prisma.evidence.create({
+        data: {
+          organizationId: org.id,
+          propertyId: pilot.id,
+          issueId: spec.issueId ?? null,
+          type: "PHOTO",
+          source: "MANUAL",
+          captureDate: capture.capturedAt,
+          uploadedById: technician.id,
+          latitude: spec.lat,
+          longitude: spec.lng,
+          storageKey: key,
+          mimeType: "image/jpeg",
+          sizeBytes: bytes.byteLength,
+          metadata: { source: "seed", synthetic: true },
+        },
+      });
     }
-    const xyzBuffer = Buffer.from(xyzLines.join("\n") + "\n", "utf-8");
-    const xyzKey = `${org.id}/${crypto.randomUUID()}-roof-point-cloud.xyz`;
-    await mkdir(path.dirname(path.join(localStorageRoot, xyzKey)), { recursive: true });
-    await writeFile(path.join(localStorageRoot, xyzKey), xyzBuffer);
-    await prisma.droneOutput.create({
-      data: {
-        datasetId: dataset.id,
-        outputType: "POINT_CLOUD",
-        storageKey: xyzKey,
-        mimeType: "text/plain",
-        sizeBytes: xyzBuffer.byteLength,
-        checksum: crypto.createHash("sha256").update(xyzBuffer).digest("hex"),
-        metadata: { source: "seed", format: "xyz", pointCount: xyzLines.length },
-      },
-    });
-    console.log(`  Wrote 1 real XYZ point cloud under .local-storage/${org.id}/`);
+    console.log(`  Wrote ${evidenceSpecs.length} geotagged evidence photo(s)`);
+  }
+
+  // 360 panoramas — the third capture kind, alongside Matterport interiors
+  // and drone exteriors. Seeded as geotagged IMAGE_360 evidence, which is
+  // what the 360 tab reads and what puts a real pin on the Site Map's 360
+  // layer rather than an empty toggle.
+  const existingPanoramas = await prisma.evidence.count({ where: { propertyId: pilot.id, type: "IMAGE_360" } });
+  if (existingPanoramas === 0) {
+    const panoramaSpecs = [
+      { label: "north-lot-360.jpg", lat: 39.09992, lng: -94.57869, seed: 4101 },
+      { label: "south-entrance-360.jpg", lat: 39.09963, lng: -94.57833, seed: 4207 },
+    ];
+    for (const spec of panoramaSpecs) {
+      const bytes = await renderPanorama360(spec.seed);
+      const key = `${org.id}/${crypto.randomUUID()}-${spec.label}`;
+      await storage.writeBytes(key, bytes);
+      await prisma.evidence.create({
+        data: {
+          organizationId: org.id,
+          propertyId: pilot.id,
+          type: "IMAGE_360",
+          source: "MANUAL",
+          captureDate: capture.capturedAt,
+          uploadedById: technician.id,
+          latitude: spec.lat,
+          longitude: spec.lng,
+          storageKey: key,
+          mimeType: "image/jpeg",
+          sizeBytes: bytes.byteLength,
+          // projection is recorded because a 2:1 JPEG is not self-describing:
+          // nothing in the file says whether it is equirectangular, and the
+          // viewer would happily wrap a flat photo onto a sphere.
+          metadata: { source: "seed", synthetic: true, projection: "equirectangular" },
+        },
+      });
+    }
+    console.log(`  Wrote ${panoramaSpecs.length} geotagged 360 panorama(s)`);
   }
 
   // A completed processing job for the dataset above. Without one, the
@@ -670,6 +743,81 @@ async function main() {
 
   console.log("Seeding vendor membership scope + assignment...");
   await ensureGrant(vendorMembership.id, { scopeType: "PROPERTY", propertyId: pilot.id });
+
+  const DEMO_SHOTS: Array<{ label: string; kind: "PHOTO" | "IMAGE_360" }> = [
+    { label: "North lot", kind: "IMAGE_360" },
+    { label: "Main entrance", kind: "IMAGE_360" },
+    { label: "South entrance", kind: "IMAGE_360" },
+    { label: "Loading dock", kind: "IMAGE_360" },
+    { label: "Roof — RTU row", kind: "PHOTO" },
+    { label: "Roof — east wing membrane", kind: "PHOTO" },
+  ];
+
+  // An open capture job, so the Capture Jobs page shows the real shape of
+  // subcontractor work rather than an empty state. Issued, because a draft is
+  // invisible to the vendor and would make the demo look broken when signed
+  // in as vendor@demo.com.
+  const existingCaptureJob = await prisma.captureJob.findFirst({
+    where: { organizationId: org.id },
+    include: { sites: { include: { _count: { select: { shots: true } } } } },
+  });
+
+  // A job seeded before shot lists existed has no route. Backfilling it is
+  // not cosmetic: without a route the demo shows the feature as absent, and
+  // the "create once" guard below would never revisit it.
+  if (existingCaptureJob) {
+    for (const site of existingCaptureJob.sites) {
+      if (site._count.shots === 0) {
+        await prisma.captureShot.createMany({
+          data: DEMO_SHOTS.map((shot, index) => ({ ...shot, siteId: site.id, sequence: index + 1 })),
+        });
+        console.log(`  Backfilled ${DEMO_SHOTS.length} shot positions onto an existing capture job`);
+      }
+      // Same reason as the shots: a job seeded before Matterport was a
+      // deliverable would show the demo without it, and the create-once guard
+      // below never revisits an existing job.
+      if (!site.deliverables.includes("MATTERPORT")) {
+        await prisma.captureJobSite.update({
+          where: { id: site.id },
+          data: { deliverables: { set: [...site.deliverables, "MATTERPORT"] } },
+        });
+        console.log("  Backfilled the MATTERPORT deliverable onto an existing capture job site");
+      }
+    }
+  }
+
+  if (!existingCaptureJob) {
+    const job = await prisma.captureJob.create({
+      data: {
+        organizationId: org.id,
+        vendorId: vendor.id,
+        title: "Q4 condition sweep — Midwest",
+        instructions:
+          "Fly the roof and parking areas, shoot a 360 at each entrance, scan the interior with Matterport, " +
+          "and score every rooftop unit. " +
+          "Condition scores are the deliverable: imagery alone does not move the site's health score.",
+        status: "ISSUED",
+        issuedAt: new Date(),
+        dueDate: new Date(Date.now() + 21 * 86400000),
+        createdById: owner.id,
+        sites: {
+          create: [
+            {
+              propertyId: pilot.id,
+              deliverables: ["DRONE", "IMAGE_360", "MATTERPORT", "CONDITION_SCORES"],
+              // The route. Named positions are what make this visit
+              // comparable with the next one — shoot the same six places
+              // every time and you have a time series instead of a folder.
+              shots: {
+                create: DEMO_SHOTS.map((shot, index) => ({ ...shot, sequence: index + 1 })),
+              },
+            },
+          ],
+        },
+      },
+    });
+    console.log(`  Created capture job "${job.title}" (1 site, 6 shot positions, issued to ${vendor.name})`);
+  }
 
   console.log("\nSeed complete. Demo login credentials (password: 'password123'):");
   console.log("  Owner:              owner@demo.com");

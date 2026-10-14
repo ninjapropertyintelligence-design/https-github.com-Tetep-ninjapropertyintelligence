@@ -1,6 +1,15 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam, ChatCompletionFunctionTool, ChatCompletionMessageFunctionToolCall } from "openai/resources/chat/completions";
-import { AIProvider, AIToolCallRecord, AIToolDefinition, AIToolExecutor, AIToolLoopResult } from "@/lib/ai/provider";
+import {
+  AIImageInput,
+  AIProvider,
+  AIStructuredImageResult,
+  AIToolCallRecord,
+  AIToolDefinition,
+  AIToolExecutor,
+  AIToolLoopResult,
+  JSONSchemaObject,
+} from "@/lib/ai/provider";
 
 const MODEL = "gpt-5.5";
 const MAX_ITERATIONS = 8;
@@ -38,6 +47,40 @@ export class OpenAIProvider implements AIProvider {
     return completion.choices[0]?.message?.content?.trim() ?? "";
   }
 
+  async analyzeImage(params: {
+    system: string;
+    prompt: string;
+    image: AIImageInput;
+    schema: JSONSchemaObject;
+  }): Promise<AIStructuredImageResult> {
+    const completion = await this.client.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: "system", content: params.system },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: params.prompt },
+            { type: "image_url", image_url: { url: `data:${params.image.mediaType};base64,${params.image.base64}` } },
+          ],
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "image_analysis", strict: true, schema: params.schema as unknown as Record<string, unknown> },
+      },
+    });
+
+    const usage = completion.usage
+      ? { inputTokens: completion.usage.prompt_tokens ?? 0, outputTokens: completion.usage.completion_tokens ?? 0 }
+      : undefined;
+
+    const message = completion.choices[0]?.message;
+    if (message?.refusal) throw new Error("The AI provider declined to analyse this image");
+    if (!message?.content) throw new Error("The AI provider returned no response");
+    return { output: JSON.parse(message.content), usage };
+  }
+
   async runToolLoop(params: {
     system: string;
     userMessage: string;
@@ -56,6 +99,12 @@ export class OpenAIProvider implements AIProvider {
     ];
     const toolCalls: AIToolCallRecord[] = [];
     const maxIterations = params.maxIterations ?? MAX_ITERATIONS;
+    // See the Anthropic provider: summed across iterations, returned on every
+    // exit path, and left undefined rather than zero when never reported.
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let sawUsage = false;
+    const usage = () => (sawUsage ? { inputTokens, outputTokens } : undefined);
 
     for (let i = 0; i < maxIterations; i++) {
       const completion = await this.client.chat.completions.create({
@@ -64,9 +113,15 @@ export class OpenAIProvider implements AIProvider {
         tools: openaiTools,
       });
 
+      if (completion.usage) {
+        inputTokens += completion.usage.prompt_tokens ?? 0;
+        outputTokens += completion.usage.completion_tokens ?? 0;
+        sawUsage = true;
+      }
+
       const message = completion.choices[0]?.message;
       if (!message) {
-        return { answer: "The AI provider returned no response.", toolCalls };
+        return { answer: "The AI provider returned no response.", toolCalls, usage: usage() };
       }
 
       const functionCalls = (message.tool_calls ?? []).filter(
@@ -74,7 +129,7 @@ export class OpenAIProvider implements AIProvider {
       );
 
       if (functionCalls.length === 0) {
-        return { answer: (message.content ?? "").trim(), toolCalls };
+        return { answer: (message.content ?? "").trim(), toolCalls, usage: usage() };
       }
 
       messages.push(message);
@@ -100,6 +155,6 @@ export class OpenAIProvider implements AIProvider {
       }
     }
 
-    return { answer: "I wasn't able to finish answering within the allotted tool-call budget.", toolCalls };
+    return { answer: "I wasn't able to finish answering within the allotted tool-call budget.", toolCalls, usage: usage() };
   }
 }

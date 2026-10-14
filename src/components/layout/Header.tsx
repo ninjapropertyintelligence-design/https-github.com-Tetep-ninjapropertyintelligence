@@ -70,9 +70,9 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
   }
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border bg-surface px-4">
-      <Link href="/dashboard" className="shrink-0 text-sm font-semibold text-foreground">
-        PropIntel
+    <header className="flex h-14 shrink-0 items-center gap-4 bg-shell px-4 text-shell-foreground">
+      <Link href="/dashboard" className="shrink-0 text-base font-semibold tracking-tight text-white">
+        PropIntel<span className="text-brand">.</span>
       </Link>
 
       <div className="relative flex-1 max-w-md">
@@ -82,7 +82,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
           onFocus={() => results.length > 0 && setSearchOpen(true)}
           onBlur={() => setTimeout(() => setSearchOpen(false), 150)}
           placeholder="Search properties, assets, issues..."
-          className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-brand"
+          className="w-full rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-sm text-white outline-none placeholder:text-shell-muted focus:border-white/40 focus:bg-white/15"
         />
         {searchOpen && results.length > 0 ? (
           <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-96 overflow-auto rounded-lg border border-border bg-surface shadow-lg">
@@ -103,7 +103,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
 
       <div className="ml-auto flex items-center gap-3">
         {showAI ? (
-          <Link href="/ai" className="rounded-lg bg-brand/10 px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand/20">
+          <Link href="/ai" className="rounded-full bg-white/10 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-white/20">
             Ask AI
           </Link>
         ) : null}
@@ -114,7 +114,7 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
               setNotifOpen((o) => !o);
               if (!notifOpen) markAllRead();
             }}
-            className="relative rounded-lg p-2 text-muted hover:bg-zinc-100"
+            className="relative rounded-full p-2 text-shell-foreground transition hover:bg-white/10 hover:text-white"
             aria-label="Notifications"
           >
             🔔
@@ -145,13 +145,19 @@ export function Header({ userName, showAI }: { userName: string; showAI: boolean
           ) : null}
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-foreground">{userName}</span>
+        <div className="flex items-center gap-2 border-l border-white/10 pl-3">
+          <span
+            aria-hidden
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-xs font-semibold text-white"
+          >
+            {userName.trim().charAt(0).toUpperCase() || "?"}
+          </span>
+          <span className="hidden text-sm text-white sm:inline">{userName}</span>
           <button
             onClick={() => {
               signOut({ redirect: false }).then(() => router.push("/login"));
             }}
-            className="rounded-lg px-2 py-1 text-xs text-muted hover:bg-zinc-100"
+            className="rounded-full px-2 py-1 text-xs text-shell-muted transition hover:bg-white/10 hover:text-white"
           >
             Sign out
           </button>

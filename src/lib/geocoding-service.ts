@@ -1,6 +1,8 @@
 import { GeocodeAddress, GeocodeResult } from "@/lib/integrations/geocoding-provider";
 import { getGeocodingProvider } from "@/lib/integrations/mapbox-geocoding-provider";
 import { logEvent } from "@/lib/observability";
+import { recordUsage } from "@/lib/cost-metering";
+import { UsageMetricType } from "@/generated/prisma/client";
 
 /**
  * Resolves a property's coordinates for the Portfolio Map (spec §11).
@@ -47,6 +49,26 @@ export async function resolvePropertyCoordinates(params: {
 
   try {
     const result = await provider.geocode(params.address);
+    /**
+     * Metering (§49). A geocoding request is billed by the provider whether
+     * or not it resolves to a coordinate, so both outcomes are metered here.
+     * The exception path below deliberately is not: when the call throws we
+     * cannot tell whether the provider billed it, and inventing either answer
+     * would be a guess presented as a measurement.
+     *
+     * Unattributed: the property does not exist yet at geocode time, so there
+     * is no property to attribute this to. That null is the honest answer.
+     */
+    if (params.organizationId) {
+      await recordUsage({
+        organizationId: params.organizationId,
+        propertyId: null,
+        metricType: UsageMetricType.GEOCODING_REQUEST,
+        quantity: 1,
+        source: "geocoding-service",
+        metadata: { provider: provider.name, resolved: result !== null },
+      });
+    }
     if (!result) {
       logEvent("geocoding.request", {
         ok: true,

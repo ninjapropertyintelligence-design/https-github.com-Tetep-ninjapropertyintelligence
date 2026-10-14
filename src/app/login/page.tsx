@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, Suspense, useState } from "react";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -103,6 +104,11 @@ function LoginForm() {
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Signing in..." : needsMfa ? "Verify and sign in" : "Sign in"}
           </Button>
+          <p className="mt-3 text-center text-sm">
+            <Link href="/forgot-password" className="text-muted hover:text-foreground">
+              Forgot password?
+            </Link>
+          </p>
         </form>
 
         <div className="mt-6 rounded-xl border border-dashed border-border p-4">

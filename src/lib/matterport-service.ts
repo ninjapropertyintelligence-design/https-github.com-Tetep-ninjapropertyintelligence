@@ -1,12 +1,21 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+import { SessionContext, captureReviewWhere, propertyScopeWhere, reviewSiteIdForUpload } from "@/lib/tenant-scope";
 import { getMatterportProvider } from "@/lib/integrations/matterport-provider";
 import { encryptSecret } from "@/lib/integrations/crypto";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 import { ApiError } from "@/lib/api-error";
+import { requireFeature, FEATURE_FLAGS } from "@/lib/feature-flags";
 import { logEvent } from "@/lib/observability";
+
+/**
+ * Entitlement: the MATTERPORT flag gates connecting, browsing, linking and
+ * syncing. It deliberately does NOT gate status reads or either disconnect
+ * path — the UI must be able to say "not enabled", and a customer who stops
+ * paying must still be able to unlink. Trapping someone's data behind an
+ * expired entitlement is not a business model.
+ */
 
 /**
  * Ties the InteriorCaptureProvider abstraction to the domain model. The
@@ -27,6 +36,8 @@ export async function getOrgMatterportStatus(organizationId: string) {
 
 /** Org-level connect (spec §2: "connect Matterport account/configuration"). Requires canManageIntegrations. */
 export async function connectMatterportForOrg(ctx: SessionContext) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const provider = getMatterportProvider();
   if (!provider.isConfigured()) {
     const connection = await prisma.matterportConnection.upsert({
@@ -80,6 +91,8 @@ export async function disconnectMatterportForOrg(ctx: SessionContext) {
 }
 
 export async function listAvailableSpaces(ctx: SessionContext) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const connection = await prisma.matterportConnection.findUnique({ where: { organizationId: ctx.organizationId } });
   if (!connection || connection.status !== "CONNECTED") {
     throw new ApiError(400, "Matterport is not connected for this organization");
@@ -96,6 +109,8 @@ async function assertPropertyInScope(ctx: SessionContext, propertyId: string) {
 
 /** Link a Matterport Space to a Property (spec §2: "link Matterport Space to a Property"). */
 export async function linkSpaceToProperty(ctx: SessionContext, propertyId: string, externalSpaceId: string) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const property = await assertPropertyInScope(ctx, propertyId);
 
   const connection = await prisma.matterportConnection.findUnique({ where: { organizationId: ctx.organizationId } });
@@ -122,7 +137,13 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
 
   const link = await prisma.matterportPropertyLink.upsert({
     where: { propertyId_spaceId: { propertyId: property.id, spaceId: space.id } },
-    create: { propertyId: property.id, spaceId: space.id, operator: ctx.userName },
+    create: {
+      propertyId: property.id,
+      spaceId: space.id,
+      operator: ctx.userName,
+      // A vendor's scan is held for review against the job site it delivers.
+      captureJobSiteId: await reviewSiteIdForUpload(ctx, property.id),
+    },
     update: {},
     include: { space: true },
   });
@@ -150,6 +171,20 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
 }
 
 /**
+ * Pulls the space ID out of a Showcase URL, or returns the input unchanged.
+ *
+ * Lives here rather than in the route because normalisation is part of what
+ * "link a space" means, not part of one HTTP handler: the capture-job panel
+ * and the Interior tab both hand over whatever the vendor pasted, and that is
+ * almost always the URL rather than the handle buried in it.
+ */
+export function normalizeSpaceId(input: string): string {
+  const trimmed = input.trim();
+  const match = trimmed.match(/[?&]m=([A-Za-z0-9]+)/);
+  return match ? match[1] : trimmed;
+}
+
+/**
  * Link a Matterport Space by ID with no Model API call (spec §2, viewer-only
  * path). Matterport issues SDK keys self-serve but gates the Model API behind
  * a partner account, so a customer often has a working 3D tour and its space
@@ -166,10 +201,13 @@ export async function linkSpaceToProperty(ctx: SessionContext, propertyId: strin
 export async function linkSpaceByIdDirect(
   ctx: SessionContext,
   propertyId: string,
-  externalSpaceId: string,
+  /** A bare space ID or a full Showcase URL — normalised here, not by callers. */
+  spaceRef: string,
   name?: string,
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
   const property = await assertPropertyInScope(ctx, propertyId);
+  const externalSpaceId = normalizeSpaceId(spaceRef);
 
   const provider = getMatterportProvider();
   if (!provider.isViewerConfigured() && !provider.isConfigured()) {
@@ -200,7 +238,13 @@ export async function linkSpaceByIdDirect(
 
   const link = await prisma.matterportPropertyLink.upsert({
     where: { propertyId_spaceId: { propertyId: property.id, spaceId: space.id } },
-    create: { propertyId: property.id, spaceId: space.id, operator: ctx.userName },
+    create: {
+      propertyId: property.id,
+      spaceId: space.id,
+      operator: ctx.userName,
+      // A vendor's scan is held for review against the job site it delivers.
+      captureJobSiteId: await reviewSiteIdForUpload(ctx, property.id),
+    },
     update: {},
     include: { space: true },
   });
@@ -229,6 +273,8 @@ export async function linkSpaceByIdDirect(
 
 /** Re-sync a property's linked Matterport space metadata. */
 export async function syncPropertyInterior(ctx: SessionContext, propertyId: string) {
+  await requireFeature(ctx, FEATURE_FLAGS.MATTERPORT);
+
   const property = await assertPropertyInScope(ctx, propertyId);
   const link = await prisma.matterportPropertyLink.findFirst({
     where: { propertyId: property.id },
@@ -312,7 +358,7 @@ export async function getPropertyInteriorStatus(ctx: SessionContext, propertyId:
   const [connection, link] = await Promise.all([
     prisma.matterportConnection.findUnique({ where: { organizationId: ctx.organizationId } }),
     prisma.matterportPropertyLink.findFirst({
-      where: { propertyId: property.id },
+      where: { propertyId: property.id, ...captureReviewWhere(ctx) },
       orderBy: { linkedAt: "desc" },
       include: { space: true, references: { include: { asset: { select: { id: true, name: true } } } } },
     }),
@@ -330,7 +376,10 @@ export async function getPropertyInteriorStatus(ctx: SessionContext, propertyId:
           take: 50,
           select: { id: true, title: true, severity: true },
         }),
-        prisma.evidence.findMany({ where: { propertyId: property.id, type: { in: ["MATTERPORT_REFERENCE", "PHOTO", "IMAGE_360"] } }, take: 50 }),
+        prisma.evidence.findMany({
+          where: { propertyId: property.id, type: { in: ["MATTERPORT_REFERENCE", "PHOTO", "IMAGE_360"] }, ...captureReviewWhere(ctx) },
+          take: 50,
+        }),
       ])
     : [[], [], [], []];
 

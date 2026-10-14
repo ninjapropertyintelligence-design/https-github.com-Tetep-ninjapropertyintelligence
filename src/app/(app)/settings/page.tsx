@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSessionContext, can } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
@@ -19,6 +20,8 @@ export default async function SettingsPage() {
   ]);
   const overrideByKey = new Map(overrides.map((o) => [o.flagKey, o.enabled]));
 
+  const canManageTeam = can(ctx, "canManageTeam");
+
   return (
     <div className="space-y-6">
       <div>
@@ -28,7 +31,17 @@ export default async function SettingsPage() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Team" subtitle={`${memberships.length} members`} />
+          <CardHeader
+            title="Team"
+            subtitle={`${memberships.length} members`}
+            action={
+              canManageTeam ? (
+                <Link href="/settings/team" className="text-sm font-medium text-brand hover:underline">
+                  Manage team →
+                </Link>
+              ) : null
+            }
+          />
           <CardBody className="p-0">
             <ul>
               {memberships.map((m) => (

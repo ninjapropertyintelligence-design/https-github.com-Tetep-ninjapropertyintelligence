@@ -93,20 +93,39 @@ export class MatterportProvider implements InteriorCaptureProvider {
     // handled by the caller (does not delete the Property).
   }
 
+  /**
+   * `models` is NOT a Relay connection. The first live call against a real
+   * account rejected the Relay shape outright:
+   *
+   *   Unknown field argument 'first'
+   *   Field 'edges' in type 'ModelSearchResultList' is undefined
+   *
+   * The real shape is a page object — `{ totalResults, nextOffset, results }`
+   * — paged with `pageSize` and a `nextOffset` cursor.
+   *
+   * Only `id` and `name` are selected. Every additional field is one more
+   * chance for the whole query to fail validation and return nothing, and a
+   * list that loads without processing state is far more useful than a list
+   * that does not load. `scripts/matterport-introspect.ts` prints the real
+   * field set from a machine that can reach the API; widen this once that
+   * has been run rather than by guessing again.
+   */
   async listSpaces(): Promise<InteriorSpaceSummary[]> {
     if (!this.isConfigured()) {
       throw new Error("Matterport is not configured");
     }
     const data = await this.graphql<{
-      models: { edges: Array<{ node: { id: string; name: string | null; status: string; visibility: string } }> };
-    }>(
-      `query ListModels { models(first: 100) { edges { node { id name status visibility } } } }`,
-    );
-    return (data.models?.edges ?? []).map((edge) => ({
-      externalSpaceId: edge.node.id,
-      name: edge.node.name,
-      status: this.mapStatus(edge.node.status),
-      capturedAt: null, // Model API doesn't expose capture date on this query; populated on sync via getSpace if available.
+      models: { totalResults: number; nextOffset: string | null; results: Array<{ id: string; name: string | null }> | null } | null;
+    }>(`query ListModels { models(pageSize: 100) { totalResults nextOffset results { id name } } }`);
+
+    return (data.models?.results ?? []).map((model) => ({
+      externalSpaceId: model.id,
+      // Not fetched by this query. A listed model is reported READY rather
+      // than being given an invented state — the per-space sync below is
+      // what establishes real status.
+      status: "READY" as const,
+      name: model.name,
+      capturedAt: null,
     }));
   }
 
@@ -114,14 +133,17 @@ export class MatterportProvider implements InteriorCaptureProvider {
     if (!this.isConfigured()) {
       throw new Error("Matterport is not configured");
     }
+    // Same reasoning as listSpaces: minimal selection set. `status` was
+    // removed because it is unverified on this type and one unknown field
+    // fails the entire query rather than just that field.
     const data = await this.graphql<{
-      model: { id: string; name: string | null; status: string } | null;
-    }>(`query GetModel($id: ID!) { model(id: $id) { id name status } }`, { id: externalSpaceId });
+      model: { id: string; name: string | null } | null;
+    }>(`query GetModel($id: ID!) { model(id: $id) { id name } }`, { id: externalSpaceId });
     if (!data.model) return null;
     return {
       externalSpaceId: data.model.id,
       name: data.model.name,
-      status: this.mapStatus(data.model.status),
+      status: "READY" as const,
       capturedAt: null,
     };
   }

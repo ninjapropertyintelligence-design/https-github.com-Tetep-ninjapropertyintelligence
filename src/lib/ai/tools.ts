@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, issueScopeWhere, propertyScopeWhere } from "@/lib/tenant-scope";
+import { SessionContext, captureReviewWhere, issueScopeWhere, propertyScopeWhere } from "@/lib/tenant-scope";
 import { getPortfolioDashboard } from "@/lib/dashboard";
 import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
@@ -75,12 +75,12 @@ export function makeAiTools(ctx: SessionContext) {
       const [snap, matterportLink, droneCapture] = await Promise.all([
         getLatestHealthSnapshot(property.id),
         prisma.matterportPropertyLink.findFirst({
-          where: { propertyId: property.id },
+          where: { propertyId: property.id, ...captureReviewWhere(ctx) },
           orderBy: { linkedAt: "desc" },
           include: { space: true },
         }),
         prisma.droneCapture.findFirst({
-          where: { propertyId: property.id, status: "READY" },
+          where: { propertyId: property.id, status: "READY", ...captureReviewWhere(ctx) },
           orderBy: { capturedAt: "desc" },
         }),
       ]);
@@ -259,6 +259,7 @@ export function makeAiTools(ctx: SessionContext) {
           ...(args.propertyId ? { propertyId: args.propertyId } : {}),
           ...(args.assetId ? { assetId: args.assetId } : {}),
           ...(args.issueId ? { issueId: args.issueId } : {}),
+          ...captureReviewWhere(ctx),
         },
         take: 50,
       });

@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getSessionContext, issueScopeWhere, can } from "@/lib/session-context";
+import { getSessionContext, issueScopeWhere, can, captureReviewWhere } from "@/lib/session-context";
+import { parseStoredBox } from "@/lib/ai/bounding-box";
+import { FindingImageOverlay } from "@/components/ai/FindingImageOverlay";
 import { prisma } from "@/lib/prisma";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -25,9 +27,23 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
       comments: { orderBy: { createdAt: "asc" }, include: { author: { select: { name: true } } } },
       evidence: true,
       documents: true,
+      aiFinding: true,
     },
   });
   if (!issue) notFound();
+
+  // An issue confirmed from an AI finding shows that photo with the defect
+  // outlined, so the record carries what the inspector actually agreed to.
+  // Only when the viewer may see the photo: a vendor's capture is held for
+  // review until accepted (`captureReviewWhere`), and drawing a frame around
+  // an image that will not load helps nobody.
+  const findingPhoto = issue.aiFinding
+    ? await prisma.evidence.findFirst({
+        where: { id: issue.aiFinding.evidenceId, organizationId: ctx.organizationId, ...captureReviewWhere(ctx) },
+        select: { id: true },
+      })
+    : null;
+  const findingBox = issue.aiFinding ? parseStoredBox(issue.aiFinding.boundingBox) : null;
 
   return (
     <div className="space-y-6">
@@ -89,7 +105,37 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
         <Card>
           <CardHeader title="Evidence" />
           <CardBody className="p-0">
-            {issue.evidence.length === 0 ? <div className="p-5"><EmptyState title="No evidence attached" /></div> : (
+            {issue.aiFinding && findingPhoto ? (
+              <div className="border-b border-border px-5 py-4">
+                <FindingImageOverlay
+                  src={`/api/v1/evidence/${findingPhoto.id}/content`}
+                  alt={issue.aiFinding.label}
+                  imageWidth={issue.aiFinding.imageWidth}
+                  imageHeight={issue.aiFinding.imageHeight}
+                  boxes={
+                    findingBox
+                      ? [
+                          {
+                            id: issue.aiFinding.id,
+                            box: findingBox,
+                            label: (issue.aiFinding.defectClass ?? issue.aiFinding.label).replace(/_/g, " "),
+                            severity: issue.severity,
+                            state: "confirmed",
+                          },
+                        ]
+                      : []
+                  }
+                />
+                <p className="mt-2 text-xs text-muted">
+                  AI photo finding, confirmed {issue.aiFinding.reviewedAt ? formatDate(issue.aiFinding.reviewedAt) : ""}
+                  {issue.aiFinding.confidence !== null ? ` · AI confidence ${Math.round(issue.aiFinding.confidence * 100)}%` : ""}
+                  {issue.aiFinding.suggestedScore !== null && issue.aiFinding.confirmedScore !== null
+                    ? ` · AI suggested ${issue.aiFinding.suggestedScore}, confirmed ${issue.aiFinding.confirmedScore}`
+                    : ""}
+                </p>
+              </div>
+            ) : null}
+            {issue.evidence.length === 0 && !findingPhoto ? <div className="p-5"><EmptyState title="No evidence attached" /></div> : (
               <ul>
                 {issue.evidence.map((e) => (
                   <li key={e.id} className="border-b border-border px-5 py-2.5 text-sm last:border-0">{e.type.replace(/_/g, " ")}</li>

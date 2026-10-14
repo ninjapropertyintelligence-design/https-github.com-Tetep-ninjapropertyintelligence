@@ -1,15 +1,26 @@
 import { prisma } from "@/lib/prisma";
-import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
+import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
+import { recordUsage } from "@/lib/cost-metering";
+import { SessionContext, captureReviewWhere, propertyScopeWhere, reviewSiteIdForUpload } from "@/lib/tenant-scope";
 import { ApiError } from "@/lib/api-error";
+import { requireFeature, FEATURE_FLAGS } from "@/lib/feature-flags";
 import { getStorageProvider } from "@/lib/storage";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
-import { DroneOutputType } from "@/generated/prisma/client";
+import { DroneOutputType, StorageObjectKind, UsageMetricType } from "@/generated/prisma/client";
 import { logEvent } from "@/lib/observability";
 import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogrammetry-provider";
 
 /**
+ * Entitlement: the DRONE_PROCESSING flag gates every path that brings new
+ * capture data in — creating a capture or dataset, registering images and
+ * outputs. It deliberately does NOT gate reads, nor markCaptureReady /
+ * markCaptureFailed: an organization whose entitlement lapses mid-flight
+ * must still be able to finish and see the work it already paid for, and
+ * blocking the terminal transitions would strand captures in PROCESSING
+ * forever.
+ *
  * Manual drone dataset import pipeline (spec Phase 2 §4-§6). No PIX4D
  * automation yet — this is the "make manual import perfect" workflow:
  * create a capture, upload raw images/outputs via signed direct-upload
@@ -60,6 +71,7 @@ export async function createDroneCapture(
   propertyId: string,
   input: { capturedAt?: Date; droneModel?: string; notes?: string },
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
   const property = await assertPropertyInScope(ctx, propertyId);
   const capture = await prisma.droneCapture.create({
     data: {
@@ -69,6 +81,8 @@ export async function createDroneCapture(
       droneModel: input.droneModel,
       notes: input.notes,
       status: "CREATED",
+      // A vendor's flight is held for review against the job site it delivers.
+      captureJobSiteId: await reviewSiteIdForUpload(ctx, property.id),
     },
   });
   await Promise.all([
@@ -91,6 +105,8 @@ export async function createDroneCapture(
 }
 
 export async function createDroneDataset(ctx: SessionContext, captureId: string) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+
   const capture = await loadScopedCapture(ctx, captureId);
   await prisma.droneCapture.update({ where: { id: capture.id }, data: { status: "UPLOADING" } });
   const dataset = await prisma.droneDataset.create({ data: { captureId: capture.id, provider: "MANUAL" } });
@@ -99,6 +115,17 @@ export async function createDroneDataset(ctx: SessionContext, captureId: string)
   // this is what lets a real PIX4D provider slot in later without
   // redesigning this service.
   await getPhotogrammetryProvider().createJob({ datasetId: dataset.id, captureId: capture.id });
+
+  // Metering (§49). Attributed to the capture's property — this is the
+  // clearest example of a cost that genuinely belongs to one property.
+  await recordUsage({
+    organizationId: ctx.organizationId,
+    propertyId: capture.propertyId,
+    metricType: UsageMetricType.PROCESSING_JOB,
+    quantity: 1,
+    source: "drone-service",
+    metadata: { datasetId: dataset.id, captureId: capture.id },
+  });
   return dataset;
 }
 
@@ -118,10 +145,39 @@ async function verifyUploadedFile(ctx: SessionContext, params: {
         `Uploaded file size (${verification.actualSizeBytes} bytes) doesn't match the reported size (${params.clientSizeBytes} bytes)`,
       );
     }
-    if (params.clientChecksum && verification.actualChecksumSha256 !== params.clientChecksum.toLowerCase()) {
-      throw new ApiError(400, "Uploaded file checksum doesn't match the reported checksum — upload may be corrupted");
+    /**
+     * Three distinct outcomes, and collapsing any two of them is a bug:
+     *
+     *  - checksums differ        → the bytes are wrong, reject
+     *  - checksums match         → verified
+     *  - store reports no digest → *unverified*, which is not the same as wrong
+     *
+     * The third case only appears on object stores. Local disk always hashes
+     * what it holds, but S3-compatible stores return a SHA-256 only for objects
+     * that were uploaded with one. Treating "absent" as "mismatch" would reject
+     * every correct upload that carried a client checksum; treating it as
+     * "match" would silently drop an integrity control. So it passes, and says
+     * so, leaving a record that the guarantee was weaker for this object.
+     */
+    let checksumVerified = false;
+    if (params.clientChecksum) {
+      if (verification.actualChecksumSha256 === null) {
+        logEvent("drone.upload.checksum_unverified", {
+          ok: true,
+          organizationId: ctx.organizationId,
+        });
+      } else if (verification.actualChecksumSha256 !== params.clientChecksum.toLowerCase()) {
+        throw new ApiError(400, "Uploaded file checksum doesn't match the reported checksum — upload may be corrupted");
+      } else {
+        checksumVerified = true;
+      }
     }
-    logEvent("drone.upload", { ok: true, organizationId: ctx.organizationId, sizeBytes: verification.actualSizeBytes ?? undefined });
+    logEvent("drone.upload", {
+      ok: true,
+      organizationId: ctx.organizationId,
+      sizeBytes: verification.actualSizeBytes ?? undefined,
+      checksumVerified,
+    });
     return verification;
   } catch (err) {
     logEvent("drone.upload", {
@@ -149,6 +205,8 @@ export async function registerDroneImage(
     capturedAt?: Date;
   },
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+
   const dataset = await loadScopedDataset(ctx, datasetId);
 
   const ext = extensionOf(input.storageKey);
@@ -162,7 +220,7 @@ export async function registerDroneImage(
     clientChecksum: input.checksum,
   });
 
-  return prisma.droneImage.create({
+  const image = await prisma.droneImage.create({
     data: {
       datasetId: dataset.id,
       storageKey: input.storageKey,
@@ -176,6 +234,19 @@ export async function registerDroneImage(
       capturedAt: input.capturedAt,
     },
   });
+
+  // Age for tiering runs from when the object landed in the store, not from
+  // `capturedAt` — a backfilled capture from two years ago is a brand-new
+  // object as far as storage billing is concerned.
+  await registerStorageObjectBestEffort({
+    organizationId: ctx.organizationId,
+    storageKey: image.storageKey,
+    kind: StorageObjectKind.DRONE_IMAGE,
+    sizeBytes: image.sizeBytes === null ? null : Number(image.sizeBytes),
+    objectCreatedAt: image.createdAt,
+  });
+
+  return image;
 }
 
 export async function registerDroneOutput(
@@ -190,6 +261,8 @@ export async function registerDroneOutput(
     metadata?: Record<string, unknown>;
   },
 ) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+
   const dataset = await loadScopedDataset(ctx, datasetId);
 
   const ext = extensionOf(input.storageKey);
@@ -214,6 +287,14 @@ export async function registerDroneOutput(
       checksum: verification.actualChecksumSha256,
       metadata: (input.metadata ?? {}) as never,
     },
+  });
+
+  await registerStorageObjectBestEffort({
+    organizationId: ctx.organizationId,
+    storageKey: output.storageKey,
+    kind: StorageObjectKind.DRONE_OUTPUT,
+    sizeBytes: output.sizeBytes === null ? null : Number(output.sizeBytes),
+    objectCreatedAt: output.createdAt,
   });
 
   return output;
@@ -257,11 +338,25 @@ export async function markCaptureFailed(ctx: SessionContext, captureId: string, 
 }
 
 /** Full exterior dataset for the Exterior tab: captures, datasets, images, outputs, markers. */
-export async function getPropertyExteriorData(ctx: SessionContext, propertyId: string) {
+export async function getPropertyExteriorData(
+  ctx: SessionContext,
+  propertyId: string,
+  /**
+   * Which capture to work on. Re-scoped below against this property's own
+   * capture list, never trusted as a lookup key: it arrives as a URL
+   * parameter, and honouring an id from elsewhere would show one property's
+   * imagery under another's page.
+   */
+  requestedCaptureId?: string | null,
+) {
   const property = await assertPropertyInScope(ctx, propertyId);
   const captures = await prisma.droneCapture.findMany({
-    where: { propertyId: property.id },
-    orderBy: { createdAt: "desc" },
+    where: { propertyId: property.id, ...captureReviewWhere(ctx) },
+    // By flight date, not row-creation time. A backfilled capture of a flight
+    // from last year is created today; ordering by createdAt would present it
+    // as the most recent survey of the building, which it is not. Nulls last
+    // so an undated capture cannot claim to be the newest.
+    orderBy: { capturedAt: { sort: "desc", nulls: "last" } },
     include: {
       datasets: {
         include: {
@@ -294,5 +389,124 @@ export async function getPropertyExteriorData(ctx: SessionContext, propertyId: s
       evidence: { select: { id: true, type: true } },
     },
   });
-  return { captures: capturesWithUrls, markers };
+  /**
+   * Selection order, and why:
+   *   1. What the URL asked for, if it belongs to this property.
+   *   2. Any capture still in flight — this tab is where uploads and
+   *      processing happen, so work in progress outranks history. This was
+   *      the tab's original (only) behaviour and is deliberately kept.
+   *   3. Otherwise the most recent flight.
+   */
+  const requested = requestedCaptureId
+    ? capturesWithUrls.find((c) => c.id === requestedCaptureId)
+    : undefined;
+  const inFlight = capturesWithUrls.find((c) => c.status !== "READY" && c.status !== "FAILED");
+  const selectedCaptureId = (requested ?? inFlight ?? capturesWithUrls[0])?.id ?? null;
+
+  return { captures: capturesWithUrls, markers, selectedCaptureId };
+}
+
+/**
+ * The most images one batch may register.
+ *
+ * Each image costs a HEAD against the object store for the integrity check,
+ * so a batch is bounded by time rather than by bind parameters. 250 at ten
+ * at a time is well inside a serverless function's budget, and a real flight
+ * of 600 images arrives as three calls instead of 600.
+ */
+export const MAX_DRONE_IMAGE_BATCH = 250;
+
+/** How many integrity checks run at once. Sequential is too slow; unbounded
+ *  opens hundreds of sockets and the store starts refusing them. */
+const VERIFY_CONCURRENCY = 10;
+
+/**
+ * Registers many drone images against one dataset.
+ *
+ * Not a loop over `registerDroneImage`: the entitlement check and the dataset
+ * scope lookup happen once for the batch rather than once per file, and every
+ * filename is validated BEFORE anything is written — a batch that fails on
+ * image 300 would otherwise leave a half-registered dataset with no way for
+ * the caller to tell which files landed.
+ */
+export async function registerDroneImagesBatch(
+  ctx: SessionContext,
+  datasetId: string,
+  images: Array<{
+    storageKey: string;
+    thumbnailKey?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    checksum?: string;
+    latitude?: number;
+    longitude?: number;
+    altitude?: number;
+    capturedAt?: Date;
+  }>,
+) {
+  await requireFeature(ctx, FEATURE_FLAGS.DRONE_PROCESSING);
+  if (images.length === 0) throw new ApiError(400, "No images to register");
+  if (images.length > MAX_DRONE_IMAGE_BATCH) {
+    throw new ApiError(
+      400,
+      `A batch may carry at most ${MAX_DRONE_IMAGE_BATCH} images; this one has ${images.length}`,
+    );
+  }
+
+  const dataset = await loadScopedDataset(ctx, datasetId);
+
+  const rejected = images
+    .map((i) => ({ key: i.storageKey, ext: extensionOf(i.storageKey) }))
+    .filter((i) => !ALLOWED_IMAGE_EXTENSIONS.includes(i.ext));
+  if (rejected.length > 0) {
+    throw new ApiError(
+      400,
+      `Unsupported image file type "${rejected[0].ext || "unknown"}" — allowed: ${ALLOWED_IMAGE_EXTENSIONS.join(", ")}`,
+    );
+  }
+
+  const created: Array<{ id: string; storageKey: string }> = [];
+  for (let i = 0; i < images.length; i += VERIFY_CONCURRENCY) {
+    const chunk = images.slice(i, i + VERIFY_CONCURRENCY);
+    const verified = await Promise.all(
+      chunk.map(async (input) => ({
+        input,
+        verification: await verifyUploadedFile(ctx, {
+          storageKey: input.storageKey,
+          clientSizeBytes: input.sizeBytes,
+          clientChecksum: input.checksum,
+        }),
+      })),
+    );
+
+    for (const { input, verification } of verified) {
+      const image = await prisma.droneImage.create({
+        data: {
+          datasetId: dataset.id,
+          storageKey: input.storageKey,
+          thumbnailKey: input.thumbnailKey,
+          mimeType: input.mimeType ?? null,
+          sizeBytes: verification.actualSizeBytes,
+          checksum: verification.actualChecksumSha256,
+          latitude: input.latitude,
+          longitude: input.longitude,
+          altitude: input.altitude,
+          capturedAt: input.capturedAt,
+        },
+      });
+      created.push({ id: image.id, storageKey: image.storageKey });
+
+      // Age for tiering runs from when the object landed in the store, not
+      // from `capturedAt` — same rule as the single-image path.
+      await registerStorageObjectBestEffort({
+        organizationId: ctx.organizationId,
+        storageKey: image.storageKey,
+        kind: StorageObjectKind.DRONE_IMAGE,
+        sizeBytes: image.sizeBytes === null ? null : Number(image.sizeBytes),
+        objectCreatedAt: image.createdAt,
+      });
+    }
+  }
+
+  return { registered: created.length, ids: created.map((c) => c.id) };
 }

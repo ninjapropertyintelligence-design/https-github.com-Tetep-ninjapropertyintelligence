@@ -7,7 +7,7 @@ import { getVendorWork } from "@/lib/dashboard-views";
 
 /** Vendor dashboard (spec §17): assigned work only — no portfolio, no finances. */
 export function VendorDashboard({ data, vendorName }: { data: Awaited<ReturnType<typeof getVendorWork>>; vendorName: string }) {
-  const { issues, propertyCount, dueThisWeek } = data;
+  const { captureJobs, sitesOutstanding, sitesReturned, issues, dueThisWeek } = data;
 
   return (
     <div className="space-y-6">
@@ -16,11 +16,60 @@ export function VendorDashboard({ data, vendorName }: { data: Awaited<ReturnType
         <p className="text-sm text-muted">Assigned work only</p>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <StatTile label="Assigned Properties" value={propertyCount} />
-        <StatTile label="Open Jobs" value={issues.length} />
-        <StatTile label="Due This Week" value={dueThisWeek} tone={dueThisWeek > 0 ? "warning" : "default"} />
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <StatTile label="Capture jobs" value={captureJobs.length} href="/capture-jobs" />
+        <StatTile label="Sites to deliver" value={sitesOutstanding} href="/capture-jobs" />
+        {/* Returned work is surfaced as its own number rather than buried in
+            the list. A rejected site is the one thing on this page that is
+            already late. */}
+        <StatTile
+          label="Returned"
+          value={sitesReturned}
+          href="/capture-jobs"
+          tone={sitesReturned > 0 ? "critical" : "default"}
+        />
+        <StatTile label="Issues due this week" value={dueThisWeek} tone={dueThisWeek > 0 ? "warning" : "default"} />
       </div>
+
+      <Card>
+        <CardHeader title="Capture jobs" subtitle="Soonest due first" />
+        <CardBody className="p-0">
+          {captureJobs.length === 0 ? (
+            <div className="p-5">
+              <EmptyState
+                title="No capture work assigned"
+                description="Jobs sent to your company will appear here with the sites and positions to shoot."
+              />
+            </div>
+          ) : (
+            <ul>
+              {captureJobs.map((job) => (
+                <li key={job.id} className="border-b border-border px-5 py-4 last:border-0">
+                  <Link href={`/capture-jobs/${job.id}`} className="text-sm font-medium text-foreground hover:text-brand">
+                    {job.title}
+                  </Link>
+                  <ul className="mt-2 space-y-1">
+                    {job.sites.map((site) => (
+                      <li key={site.id} className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-medium text-foreground">{site.propertyName}</span>
+                        <StatusBadge status={site.status} />
+                        {site.shotsTotal > 0 ? (
+                          <span className="text-muted tabular-nums">
+                            route {site.shotsCaptured}/{site.shotsTotal}
+                          </span>
+                        ) : null}
+                        {site.rejectionReason ? (
+                          <span className="text-[var(--band-critical)]">returned: {site.rejectionReason}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardBody>
+      </Card>
 
       <Card>
         <CardHeader title="Assigned Issues" />

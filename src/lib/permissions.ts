@@ -22,10 +22,23 @@ export const PERMISSIONS = [
   "canManageIntegrations",
   "canManageBilling",
   "canExportData",
+  "canUploadEvidence",
   "canPerformCapture",
   "canManageDroneJobs",
   "canManageVendors",
+  // Ordering capture work from a subcontractor: creating a capture job,
+  // placing its route, and issuing it to the vendor. The platform operator
+  // runs the vendor network, so this is never a customer's to hold.
+  "canManageCaptureJobs",
+  // Accepting or sending back a subcontractor's capture. Acceptance is what
+  // publishes vendor work to everyone on the property, so it is the platform
+  // operator's quality gate, not something a customer role does.
+  "canReviewCaptures",
   "canViewAuditLogs",
+  // Who is on the team and what they have been doing: last sign-in, last
+  // activity, and the per-person activity log. Narrower than canViewAuditLogs,
+  // which also opens retention, storage and deletion settings.
+  "canViewTeamActivity",
   "canManageFeatureFlags",
   "canAccessPlatformAdmin",
   // Spec §45 "Require authorized support role": impersonating a customer is
@@ -41,7 +54,12 @@ const ALL: Permission[] = [...PERMISSIONS];
  * Capabilities that belong to the platform operator, never to a customer —
  * no org role may hold one, however senior.
  */
-export const PLATFORM_ONLY_PERMISSIONS: Permission[] = ["canAccessPlatformAdmin", "canImpersonate"];
+export const PLATFORM_ONLY_PERMISSIONS: Permission[] = [
+  "canAccessPlatformAdmin",
+  "canImpersonate",
+  "canManageCaptureJobs",
+  "canReviewCaptures",
+];
 
 // Roles that are implicitly organization-wide: every property in the org is
 // in scope without needing explicit AccessGrant rows.
@@ -59,9 +77,16 @@ export const SCOPED_ROLES: Role[] = [
 ];
 
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  [Role.PLATFORM_ADMIN]: ["canAccessPlatformAdmin", "canViewAuditLogs", "canManageFeatureFlags", "canImpersonate"],
+  [Role.PLATFORM_ADMIN]: [
+    "canAccessPlatformAdmin",
+    "canViewAuditLogs",
+    "canManageFeatureFlags",
+    "canImpersonate",
+    "canManageCaptureJobs",
+    "canReviewCaptures",
+  ],
 
-  // Everything except the two platform-side capabilities. Spelled out as a
+  // Everything except the platform-side capabilities. Spelled out as a
   // list rather than "ALL minus one" so adding a platform permission to
   // PERMISSIONS can never silently grant it to every customer's Owner —
   // which is exactly what adding `canImpersonate` did on the first pass.
@@ -69,6 +94,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.PORTFOLIO_ADMIN]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageProperties",
     "canManageAssets",
     "canCreateIssues",
@@ -83,10 +109,12 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canPerformCapture",
     "canManageDroneJobs",
     "canManageVendors",
+    "canViewTeamActivity",
   ],
 
   [Role.REGIONAL_MANAGER]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageAssets",
     "canCreateIssues",
     "canResolveIssues",
@@ -99,6 +127,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.FACILITIES_MANAGER]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageAssets",
     "canCreateIssues",
     "canResolveIssues",
@@ -110,6 +139,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.INSPECTOR]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canCreateIssues",
     "canPerformAssessments",
     "canPerformCapture",
@@ -117,13 +147,18 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
 
   [Role.TECHNICIAN]: [
     "canViewPortfolio",
+    "canUploadEvidence",
     "canManageAssets",
     "canCreateIssues",
     "canPerformAssessments",
     "canPerformCapture",
   ],
 
-  [Role.VENDOR]: ["canCreateIssues"],
+  // A capture subcontractor. The permission alone grants nothing: a vendor has
+  // no property access unless a capture job is open on that site (see
+  // `propertyScopeWhere`), so this composes to "may capture, on the sites they
+  // were sent to, while the job is open".
+  [Role.VENDOR]: ["canCreateIssues", "canUploadEvidence", "canPerformCapture"],
 
   [Role.VIEWER]: ["canViewPortfolio", "canViewFinancialExposure"],
 };
