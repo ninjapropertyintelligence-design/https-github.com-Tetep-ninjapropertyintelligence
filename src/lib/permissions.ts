@@ -31,6 +31,10 @@ export const PERMISSIONS = [
   // everyone else on the property, so it belongs to the organization's admins,
   // not to everyone who can see the job.
   "canReviewCaptures",
+  // Checking a finished repair's proof and accepting it, or sending it back.
+  // Wider than capture review on purpose: the managers who look after a
+  // building are the ones who know whether the leak is actually fixed.
+  "canVerifyRepairs",
   "canViewAuditLogs",
   "canManageFeatureFlags",
   "canAccessPlatformAdmin",
@@ -91,6 +95,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canManageDroneJobs",
     "canManageVendors",
     "canReviewCaptures",
+    "canVerifyRepairs",
   ],
 
   [Role.REGIONAL_MANAGER]: [
@@ -104,6 +109,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canViewAI",
     "canExportData",
     "canManageVendors",
+    "canVerifyRepairs",
   ],
 
   [Role.FACILITIES_MANAGER]: [
@@ -116,6 +122,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canViewFinancialExposure",
     "canViewAI",
     "canManageVendors",
+    "canVerifyRepairs",
   ],
 
   [Role.INSPECTOR]: [
