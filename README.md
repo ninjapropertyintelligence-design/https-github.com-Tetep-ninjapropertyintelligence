@@ -185,6 +185,26 @@ already-computed numbers. Every query is logged to `AIQueryLog` with its
 tool calls and source references for traceability (spec's "AI must return
 verified values" and "every material AI response should be traceable").
 
+### AI photo analysis
+
+A vendor's capture-job photo uploaded against an asset is queued
+(`PhotoAnalysisJob`) and analysed straight after the upload responds. The
+result is a SUGGESTED `AIFinding`; nothing changes a score or a cost until a
+person confirms it, when the organization's defect rule
+(`/settings/defect-rules`) turns it into an Issue and a condition change.
+
+Work the upload did not finish (a function that timed out, an instance that
+went away, a provider failure being retried) is swept up by
+`GET /api/v1/cron/photo-analysis` with `Authorization: Bearer $CRON_SECRET`,
+scheduled in `vercel.json`. **Once a day**, because the Vercel team is on
+the Hobby plan, which allows nothing more frequent and fails every
+deployment otherwise; `tests/unit/vercel-crons.test.ts` enforces that. On a
+paid plan, set the schedule to `*/5 * * * *` and delete that test. The same
+sweep can be run by hand from `POST /api/v1/admin/photo-analysis/run`
+(platform admin).
+
+Vercel runs crons on **production** deployments only.
+
 ### Provider abstractions (Matterport / drone)
 
 `MatterportConnection` / `MatterportSpace` / `MatterportPropertyLink` /
@@ -211,10 +231,11 @@ Maps created before the account was connected are never imported.
 
 Passes run from the "Check now" button, from `POST /api/v1/admin/dronedeploy/run`
 (platform admin), or on a schedule via `GET /api/v1/cron/dronedeploy` with
-`Authorization: Bearer $CRON_SECRET`. For Vercel Cron, add to `vercel.json`:
+`Authorization: Bearer $CRON_SECRET`. For Vercel Cron, add an entry to the
+`crons` array in `vercel.json`:
 
 ```json
-{ "crons": [{ "path": "/api/v1/cron/dronedeploy", "schedule": "*/15 * * * *" }] }
+{ "path": "/api/v1/cron/dronedeploy", "schedule": "*/15 * * * *" }
 ```
 
 (Vercel's Hobby plan only allows daily crons, so a schedule this frequent
