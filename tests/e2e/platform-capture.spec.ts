@@ -115,3 +115,20 @@ test("a portfolio admin sees team activity, a regional manager does not", async 
   await page.goto("/settings/activity");
   await page.waitForURL(/\/dashboard/);
 });
+
+test("a vendor can reach every way of delivering: connections, flights, scans and condition scores", async ({ page }) => {
+  await signIn(page, "vendor@demo.com");
+  await page.getByRole("link", { name: "Connections" }).click();
+  await page.waitForURL(/\/settings\/connections/);
+  await expect(page.getByRole("button", { name: "Connect DroneDeploy" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect Matterport" })).toBeVisible();
+
+  // The seeded job asks for drone, Matterport and condition scores.
+  await page.goto("/capture-jobs");
+  await page.getByRole("link", { name: /Q4 condition sweep/ }).click();
+  await page.waitForURL(/\/capture-jobs\/[^/?]+$/);
+  await expect(page.getByText("DroneDeploy is not connected.")).toBeVisible();
+  await expect(page.getByText("Matterport is not connected.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enter condition scores" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Add an asset" })).toBeVisible();
+});

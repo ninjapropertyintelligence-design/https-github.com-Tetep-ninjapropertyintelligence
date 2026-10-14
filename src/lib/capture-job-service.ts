@@ -16,6 +16,7 @@ import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { notifyCaptureReviewers, notifyPropertyStakeholders, notifyVendorUsers } from "@/lib/notifications";
 import { distanceMeters } from "@/lib/media/panorama-metadata";
+import { writeAuditLog } from "@/lib/audit";
 
 /**
  * Capture jobs — work ordered from a subcontractor.
@@ -690,4 +691,63 @@ export async function resolveDroneTargetForSite(
   const capture = existing ?? (await createDroneCapture(ctx, site.propertyId, { capturedAt: new Date() }));
   const dataset = await createDroneDataset(ctx, capture.id);
   return { captureId: capture.id, datasetId: dataset.id };
+}
+
+/**
+ * Adds an asset to a job site, so it can be rated.
+ *
+ * A job that asks for condition scores on a site with no assets listed could
+ * otherwise never be finished: the vendor would have nothing to score. The
+ * vendor (on its own open job) or the platform team may add one; it is
+ * recorded with who added it and from which job.
+ */
+export async function addSiteAsset(
+  ctx: SessionContext,
+  jobId: string,
+  siteId: string,
+  input: { name: string; assetType: string; manufacturer?: string | null; model?: string | null; serialNumber?: string | null },
+) {
+  const isVendor = ctx.role === Role.VENDOR;
+  if (!isVendor && !hasPermission(ctx.role, "canManageCaptureJobs")) {
+    throw new ApiError(403, "Only the vendor on this job or the platform team can add assets here");
+  }
+  const { job, site } = await siteForAction(ctx, jobId, siteId);
+  if (isVendor && (!OPEN_STATUSES.includes(job.status) || site.status === CaptureJobSiteStatus.ACCEPTED)) {
+    throw new ApiError(409, "This site is no longer accepting work");
+  }
+  const name = input.name.trim();
+  const assetType = input.assetType.trim();
+  if (!name || !assetType) throw new ApiError(400, "Give the asset a name and a type");
+
+  const asset = await prisma.asset.create({
+    data: {
+      organizationId: ctx.organizationId,
+      propertyId: site.propertyId,
+      name,
+      assetType,
+      manufacturer: input.manufacturer?.trim() || null,
+      model: input.model?.trim() || null,
+      serialNumber: input.serialNumber?.trim() || null,
+      updatedBy: ctx.userId,
+    },
+    select: { id: true, name: true },
+  });
+  await Promise.all([
+    emitEvent({
+      organizationId: ctx.organizationId,
+      propertyId: site.propertyId,
+      type: EVENT_TYPES.ASSET_CREATED,
+      actorUserId: ctx.userId,
+      payload: { assetId: asset.id, name: asset.name, captureJobId: job.id },
+    }),
+    writeAuditLog({
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.userId,
+      action: "asset.created",
+      entityType: "Asset",
+      entityId: asset.id,
+      metadata: { captureJobId: job.id, captureJobSiteId: site.id, byVendor: isVendor },
+    }),
+  ]);
+  return asset;
 }
