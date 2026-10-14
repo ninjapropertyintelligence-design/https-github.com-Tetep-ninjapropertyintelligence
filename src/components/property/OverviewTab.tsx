@@ -2,7 +2,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { formatCents, formatDate } from "@/lib/format";
-import { healthBandFor } from "@/lib/scoring-categories";
+import { displayBandFor, LOW_CONFIDENCE_THRESHOLD } from "@/lib/scoring-categories";
 import { CategoryBreakdownEntry } from "@/lib/scoring";
 import { ScoringCategory } from "@/lib/scoring-categories";
 
@@ -52,8 +52,16 @@ export function OverviewTab({
         <StatTile
           label="Health Score"
           value={health?.healthScore ?? "—"}
-          tone={!health ? "default" : health.healthScore >= 80 ? "good" : health.healthScore >= 65 ? "default" : "critical"}
-          sublabel={health ? healthBandFor(health.healthScore) : "No data yet"}
+          tone={
+            !health || health.dataConfidenceScore < LOW_CONFIDENCE_THRESHOLD
+              ? "default"
+              : health.healthScore >= 80
+                ? "good"
+                : health.healthScore >= 65
+                  ? "default"
+                  : "critical"
+          }
+          sublabel={health ? displayBandFor(health.healthScore, health.dataConfidenceScore) : "No data yet"}
         />
         <StatTile label="Risk Score" value={health?.riskScore ?? "—"} tone={health && health.riskScore >= 60 ? "critical" : "default"} />
         <StatTile label="Data Confidence" value={health ? `${Math.round(health.dataConfidenceScore)}%` : "—"} />

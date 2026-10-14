@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { getSessionContext, propertyScopeWhere } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { getLatestHealthSnapshots } from "@/lib/scoring";
-import { healthBandFor } from "@/lib/scoring-categories";
+import { healthBandFor, displayBandFor } from "@/lib/scoring-categories";
 import { Card, CardBody } from "@/components/ui/Card";
 import { HealthBandBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -124,7 +124,13 @@ export default async function PropertiesPage({
                     <td className="px-3 py-3 text-muted">{property.region?.name ?? "—"}</td>
                     <td className="px-3 py-3 tabular-nums">{health?.healthScore ?? "—"}</td>
                     <td className="px-3 py-3 tabular-nums">{health?.riskScore ?? "—"}</td>
-                    <td className="px-3 py-3">{band ? <HealthBandBadge band={band} /> : <span className="text-xs text-muted">No data</span>}</td>
+                    <td className="px-3 py-3">
+                      {health && band ? (
+                        <HealthBandBadge band={displayBandFor(health.healthScore, health.dataConfidenceScore)} />
+                      ) : (
+                        <span className="text-xs text-muted">No data</span>
+                      )}
+                    </td>
                     <td className="px-5 py-3 text-right tabular-nums">{health ? formatCents(health.capitalExposure12mo) : "—"}</td>
                   </tr>
                 ))}
