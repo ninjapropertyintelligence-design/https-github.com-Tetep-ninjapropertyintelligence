@@ -6,6 +6,7 @@ const BAND_STYLES: Record<string, string> = {
   "Needs Attention": "bg-[color-mix(in_srgb,var(--band-needs-attention)_16%,white)] text-[var(--band-needs-attention)]",
   Poor: "bg-[color-mix(in_srgb,var(--band-poor)_16%,white)] text-[var(--band-poor)]",
   Critical: "bg-[color-mix(in_srgb,var(--band-critical)_16%,white)] text-[var(--band-critical)]",
+  "Not enough data": "border border-dashed border-zinc-300 bg-zinc-50 text-zinc-600",
 };
 
 const SEVERITY_STYLES: Record<string, string> = {

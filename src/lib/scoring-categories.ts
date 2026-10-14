@@ -45,6 +45,25 @@ export function healthBandFor(score: number): HealthBandLabel {
   return "Critical";
 }
 
+/**
+ * Below this Data Confidence (%), the health score is averaged over too little
+ * evidence to stand behind a band: a property with one inspected roof and
+ * nothing else can score 96, and calling it "Excellent" reads as a verdict on
+ * the whole building.
+ */
+export const LOW_CONFIDENCE_THRESHOLD = 25;
+
+export const LOW_CONFIDENCE_LABEL = "Not enough data";
+
+/**
+ * The band to show a person. Same as `healthBandFor`, except a score built on
+ * too little data says so instead of claiming a condition. Filters and counts
+ * keep using `healthBandFor`, so the score itself is never hidden.
+ */
+export function displayBandFor(score: number, dataConfidenceScore: number): HealthBandLabel | typeof LOW_CONFIDENCE_LABEL {
+  return dataConfidenceScore < LOW_CONFIDENCE_THRESHOLD ? LOW_CONFIDENCE_LABEL : healthBandFor(score);
+}
+
 const ASSET_TYPE_KEYWORDS: Array<[RegExp, ScoringCategory]> = [
   // HVAC is checked before Roof: rooftop units ("RTU", "rooftop") mention
   // "roof" but are HVAC equipment, not the roof membrane/system itself.

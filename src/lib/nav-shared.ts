@@ -52,3 +52,16 @@ export function groupNavItems(items: NavItem[]): Array<{ section: NavSection; it
     (g) => g.items.length > 0,
   );
 }
+
+/**
+ * The one item to highlight for a path: the longest href that matches it.
+ * A prefix test alone lights "Reports" on /reports/cogs and "Administration"
+ * on every /settings/* page, alongside the item actually open.
+ */
+export function activeNavHref(items: NavItem[], pathname: string): string | null {
+  let best: string | null = null;
+  for (const { href } of items) {
+    if ((pathname === href || pathname.startsWith(href + "/")) && (!best || href.length > best.length)) best = href;
+  }
+  return best;
+}

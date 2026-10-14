@@ -1,6 +1,6 @@
 import { HealthBandBadge } from "@/components/ui/Badge";
 import { formatCents } from "@/lib/format";
-import { healthBandFor } from "@/lib/scoring-categories";
+import { displayBandFor } from "@/lib/scoring-categories";
 
 /**
  * Shared header shown above every tab on the property page (spec §22):
@@ -32,7 +32,7 @@ export function PropertyHeaderStats({
         <span className="text-muted">Exposure</span>{" "}
         <span className="font-semibold tabular-nums">{formatCents(health.capitalExposure12mo)}</span>
       </span>
-      <HealthBandBadge band={healthBandFor(health.healthScore)} />
+      <HealthBandBadge band={displayBandFor(health.healthScore, health.dataConfidenceScore)} />
     </div>
   );
 }
