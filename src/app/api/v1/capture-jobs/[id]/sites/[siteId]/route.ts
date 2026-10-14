@@ -7,6 +7,7 @@ import {
   submitCaptureSite,
   submitConditionScores,
 } from "@/lib/capture-job-service";
+import { contextForCaptureJob } from "@/lib/tenant-scope";
 import { z } from "zod";
 
 type RouteParams = { params: Promise<{ id: string; siteId: string }> };
@@ -55,8 +56,10 @@ const bodySchema = z.discriminatedUnion("action", [
   }),
 ]);
 
-export const POST = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
+export const POST = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
   const { id, siteId } = await params;
+  // The platform team works across customers; this binds it to the job's own.
+  const ctx = await contextForCaptureJob(session, id);
   const body = bodySchema.parse(await req.json());
 
   switch (body.action) {
@@ -67,7 +70,7 @@ export const POST = withApiHandler<NextResponse, RouteParams>(async (ctx, req, {
     case "submit":
       return NextResponse.json(await submitCaptureSite(ctx, id, siteId));
     case "shot-locations":
-      requirePermission(ctx, "canManageProperties");
+      requirePermission(ctx, "canManageCaptureJobs");
       return NextResponse.json(await setShotLocations(ctx, id, siteId, body.locations));
     case "review":
       return NextResponse.json(

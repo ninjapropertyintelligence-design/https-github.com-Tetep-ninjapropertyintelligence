@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
-import { canAccessProperty, captureReviewWhere } from "@/lib/session-context";
+import { canAccessProperty, captureReviewWhere, contextForCaptureEvidence } from "@/lib/session-context";
 import { getStorageProvider } from "@/lib/storage";
 
 type RouteParams = { params: Promise<{ id: string }> };
@@ -39,8 +39,10 @@ type RouteParams = { params: Promise<{ id: string }> };
  */
 const MAX_PROXY_BYTES = 64 * 1024 * 1024;
 
-export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
+export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
   const { id } = await params;
+  // The platform team reviewing a vendor's delivery reads it in that customer's organization.
+  const ctx = await contextForCaptureEvidence(session, id);
 
   const evidence = await prisma.evidence.findFirst({
     // Vendor work not yet accepted reads as absent to everyone but reviewers

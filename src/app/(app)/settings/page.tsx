@@ -1,12 +1,10 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSessionContext, can } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { ROLE_LABELS } from "@/lib/role-labels";
-import { formatCents, formatDate } from "@/lib/format";
-import { TeamInvitations } from "@/components/settings/TeamInvitations";
-import { listPendingInvitations } from "@/lib/invitation-service";
-import { Role } from "@/generated/prisma/client";
+import { formatCents } from "@/lib/format";
 
 export default async function SettingsPage() {
   const ctx = await getSessionContext();
@@ -22,30 +20,7 @@ export default async function SettingsPage() {
   ]);
   const overrideByKey = new Map(overrides.map((o) => [o.flagKey, o.enabled]));
 
-  const canInvite = can(ctx, "canManageTeam");
-  const [pending, vendors, portfolios, regions, properties] = canInvite
-    ? await Promise.all([
-        listPendingInvitations(ctx),
-        prisma.vendor.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
-        prisma.portfolio.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
-        prisma.region.findMany({
-          where: { portfolio: { organizationId: ctx.organizationId } },
-          orderBy: { name: "asc" },
-          select: { id: true, name: true, portfolio: { select: { name: true } } },
-        }),
-        prisma.property.findMany({
-          where: { organizationId: ctx.organizationId },
-          orderBy: { name: "asc" },
-          select: { id: true, name: true, city: true, state: true },
-          take: 2000,
-        }),
-      ])
-    : [[], [], [], [], []];
-  // Only an Owner may invite an Owner, and Platform Admin is never an organization's to give.
-  const invitableRoles = Object.values(Role)
-    .filter((r) => r !== Role.PLATFORM_ADMIN && (r !== Role.OWNER || ctx.role === Role.OWNER))
-    .map((r) => ({ value: r, label: ROLE_LABELS[r] }));
-  const now = new Date();
+  const canManageTeam = can(ctx, "canManageTeam");
 
   return (
     <div className="space-y-6">
@@ -56,7 +31,17 @@ export default async function SettingsPage() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Team" subtitle={`${memberships.length} members`} />
+          <CardHeader
+            title="Team"
+            subtitle={`${memberships.length} members`}
+            action={
+              canManageTeam ? (
+                <Link href="/settings/team" className="text-sm font-medium text-brand hover:underline">
+                  Manage team →
+                </Link>
+              ) : null
+            }
+          />
           <CardBody className="p-0">
             <ul>
               {memberships.map((m) => (
@@ -69,28 +54,6 @@ export default async function SettingsPage() {
                 </li>
               ))}
             </ul>
-            {canInvite ? (
-              <TeamInvitations
-                roles={invitableRoles}
-                vendors={vendors.map((v) => ({ id: v.id, label: v.name }))}
-                scopes={{
-                  PORTFOLIO: portfolios.map((p) => ({ id: p.id, label: p.name })),
-                  REGION: regions.map((r) => ({ id: r.id, label: `${r.name} (${r.portfolio.name})` })),
-                  PROPERTY: properties.map((p) => ({
-                    id: p.id,
-                    label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
-                  })),
-                }}
-                pending={pending.map((inv) => ({
-                  id: inv.id,
-                  email: inv.email,
-                  roleLabel: ROLE_LABELS[inv.role],
-                  invitedBy: inv.invitedBy?.name ?? null,
-                  expiresAt: formatDate(inv.expiresAt),
-                  expired: inv.expiresAt <= now,
-                }))}
-              />
-            ) : null}
           </CardBody>
         </Card>
 

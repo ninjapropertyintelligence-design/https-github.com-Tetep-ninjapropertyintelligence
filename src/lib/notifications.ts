@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { NotificationType, Role } from "@/generated/prisma/client";
-import { hasPermission } from "@/lib/permissions";
 import { appBaseUrl, sendEmail } from "@/lib/email";
 import { notificationEmail } from "@/lib/email-templates";
 
@@ -59,9 +58,13 @@ export async function notifyPropertyStakeholders(params: {
 }
 
 /**
- * Tells the people who can act on a capture submission — the organization's
- * reviewers — and nobody else. A property stakeholder who cannot accept the
- * work, and cannot yet see it, gains nothing from "ready for review".
+ * Tells the people who can act on a capture submission — the platform team,
+ * which approves vendor work before the customer sees it — and nobody else.
+ * A property stakeholder who cannot accept the work, and cannot yet see it,
+ * gains nothing from "ready for review".
+ *
+ * Filed under the customer's organization, the one the work belongs to; the
+ * notification list is read by user, so it reaches the operator regardless.
  */
 export async function notifyCaptureReviewers(params: {
   organizationId: string;
@@ -70,13 +73,12 @@ export async function notifyCaptureReviewers(params: {
   body?: string;
   link?: string;
 }) {
-  const reviewerRoles = Object.values(Role).filter((role) => hasPermission(role, "canReviewCaptures"));
-  const reviewers = await prisma.membership.findMany({
-    where: { organizationId: params.organizationId, role: { in: reviewerRoles } },
-    select: { userId: true },
+  const reviewers = await prisma.user.findMany({
+    where: { isPlatformAdmin: true, isActive: true },
+    select: { id: true },
   });
   if (reviewers.length === 0) return;
-  await deliver(params.organizationId, reviewers.map((m) => m.userId), params);
+  await deliver(params.organizationId, reviewers.map((u) => u.id), params);
 }
 
 export async function notifyUser(params: {

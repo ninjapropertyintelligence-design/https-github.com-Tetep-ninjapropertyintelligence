@@ -18,6 +18,10 @@ export {
   captureReviewWhere,
   mfaPolicySatisfied,
   sessionPredatesPasswordChange,
+  isPlatformOperator,
+  platformActingContext,
+  contextForCaptureJob,
+  contextForCaptureEvidence,
 } from "@/lib/tenant-scope";
 
 export const ACTIVE_ORG_COOKIE = "activeOrgId";

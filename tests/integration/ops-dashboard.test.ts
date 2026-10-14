@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { asPlatform } from "../helpers/platform";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import {
@@ -113,14 +114,14 @@ afterAll(async () => {
 });
 
 async function issuedJob(propertyIds: string[], shots?: Array<{ label: string }>) {
-  const job = await createCaptureJob(staffCtx(), {
+  const job = await createCaptureJob(asPlatform(staffCtx()), {
     title: `Sweep ${suffix}`,
     vendorId: busyVendor.id,
     propertyIds,
     deliverables: ["PHOTOS"],
     shots,
   });
-  await issueCaptureJob(staffCtx(), job.id);
+  await issueCaptureJob(asPlatform(staffCtx()), job.id);
   return job;
 }
 
@@ -140,7 +141,7 @@ async function uploadPhoto(propertyId: string, captureShotId?: string) {
 describe("what is running", () => {
   it("counts open jobs and leaves drafts out of them", async () => {
     await issuedJob([siteA.id]);
-    await createCaptureJob(staffCtx(), {
+    await createCaptureJob(asPlatform(staffCtx()), {
       title: "not issued",
       vendorId: busyVendor.id,
       propertyIds: [siteB.id],
@@ -186,7 +187,7 @@ describe("what is running", () => {
     const submittedTimes = data.awaitingReview.map((r) => r.submittedAt?.getTime() ?? 0);
     expect(submittedTimes).toEqual([...submittedTimes].sort((a, b) => a - b));
 
-    await reviewCaptureSite(staffCtx(), job.id, sites[0].id, { accept: false, reason: "Blurry north elevation" });
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, sites[0].id, { accept: false, reason: "Blurry north elevation" });
     data = await getOperationsDashboard(staffCtx());
     expect(data.counts.awaitingReview).toBe(1);
     const returned = data.openJobs[0].sites.find((s) => s.id === sites[0].id);
@@ -196,14 +197,14 @@ describe("what is running", () => {
   });
 
   it("marks a job overdue by a negative day count", async () => {
-    const job = await createCaptureJob(staffCtx(), {
+    const job = await createCaptureJob(asPlatform(staffCtx()), {
       title: "late",
       vendorId: busyVendor.id,
       propertyIds: [siteA.id],
       deliverables: ["PHOTOS"],
       dueDate: new Date(Date.now() - 3 * 86400000),
     });
-    await issueCaptureJob(staffCtx(), job.id);
+    await issueCaptureJob(asPlatform(staffCtx()), job.id);
 
     const data = await getOperationsDashboard(staffCtx());
     expect(data.counts.overdueJobs).toBe(1);

@@ -37,7 +37,10 @@ export type NavIconKey =
   | "storage"
   | "usage"
   | "rules"
-  | "platform";
+  | "platform"
+  | "team"
+  | "vendor"
+  | "activity";
 
 export interface NavItem {
   label: string;

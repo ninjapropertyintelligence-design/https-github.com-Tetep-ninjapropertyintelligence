@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { asPlatform } from "../helpers/platform";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import {
@@ -38,6 +39,7 @@ let org: { id: string };
 let vendor: { id: string };
 let staff: { id: string };
 let vendorUser: { id: string };
+let platformUser: { id: string };
 let siteA: { id: string };
 let siteB: { id: string };
 let untouchedSite: { id: string };
@@ -99,6 +101,10 @@ beforeAll(async () => {
   });
   vendorUser = await prisma.user.create({
     data: { email: `vendor-${suffix}@example.com`, passwordHash: "x", name: "Vendor" },
+  });
+  // The platform team approves vendor work, so it is who hears of a submission.
+  platformUser = await prisma.user.create({
+    data: { email: `platform-${suffix}@example.com`, passwordHash: "x", name: "Platform", isPlatformAdmin: true },
   });
 
   // Real memberships, because notification delivery is resolved from them:
@@ -166,18 +172,19 @@ afterAll(async () => {
   await prisma.organization.delete({ where: { id: org.id } });
   await prisma.user.delete({ where: { id: staff.id } });
   await prisma.user.delete({ where: { id: vendorUser.id } });
+  await prisma.user.delete({ where: { id: platformUser.id } });
 });
 
 async function issuedJob(
   deliverables: Array<"DRONE" | "PHOTOS" | "CONDITION_SCORES" | "IMAGE_360" | "MATTERPORT"> = ["CONDITION_SCORES"],
 ) {
-  const job = await createCaptureJob(staffCtx(), {
+  const job = await createCaptureJob(asPlatform(staffCtx()), {
     title: `Q3 sweep ${suffix}`,
     vendorId: vendor.id,
     propertyIds: [siteA.id, siteB.id],
     deliverables,
   });
-  await issueCaptureJob(staffCtx(), job.id);
+  await issueCaptureJob(asPlatform(staffCtx()), job.id);
   return getCaptureJob(staffCtx(), job.id);
 }
 
@@ -187,7 +194,7 @@ describe("the job as an authorization", () => {
     // at all — not "their organization's properties".
     expect(await canAccessProperty(vendorCtx(), siteA.id)).toBe(false);
 
-    await createCaptureJob(staffCtx(), {
+    await createCaptureJob(asPlatform(staffCtx()), {
       title: "draft",
       vendorId: vendor.id,
       propertyIds: [siteA.id],
@@ -219,7 +226,7 @@ describe("the job as an authorization", () => {
         },
       });
       await submitCaptureSite(vendorCtx(), job.id, site.id);
-      await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+      await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
     }
 
     expect((await prisma.captureJob.findUniqueOrThrow({ where: { id: job.id } })).status).toBe("ACCEPTED");
@@ -229,7 +236,7 @@ describe("the job as an authorization", () => {
   });
 
   it("hides a draft job from the vendor's list and refuses it by id", async () => {
-    const job = await createCaptureJob(staffCtx(), {
+    const job = await createCaptureJob(asPlatform(staffCtx()), {
       title: "draft",
       vendorId: vendor.id,
       propertyIds: [siteA.id],
@@ -255,7 +262,7 @@ describe("the job as an authorization", () => {
       // A job is an access grant, so an unscoped id here would hand a
       // subcontractor a property its author cannot even see.
       await expect(
-        createCaptureJob(staffCtx(), {
+        createCaptureJob(asPlatform(staffCtx()), {
           title: "sneaky",
           vendorId: vendor.id,
           propertyIds: [siteA.id, foreign.id],
@@ -269,12 +276,12 @@ describe("the job as an authorization", () => {
 
   it("will not issue a job with no vendor assigned", async () => {
     // Issuing to nobody grants access to nobody while looking dispatched.
-    const job = await createCaptureJob(staffCtx(), {
+    const job = await createCaptureJob(asPlatform(staffCtx()), {
       title: "unassigned",
       propertyIds: [siteA.id],
       deliverables: ["PHOTOS"],
     });
-    await expect(issueCaptureJob(staffCtx(), job.id)).rejects.toThrow(/assign a vendor/i);
+    await expect(issueCaptureJob(asPlatform(staffCtx()), job.id)).rejects.toThrow(/assign a vendor/i);
   });
 
   it("does not let a vendor issue or review its own work", async () => {
@@ -343,7 +350,7 @@ describe("definition of done", () => {
     });
     await submitCaptureSite(vendorCtx(), job.id, site.id);
     // A rejection with no reason is a site the vendor resubmits unchanged.
-    await expect(reviewCaptureSite(staffCtx(), job.id, site.id, { accept: false })).rejects.toThrow(/reason/i);
+    await expect(reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: false })).rejects.toThrow(/reason/i);
   });
 });
 
@@ -401,7 +408,7 @@ describe("condition scores — the deliverable that moves the number", () => {
     const site = job.sites.find((s) => s.propertyId === siteA.id)!;
     await submitConditionScores(vendorCtx(), job.id, site.id, [{ assetId: assetA.id, score: 60 }]);
     await submitCaptureSite(vendorCtx(), job.id, site.id);
-    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
 
     await expect(
       submitConditionScores(vendorCtx(), job.id, site.id, [{ assetId: assetA.id, score: 99 }]),
@@ -657,7 +664,7 @@ describe("reading evidence is scoped too", () => {
 
 describe("the shot list", () => {
   async function jobWithRoute() {
-    const job = await createCaptureJob(staffCtx(), {
+    const job = await createCaptureJob(asPlatform(staffCtx()), {
       title: `Routed ${suffix}`,
       vendorId: vendor.id,
       propertyIds: [siteA.id, siteB.id],
@@ -668,7 +675,7 @@ describe("the shot list", () => {
         { label: "Roof — RTU row", kind: "PHOTO", required: false },
       ],
     });
-    await issueCaptureJob(staffCtx(), job.id);
+    await issueCaptureJob(asPlatform(staffCtx()), job.id);
     return getCaptureJob(staffCtx(), job.id);
   }
 
@@ -854,22 +861,38 @@ describe("telling people", () => {
     });
   }
 
-  it("tells the ordering organization when a vendor submits a site", async () => {
+  it("tells the platform team, and not the customer, when a vendor submits a site", async () => {
     const job = await issuedJob(["PHOTOS"]);
     const site = job.sites[0];
     await deliverPhotos(site.propertyId);
     await submitCaptureSite(vendorCtx(), job.id, site.id);
 
-    const notes = await prisma.notification.findMany({ where: { organizationId: org.id } });
+    const all = await prisma.notification.findMany({ where: { organizationId: org.id } });
+    // The customer cannot see the work yet, so "ready for review" is not theirs.
+    expect(all.some((n) => n.userId === staff.id)).toBe(false);
+    const notes = all.filter((n) => n.userId === platformUser.id);
     expect(notes).toHaveLength(1);
-    expect(notes[0].userId).toBe(staff.id);
     expect(notes[0].type).toBe("CAPTURE_SUBMITTED");
     // The site has to be named. "A capture was submitted" across a 40-site
     // sweep tells a reviewer nothing about where to go.
     expect(notes[0].title).toContain(site.property.name);
     expect(notes[0].link).toBe(`/capture-jobs/${job.id}`);
     // And it must NOT go back to the vendor who just pressed submit.
-    expect(notes.some((n) => n.userId === vendorUser.id)).toBe(false);
+    expect(all.some((n) => n.userId === vendorUser.id)).toBe(false);
+  });
+
+  it("tells the customer once the platform team approves the work", async () => {
+    const job = await issuedJob(["PHOTOS"]);
+    const site = job.sites[0];
+    await deliverPhotos(site.propertyId);
+    await submitCaptureSite(vendorCtx(), job.id, site.id);
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
+
+    const notes = await prisma.notification.findMany({ where: { organizationId: org.id, userId: staff.id } });
+    expect(notes).toHaveLength(1);
+    expect(notes[0].type).toBe("CAPTURE_ACCEPTED");
+    expect(notes[0].title).toContain(site.property.name);
+    expect(notes[0].link).toBe(`/properties/${site.propertyId}`);
   });
 
   it("carries the rejection reason to the vendor, not just the fact of it", async () => {
@@ -879,7 +902,7 @@ describe("telling people", () => {
     await submitCaptureSite(vendorCtx(), job.id, site.id);
     await prisma.notification.deleteMany({ where: { organizationId: org.id } });
 
-    await reviewCaptureSite(staffCtx(), job.id, site.id, {
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, {
       accept: false,
       reason: "North elevation is out of focus — reshoot it.",
     });
@@ -899,11 +922,11 @@ describe("telling people", () => {
     for (const site of job.sites) {
       await deliverPhotos(site.propertyId);
       await submitCaptureSite(vendorCtx(), job.id, site.id);
-      await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+      await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
     }
 
     const accepted = await prisma.notification.findMany({
-      where: { organizationId: org.id, type: "CAPTURE_ACCEPTED" },
+      where: { organizationId: org.id, type: "CAPTURE_ACCEPTED", userId: vendorUser.id },
       orderBy: { createdAt: "asc" },
     });
     expect(accepted).toHaveLength(job.sites.length);
@@ -936,7 +959,7 @@ describe("telling people", () => {
       const site = job.sites[0];
       await deliverPhotos(site.propertyId);
       await submitCaptureSite(vendorCtx(), job.id, site.id);
-      await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+      await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
 
       const theirs = await prisma.notification.findMany({ where: { userId: otherUser.id } });
       expect(theirs).toHaveLength(0);
@@ -985,14 +1008,14 @@ describe("shot position pins", () => {
   });
 
   async function routedJob(title = `Pinned ${suffix}`) {
-    const job = await createCaptureJob(staffCtx(), {
+    const job = await createCaptureJob(asPlatform(staffCtx()), {
       title,
       vendorId: vendor.id,
       propertyIds: [siteA.id, siteB.id],
       deliverables: ["IMAGE_360"],
       shots: [{ label: "North lot" }, { label: "Main entrance" }],
     });
-    await issueCaptureJob(staffCtx(), job.id);
+    await issueCaptureJob(asPlatform(staffCtx()), job.id);
     return getCaptureJob(staffCtx(), job.id);
   }
 
@@ -1000,7 +1023,7 @@ describe("shot position pins", () => {
     const job = await routedJob();
     const site = job.sites.find((s) => s.propertyId === siteA.id)!;
     const [north, entrance] = site.shots;
-    const saved = await setShotLocations(staffCtx(), job.id, site.id, [
+    const saved = await setShotLocations(asPlatform(staffCtx()), job.id, site.id, [
       { shotId: north.id, latitude: LAT + 0.0009, longitude: LNG },
       { shotId: entrance.id, latitude: LAT, longitude: LNG },
     ]);
@@ -1008,7 +1031,7 @@ describe("shot position pins", () => {
       [LAT + 0.0009, LNG],
       [LAT, LNG],
     ]);
-    const cleared = await setShotLocations(staffCtx(), job.id, site.id, [
+    const cleared = await setShotLocations(asPlatform(staffCtx()), job.id, site.id, [
       { shotId: north.id, latitude: null, longitude: null },
     ]);
     expect(cleared[0].latitude).toBeNull();
@@ -1019,14 +1042,14 @@ describe("shot position pins", () => {
     const site = job.sites.find((s) => s.propertyId === siteA.id)!;
     await expect(
       setShotLocations(vendorCtx(), job.id, site.id, [{ shotId: site.shots[0].id, latitude: LAT, longitude: LNG }]),
-    ).rejects.toThrow(/ordering organization/);
+    ).rejects.toThrow(/vendor cannot place/);
   });
 
   it("refuses a pin far from the site — usually latitude and longitude swapped", async () => {
     const job = await routedJob();
     const site = job.sites.find((s) => s.propertyId === siteA.id)!;
     await expect(
-      setShotLocations(staffCtx(), job.id, site.id, [{ shotId: site.shots[0].id, latitude: LNG / 2, longitude: LAT }]),
+      setShotLocations(asPlatform(staffCtx()), job.id, site.id, [{ shotId: site.shots[0].id, latitude: LNG / 2, longitude: LAT }]),
     ).rejects.toThrow(/km from/);
   });
 
@@ -1035,7 +1058,7 @@ describe("shot position pins", () => {
     const siteARow = job.sites.find((s) => s.propertyId === siteA.id)!;
     const siteBRow = job.sites.find((s) => s.propertyId === siteB.id)!;
     await expect(
-      setShotLocations(staffCtx(), job.id, siteARow.id, [{ shotId: siteBRow.shots[0].id, latitude: LAT, longitude: LNG }]),
+      setShotLocations(asPlatform(staffCtx()), job.id, siteARow.id, [{ shotId: siteBRow.shots[0].id, latitude: LAT, longitude: LNG }]),
     ).rejects.toThrow(/not on this site's route/);
   });
 
@@ -1043,7 +1066,7 @@ describe("shot position pins", () => {
     const job = await routedJob();
     const site = job.sites.find((s) => s.propertyId === siteA.id)!;
     const [north, entrance] = site.shots;
-    await setShotLocations(staffCtx(), job.id, site.id, [{ shotId: entrance.id, latitude: LAT, longitude: LNG }]);
+    await setShotLocations(asPlatform(staffCtx()), job.id, site.id, [{ shotId: entrance.id, latitude: LAT, longitude: LNG }]);
 
     await createEvidenceBatch(vendorCtx(), [
       {
@@ -1072,11 +1095,11 @@ describe("shot position pins", () => {
   it("carries pins over to the next job at the same site, by position name", async () => {
     const first = await routedJob("First visit");
     const site = first.sites.find((s) => s.propertyId === siteA.id)!;
-    await setShotLocations(staffCtx(), first.id, site.id, [
+    await setShotLocations(asPlatform(staffCtx()), first.id, site.id, [
       { shotId: site.shots[0].id, latitude: LAT + 0.0009, longitude: LNG },
     ]);
 
-    const second = await createCaptureJob(staffCtx(), {
+    const second = await createCaptureJob(asPlatform(staffCtx()), {
       title: "Second visit",
       vendorId: vendor.id,
       propertyIds: [siteA.id, siteB.id],
@@ -1150,12 +1173,14 @@ describe("vendor work is held until it is accepted", () => {
     expect(ours.captureJobSiteId).toBeNull();
   });
 
-  it("shows unaccepted work to the reviewer and the vendor, and to nobody else", async () => {
+  it("shows unaccepted work to the platform team and the vendor, and to nobody else", async () => {
     await issuedJob(["PHOTOS"]);
     const photo = await vendorPhoto(siteA.id);
 
-    expect(await visibleTo(staffCtx(), photo.id)).toBe(1);
+    expect(await visibleTo(asPlatform(staffCtx()), photo.id)).toBe(1);
     expect(await visibleTo(vendorCtx(), photo.id)).toBe(1);
+    // Not even the customer's Owner: the platform team approves first.
+    expect(await visibleTo(staffCtx(), photo.id)).toBe(0);
     expect(await visibleTo(viewerCtx(), photo.id)).toBe(0);
     expect(await visibleTo(managerCtx(), photo.id)).toBe(0);
   });
@@ -1168,7 +1193,7 @@ describe("vendor work is held until it is accepted", () => {
     await submitCaptureSite(vendorCtx(), job.id, site.id);
     expect(await visibleTo(viewerCtx(), photo.id)).toBe(0);
 
-    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
     expect(await visibleTo(viewerCtx(), photo.id)).toBe(1);
   });
 
@@ -1178,7 +1203,7 @@ describe("vendor work is held until it is accepted", () => {
     const photo = await vendorPhoto(siteA.id);
 
     await submitCaptureSite(vendorCtx(), job.id, site.id);
-    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: false, reason: "Wrong building" });
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: false, reason: "Wrong building" });
 
     expect(await visibleTo(viewerCtx(), photo.id)).toBe(0);
   });
@@ -1190,10 +1215,11 @@ describe("vendor work is held until it is accepted", () => {
 
     const where = (ctx: SessionContext) => ({ id: captureId, ...captureReviewWhere(ctx) });
     expect(await prisma.droneCapture.count({ where: where(viewerCtx()) })).toBe(0);
-    expect(await prisma.droneCapture.count({ where: where(staffCtx()) })).toBe(1);
+    expect(await prisma.droneCapture.count({ where: where(staffCtx()) })).toBe(0);
+    expect(await prisma.droneCapture.count({ where: where(asPlatform(staffCtx())) })).toBe(1);
 
     await submitCaptureSite(vendorCtx(), job.id, site.id);
-    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
     expect(await prisma.droneCapture.count({ where: where(viewerCtx()) })).toBe(1);
   });
 
@@ -1207,13 +1233,13 @@ describe("vendor work is held until it is accepted", () => {
     expect(await prisma.matterportPropertyLink.count({ where })).toBe(0);
 
     await submitCaptureSite(vendorCtx(), job.id, site.id);
-    await reviewCaptureSite(staffCtx(), job.id, site.id, { accept: true });
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
     expect(await prisma.matterportPropertyLink.count({ where })).toBe(1);
   });
 });
 
-describe("only an admin reviews", () => {
-  it("refuses acceptance from a manager who can see the job", async () => {
+describe("only the platform team approves", () => {
+  it("refuses acceptance from every customer role, however senior", async () => {
     const job = await issuedJob(["PHOTOS"]);
     const site = job.sites.find((s) => s.propertyId === siteA.id)!;
     await prisma.evidence.create({
@@ -1236,8 +1262,33 @@ describe("only an admin reviews", () => {
       status: 403,
     });
 
-    const admin: SessionContext = { ...staffCtx(), role: Role.PORTFOLIO_ADMIN };
-    const reviewed = await reviewCaptureSite(admin, job.id, site.id, { accept: true });
+    for (const role of [Role.OWNER, Role.PORTFOLIO_ADMIN]) {
+      await expect(
+        reviewCaptureSite({ ...staffCtx(), role }, job.id, site.id, { accept: true }),
+      ).rejects.toMatchObject({ status: 403 });
+    }
+
+    const reviewed = await reviewCaptureSite(asPlatform(staffCtx()), job.id, site.id, { accept: true });
     expect(reviewed.status).toBe("ACCEPTED");
+  });
+
+  it("refuses job setup from the customer", async () => {
+    await expect(
+      createCaptureJob({ ...staffCtx(), role: Role.OWNER }, {
+        title: "by the customer",
+        vendorId: vendor.id,
+        propertyIds: [siteA.id],
+        deliverables: ["PHOTOS"],
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+    const draft = await createCaptureJob(asPlatform(staffCtx()), {
+      title: "draft",
+      vendorId: vendor.id,
+      propertyIds: [siteA.id],
+      deliverables: ["PHOTOS"],
+    });
+    await expect(issueCaptureJob({ ...staffCtx(), role: Role.PORTFOLIO_ADMIN }, draft.id)).rejects.toMatchObject({
+      status: 403,
+    });
   });
 });

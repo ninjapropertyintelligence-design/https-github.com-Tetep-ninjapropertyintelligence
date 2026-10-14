@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { can, getSessionContext } from "@/lib/session-context";
+import { can, contextForCaptureJob, getSessionContext, isPlatformOperator } from "@/lib/session-context";
 import { getCaptureJob, outstandingDeliverables } from "@/lib/capture-job-service";
 import { ApiError } from "@/lib/api-error";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { ShotPinEditor } from "@/components/capture/ShotPinEditor";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
+import { IssueJobButton } from "@/components/admin/VendorManager";
 
 /**
  * Matches the palette the rest of the app uses for status: Tailwind's own
@@ -29,11 +30,18 @@ const SITE_STATUS_STYLE: Record<string, string> = {
 };
 
 export default async function CaptureJobDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const ctx = await getSessionContext();
-  if (!ctx) redirect("/login");
-  if (!ctx.organizationId || !can(ctx, "canPerformCapture")) redirect("/dashboard");
-
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
   const { id } = await params;
+
+  // The platform team opens any customer's job: bound to that customer here.
+  const isPlatform = isPlatformOperator(session);
+  const ctx = await contextForCaptureJob(session, id).catch((err) => {
+    if (err instanceof ApiError && err.status === 404) notFound();
+    throw err;
+  });
+  if (!ctx.organizationId || (!isPlatform && !can(ctx, "canPerformCapture"))) redirect("/dashboard");
+
   const job = await getCaptureJob(ctx, id).catch((err) => {
     if (err instanceof ApiError && err.status === 404) notFound();
     throw err;
@@ -115,18 +123,18 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     ? ((await prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }))
         ?.autoAnalyzePhotos ?? false)
     : false;
-  const canPlacePins =
-    !isVendor && can(ctx, "canManageProperties") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
+  const canPlacePins = can(ctx, "canManageCaptureJobs") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
   const canReview = can(ctx, "canReviewCaptures");
 
   return (
     <div className="space-y-5">
       <div>
-        <Link href="/capture-jobs" className="text-sm text-muted hover:text-foreground">
+        <Link href={isPlatform ? "/admin/capture-jobs" : "/capture-jobs"} className="text-sm text-muted hover:text-foreground">
           ← Capture Jobs
         </Link>
         <h1 className="mt-1 text-2xl font-semibold text-foreground">{job.title}</h1>
         <p className="mt-1 text-sm text-muted">
+          {isPlatform ? `${ctx.organizationName} · ` : ""}
           {job.vendor?.name ?? "No vendor assigned"} · {job.status.toLowerCase()}
           {job.dueDate ? ` · due ${formatDate(job.dueDate)}` : " · no due date"}
         </p>
@@ -136,6 +144,10 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
           </p>
         ) : null}
       </div>
+
+      {job.status === "DRAFT" && can(ctx, "canManageCaptureJobs") ? (
+        <IssueJobButton jobId={job.id} hasVendor={job.vendorId !== null} />
+      ) : null}
 
       <Card>
         <CardHeader title={`Sites (${job.sites.length})`} />
@@ -147,12 +159,17 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                 <li key={site.id} className="border-b border-border px-5 py-4 last:border-0">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <Link
-                        href={`/properties/${site.propertyId}`}
-                        className="font-medium text-foreground hover:text-brand"
-                      >
-                        {site.property.name}
-                      </Link>
+                      {isPlatform ? (
+                        // The property pages are the customer's; the platform team works from the job.
+                        <p className="font-medium text-foreground">{site.property.name}</p>
+                      ) : (
+                        <Link
+                          href={`/properties/${site.propertyId}`}
+                          className="font-medium text-foreground hover:text-brand"
+                        >
+                          {site.property.name}
+                        </Link>
+                      )}
                       <p className="mt-0.5 text-xs text-muted">
                         {site.property.addressLine1}, {site.property.city} {site.property.state}
                       </p>
@@ -271,8 +288,12 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}
                     assets={assetsByProperty.get(site.propertyId) ?? []}
-                    disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
-                    canOpenIssues={!isVendor}
+                    // The AI findings feed the customer's own issue and condition workflow, so the
+                    // platform team looks at the photos here without acting on the findings.
+                    disabled={
+                      isPlatform || site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)
+                    }
+                    canOpenIssues={!isVendor && !isPlatform}
                   />
 
                   <CaptureSiteActions

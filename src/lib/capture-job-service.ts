@@ -14,7 +14,7 @@ import { hasPermission } from "@/lib/permissions";
 import { recordAssetConditionChange } from "@/lib/asset-condition";
 import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
-import { notifyCaptureReviewers, notifyVendorUsers } from "@/lib/notifications";
+import { notifyCaptureReviewers, notifyPropertyStakeholders, notifyVendorUsers } from "@/lib/notifications";
 import { distanceMeters } from "@/lib/media/panorama-metadata";
 
 /**
@@ -66,7 +66,19 @@ export interface CreateCaptureJobInput {
  * Creates a DRAFT job. Draft deliberately, not issued: a job being assembled
  * must not appear in a vendor's queue as work they already owe.
  */
+/**
+ * Capture work is ordered by the platform operator, which runs the vendor
+ * network, not by the customer. Enforced here as well as on the routes so
+ * no caller can reach it without the permission.
+ */
+function requireCaptureManager(ctx: SessionContext) {
+  if (!hasPermission(ctx.role, "canManageCaptureJobs")) {
+    throw new ApiError(403, "Capture jobs are set up by the platform team");
+  }
+}
+
 export async function createCaptureJob(ctx: SessionContext, input: CreateCaptureJobInput) {
+  requireCaptureManager(ctx);
   if (input.propertyIds.length === 0) throw new ApiError(400, "A capture job needs at least one site");
   if (input.deliverables.length === 0) {
     throw new ApiError(400, "A capture job needs at least one deliverable");
@@ -214,8 +226,9 @@ export async function listCaptureJobs(ctx: SessionContext) {
 
 /** Moves a DRAFT job to ISSUED, which is also what grants the vendor access. */
 export async function issueCaptureJob(ctx: SessionContext, jobId: string) {
+  if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot issue a job");
+  requireCaptureManager(ctx);
   const job = await getCaptureJob(ctx, jobId);
-  if (ctx.role === Role.VENDOR) throw new ApiError(403, "Only the ordering organization can issue a job");
   if (job.status !== CaptureJobStatus.DRAFT) {
     throw new ApiError(409, `This job is ${job.status.toLowerCase()} and cannot be issued again`);
   }
@@ -300,8 +313,8 @@ export const MAX_SHOT_DISTANCE_FROM_SITE_METERS = 2000;
 /**
  * Places (or clears) the pins for a site's shot positions.
  *
- * Staff only: where the positions are is part of what the ordering
- * organization specifies, not something the vendor being measured against it
+ * Platform team only: where the positions are is part of what the job
+ * specifies, not something the vendor being measured against it
  * gets to move. Pins are checked against the site's own location so a
  * swapped latitude/longitude, or a pin dropped on the wrong store, is refused
  * rather than silently matching every photo to nothing.
@@ -312,7 +325,8 @@ export async function setShotLocations(
   siteId: string,
   locations: Array<{ shotId: string; latitude: number | null; longitude: number | null }>,
 ) {
-  if (ctx.role === Role.VENDOR) throw new ApiError(403, "Only the ordering organization can place shot positions");
+  if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot place shot positions");
+  requireCaptureManager(ctx);
   const { job, site } = await siteForAction(ctx, jobId, siteId);
   if (job.status === CaptureJobStatus.ACCEPTED || job.status === CaptureJobStatus.CANCELLED) {
     throw new ApiError(409, `This job is ${job.status.toLowerCase()} and can no longer be changed`);
@@ -538,7 +552,12 @@ export async function submitCaptureSite(ctx: SessionContext, jobId: string, site
   return submitted;
 }
 
-/** Acceptance or rejection by the ordering organization. */
+/**
+ * Acceptance or rejection by the platform team.
+ *
+ * Acceptance is the moment the vendor's work reaches the customer: until
+ * then `captureReviewWhere` hides it from everyone in the organization.
+ */
 export async function reviewCaptureSite(
   ctx: SessionContext,
   jobId: string,
@@ -547,10 +566,10 @@ export async function reviewCaptureSite(
 ) {
   if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot review its own submission");
   // Acceptance publishes the vendor's work to everyone on the property (see
-  // `captureReviewWhere`), so it is an admin decision, not something any
-  // member who can open the job may do.
+  // `captureReviewWhere`), so it is the platform team's quality gate, not
+  // something any member who can open the job may do.
   if (!hasPermission(ctx.role, "canReviewCaptures")) {
-    throw new ApiError(403, "Only an organization admin can accept or send back capture work");
+    throw new ApiError(403, "Only the platform team can accept or send back capture work");
   }
   const { job, site } = await siteForAction(ctx, jobId, siteId);
   if (site.status !== CaptureJobSiteStatus.SUBMITTED) {
@@ -592,6 +611,22 @@ export async function reviewCaptureSite(
   // The reason is carried in the body, not just the fact of rejection: the
   // reason IS the instruction, and this notification is the only place most
   // vendors will read it.
+  // The customer learns of the work only now, when there is something it can
+  // see: the owner, the admins, and the managers responsible for the site.
+  if (decision.accept) {
+    try {
+      await notifyPropertyStakeholders({
+        propertyId: site.propertyId,
+        type: NotificationType.CAPTURE_ACCEPTED,
+        title: `New capture available: ${site.property.name}`,
+        body: `Approved capture from "${job.title}" is now on the property.`,
+        link: `/properties/${site.propertyId}`,
+      });
+    } catch {
+      // Best-effort: the review decision is recorded.
+    }
+  }
+
   if (job.vendorId) {
     try {
       await notifyVendorUsers({
