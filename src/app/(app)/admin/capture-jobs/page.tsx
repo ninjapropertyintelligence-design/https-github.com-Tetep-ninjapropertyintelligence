@@ -5,6 +5,7 @@ import { listAllCaptureJobs } from "@/lib/platform-capture-service";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { formatDate } from "@/lib/format";
+import { CaptureJobMap } from "@/components/capture/CaptureJobMap";
 
 /**
  * Capture jobs across every customer — the platform team's work queue.
@@ -45,6 +46,24 @@ export default async function PlatformCaptureJobsPage() {
         />
       ) : (
         <>
+          {/* Every open job's sites, coloured by where each one stands. */}
+          <CaptureJobMap
+            token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+            directions={false}
+            sites={jobs
+              .filter((j) => j.status !== "ACCEPTED" && j.status !== "CANCELLED")
+              .flatMap((j) =>
+                j.sites.map((site) => ({
+                  id: site.id,
+                  name: `${site.property.name} — ${j.title}`,
+                  status: site.status,
+                  latitude: site.property.latitude,
+                  longitude: site.property.longitude,
+                  shots: [],
+                  photos: [],
+                })),
+              )}
+          />
           <JobList title="Waiting for your approval" subtitle="Vendors have submitted these sites" jobs={waiting} highlight />
           <JobList title="All jobs" jobs={others} />
         </>

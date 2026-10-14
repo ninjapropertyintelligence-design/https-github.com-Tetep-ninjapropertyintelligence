@@ -190,7 +190,13 @@ export async function listAllCaptureJobs(ctx: SessionContext) {
     include: {
       organization: { select: { id: true, name: true } },
       vendor: { select: { id: true, name: true } },
-      sites: { select: { id: true, status: true } },
+      sites: {
+        select: {
+          id: true,
+          status: true,
+          property: { select: { name: true, latitude: true, longitude: true } },
+        },
+      },
     },
     orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
     take: 500,

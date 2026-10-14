@@ -14,6 +14,8 @@ import { ShotPinEditor } from "@/components/capture/ShotPinEditor";
 import { formatDate } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
 import { IssueJobButton } from "@/components/admin/VendorManager";
+import { CaptureJobMap } from "@/components/capture/CaptureJobMap";
+import { evidenceScopeWhere } from "@/lib/tenant-scope";
 
 /**
  * Matches the palette the rest of the app uses for status: Tailwind's own
@@ -123,6 +125,19 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     ? ((await prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }))
         ?.autoAnalyzePhotos ?? false)
     : false;
+  // Where the delivered photos were actually taken, for the job map. Scoped
+  // like every other read, so the customer sees them only once approved.
+  const locatedPhotos = await prisma.evidence.findMany({
+    where: {
+      captureJobSiteId: { in: job.sites.map((s) => s.id) },
+      latitude: { not: null },
+      longitude: { not: null },
+      ...evidenceScopeWhere(ctx),
+    },
+    select: { id: true, captureJobSiteId: true, latitude: true, longitude: true },
+    take: 2000,
+  });
+
   const canPlacePins = can(ctx, "canManageCaptureJobs") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
   const canReview = can(ctx, "canReviewCaptures");
 
@@ -148,6 +163,28 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       {job.status === "DRAFT" && can(ctx, "canManageCaptureJobs") ? (
         <IssueJobButton jobId={job.id} hasVendor={job.vendorId !== null} />
       ) : null}
+
+      <CaptureJobMap
+        token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+        sites={job.sites.map((site) => ({
+          id: site.id,
+          name: site.property.name,
+          status: site.status,
+          latitude: site.property.latitude,
+          longitude: site.property.longitude,
+          shots: site.shots.map((shot) => ({
+            id: shot.id,
+            label: shot.label,
+            sequence: shot.sequence,
+            captured: shot._count.evidence > 0,
+            latitude: shot.latitude,
+            longitude: shot.longitude,
+          })),
+          photos: locatedPhotos
+            .filter((p) => p.captureJobSiteId === site.id)
+            .map((p) => ({ id: p.id, latitude: p.latitude!, longitude: p.longitude! })),
+        }))}
+      />
 
       <Card>
         <CardHeader title={`Sites (${job.sites.length})`} />
