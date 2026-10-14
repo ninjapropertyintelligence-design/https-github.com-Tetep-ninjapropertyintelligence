@@ -229,6 +229,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                                   {captured ? ` · ${shot._count.evidence}` : ""}
                                   {shot.latitude !== null ? " · 📍" : ""}
                                 </span>
+                                {shot.notes ? <span className="block text-xs text-muted">{shot.notes}</span> : null}
                               </span>
                             </li>
                           );

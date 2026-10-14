@@ -29,8 +29,8 @@ export default async function NewCaptureJobPage({
         </Link>
         <h1 className="mt-1 text-2xl font-semibold text-foreground">New capture job</h1>
         <p className="mt-1 text-sm text-muted">
-          Choose the customer, the sites and the vendor. The vendor sees only these sites, and only until you approve
-          the work.
+          Choose the customer, the sites (or add a new one), the vendor and what they must capture. The vendor sees
+          only these sites, and only until you approve the work.
         </p>
       </div>
 
@@ -39,20 +39,17 @@ export default async function NewCaptureJobPage({
       {setup ? (
         <Card>
           <CardBody>
-            {setup.properties.length === 0 ? (
-              <p className="text-sm text-muted">{setup.organization.name} has no properties yet.</p>
-            ) : (
-              <NewCaptureJobForm
-                key={setup.organization.id}
-                organizationId={setup.organization.id}
-                vendors={setup.vendors.map((v) => ({ id: v.id, label: v.trade ? `${v.name} — ${v.trade}` : v.name }))}
-                properties={setup.properties.map((p) => ({
-                  id: p.id,
-                  label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
-                  region: p.region?.name ?? null,
-                }))}
-              />
-            )}
+            <NewCaptureJobForm
+              key={setup.organization.id}
+              organizationId={setup.organization.id}
+              vendors={setup.vendors.map((v) => ({ id: v.id, label: v.trade ? `${v.name} — ${v.trade}` : v.name }))}
+              portfolios={setup.portfolios}
+              properties={setup.properties.map((p) => ({
+                id: p.id,
+                label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
+                region: p.region?.name ?? null,
+              }))}
+            />
             {setup.vendors.length === 0 ? (
               <p className="mt-3 text-sm text-muted">
                 This customer has no vendor companies yet.{" "}

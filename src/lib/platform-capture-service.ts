@@ -4,6 +4,7 @@ import { CaptureJobSiteStatus, Role } from "@/generated/prisma/client";
 import { writeAuditLog } from "@/lib/audit";
 import { createCaptureJob, issueCaptureJob, type CreateCaptureJobInput } from "@/lib/capture-job-service";
 import { createVendorInvitationAsPlatform } from "@/lib/invitation-service";
+import { createProperty, type CreatePropertyInput } from "@/lib/property-service";
 import { isPlatformOperator, platformActingContext, type SessionContext } from "@/lib/tenant-scope";
 
 /**
@@ -43,7 +44,7 @@ export async function listCustomerOrganizations(ctx: SessionContext) {
 /** What the "new capture job" form needs for one customer: its sites and its vendors. */
 export async function getOrganizationCaptureSetup(ctx: SessionContext, organizationId: string) {
   const acting = await actingIn(ctx, organizationId);
-  const [properties, vendors] = await Promise.all([
+  const [properties, vendors, portfolios] = await Promise.all([
     prisma.property.findMany({
       where: { organizationId: acting.organizationId },
       orderBy: { name: "asc" },
@@ -55,8 +56,19 @@ export async function getOrganizationCaptureSetup(ctx: SessionContext, organizat
       orderBy: { name: "asc" },
       select: { id: true, name: true, trade: true },
     }),
+    // Where a new site can be filed, for "add a new site".
+    prisma.portfolio.findMany({
+      where: { organizationId: acting.organizationId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, regions: { orderBy: { name: "asc" }, select: { id: true, name: true } } },
+    }),
   ]);
-  return { organization: { id: acting.organizationId, name: acting.organizationName }, properties, vendors };
+  return {
+    organization: { id: acting.organizationId, name: acting.organizationName },
+    properties,
+    vendors,
+    portfolios,
+  };
 }
 
 /** Every vendor company in one customer organization, with who can sign in for it. */
@@ -112,6 +124,18 @@ export async function createVendorForOrganization(
     metadata: { name, byPlatform: true },
   });
   return vendor;
+}
+
+/**
+ * Adds a site the customer does not have yet, so it can go on a capture job.
+ *
+ * Goes through the same property creation as the customer's own — portfolio
+ * and region checked against the organization, the address geocoded — so a
+ * site the platform team adds is indistinguishable from one the customer did.
+ */
+export async function createSiteForOrganization(ctx: SessionContext, organizationId: string, input: CreatePropertyInput) {
+  const acting = await actingIn(ctx, organizationId);
+  return createProperty(acting, input);
 }
 
 /** Gives one of a vendor's people a login: an invitation they accept by setting a password. */
