@@ -2,7 +2,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import { FEATURE_FLAGS } from "@/lib/feature-flags";
-import { createCaptureJob, issueCaptureJob, addSiteAsset, outstandingDeliverables } from "@/lib/capture-job-service";
+import {
+  addSiteAsset,
+  createCaptureJob,
+  issueCaptureJob,
+  outstandingDeliverables,
+  resolveDroneTargetForSite,
+  reviewCaptureSite,
+  submitCaptureSite,
+} from "@/lib/capture-job-service";
+import { createDroneCapture, registerDroneOutput } from "@/lib/drone-service";
 import {
   connectVendorDroneDeploy,
   connectVendorMatterport,
@@ -15,7 +24,7 @@ import {
 } from "@/lib/vendor-connection-service";
 import { runDroneDeployImportForOrganization } from "@/lib/dronedeploy-import-service";
 import { captureReviewWhere, type SessionContext } from "@/lib/tenant-scope";
-import { __setStorageProviderForTest } from "@/lib/storage";
+import { __setStorageProviderForTest, getStorageProvider, newObjectKey } from "@/lib/storage";
 import { asPlatform } from "../helpers/platform";
 
 /**
@@ -250,5 +259,41 @@ describe("adding an asset to rate", () => {
     await expect(
       addSiteAsset(viewerCtx(), job.id, job.sites[0].id, { name: "Nope", assetType: "Roof" }),
     ).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe("finished drone files uploaded by hand", () => {
+  async function stored(name: string) {
+    const key = newObjectKey(org.id, name);
+    await getStorageProvider().writeBytes(key, Buffer.from(`bytes-of-${name}`));
+    return key;
+  }
+
+  it("files a map and a 3D model on the job site, held until approved, then ready for the customer", async () => {
+    // The customer's own flight in progress on the same property must not
+    // swallow the vendor's files.
+    const customers = await createDroneCapture(staffCtx(), site.id, { capturedAt: new Date() });
+
+    const job = await issuedJob(["DRONE"]);
+    const jobSite = job.sites[0];
+    const { captureId, datasetId } = await resolveDroneTargetForSite(vendorCtx(), job.id, jobSite.id);
+    expect(captureId).not.toBe(customers.id);
+    // Uploading in a second sitting goes to the same capture.
+    expect((await resolveDroneTargetForSite(vendorCtx(), job.id, jobSite.id)).captureId).toBe(captureId);
+
+    await registerDroneOutput(vendorCtx(), datasetId, { outputType: "ORTHOMOSAIC", storageKey: await stored("Store Orthomosaic.tif") });
+    await registerDroneOutput(vendorCtx(), datasetId, { outputType: "ORTHOMOSAIC", storageKey: await stored("Store Orthomosaic-preview.jpg"), metadata: { preview: true } });
+    await registerDroneOutput(vendorCtx(), datasetId, { outputType: "MESH_3D", storageKey: await stored("Store 3D Model.zip") });
+    expect((await outstandingDeliverables(jobSite.id)).missing).not.toContain("DRONE");
+
+    const visibleToCustomer = () => prisma.droneCapture.count({ where: { id: captureId, ...captureReviewWhere(viewerCtx()) } });
+    expect(await visibleToCustomer()).toBe(0);
+
+    await submitCaptureSite(vendorCtx(), job.id, jobSite.id);
+    await reviewCaptureSite(asPlatform(staffCtx()), job.id, jobSite.id, { accept: true });
+    expect(await visibleToCustomer()).toBe(1);
+    expect((await prisma.droneCapture.findUniqueOrThrow({ where: { id: captureId } })).status).toBe("READY");
+    // The customer's own capture is untouched.
+    expect((await prisma.droneCapture.findUniqueOrThrow({ where: { id: customers.id } })).status).toBe("CREATED");
   });
 });

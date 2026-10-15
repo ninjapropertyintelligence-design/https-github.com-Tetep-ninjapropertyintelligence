@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/ui/Badge";
 import { formatDate } from "@/lib/format";
 import { isViewableIn3D } from "@/components/exterior/Object3DViewer";
 import { apiFetch } from "@/lib/api-client";
+import { OUTPUT_LABELS, displayFilename, isBrowserImage } from "@/lib/drone-display";
 
 // WebGL/Canvas — never server-rendered, and only pulled into the bundle when
 // a user actually expands a 3D preview.
@@ -100,7 +101,12 @@ export function ExteriorManager({
   const activeCapture = captures.find((c) => c.id === selectedCaptureId) ?? captures[0];
   const activeDataset = activeCapture?.datasets[0];
   const primaryImage = activeDataset?.images[0];
-  const orthomosaic = activeDataset?.outputs.find((o) => o.outputType === "ORTHOMOSAIC");
+  // A browser can show a JPEG/PNG map but not a GeoTIFF; a GeoTIFF upload
+  // carries a JPEG preview, and the GeoTIFF itself is listed for download.
+  const orthomosaic = activeDataset?.outputs.find((o) => o.outputType === "ORTHOMOSAIC" && isBrowserImage(o.storageKey));
+  const otherOutputs = (activeDataset?.outputs ?? []).filter(
+    (o) => o.id !== orthomosaic?.id && !(o.outputType === "ORTHOMOSAIC" && /-preview\.jpe?g$/i.test(o.storageKey)),
+  );
   const displayImage = orthomosaic ?? primaryImage;
 
   async function startCapture() {
@@ -412,18 +418,16 @@ export function ExteriorManager({
           </CardBody>
         </Card>
         <Card>
-          <CardHeader title={`Other Outputs (${(activeDataset?.outputs.length ?? 0) - (orthomosaic ? 1 : 0)})`} />
+          <CardHeader title={`Other Outputs (${otherOutputs.length})`} />
           <CardBody className="space-y-3">
-            {(activeDataset?.outputs ?? [])
-              .filter((o) => o.outputType !== "ORTHOMOSAIC")
-              .map((o) => {
+            {otherOutputs.map((o) => {
                 const viewable = (o.outputType === "POINT_CLOUD" || o.outputType === "MESH_3D") && isViewableIn3D(o.storageKey);
                 const expanded = expandedOutputId === o.id;
                 return (
                   <div key={o.id}>
                     <div className="flex items-center gap-3">
                       <a href={o.downloadUrl} className="text-sm text-brand hover:underline">
-                        {o.outputType.replace(/_/g, " ")} →
+                        {OUTPUT_LABELS[o.outputType] ?? o.outputType} · {displayFilename(o.storageKey)} ↓
                       </a>
                       {viewable ? (
                         <Button variant="ghost" onClick={() => setExpandedOutputId(expanded ? null : o.id)}>
@@ -435,7 +439,7 @@ export function ExteriorManager({
                   </div>
                 );
               })}
-            {(activeDataset?.outputs.length ?? 0) - (orthomosaic ? 1 : 0) === 0 ? <p className="text-sm text-muted">No mesh/point-cloud/DSM/DTM outputs yet.</p> : null}
+            {otherOutputs.length === 0 ? <p className="text-sm text-muted">No mesh/point-cloud/DSM/DTM outputs yet.</p> : null}
           </CardBody>
         </Card>
       </div>

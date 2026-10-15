@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
+import { DroneMapUploader } from "@/components/capture/DroneMapUploader";
 
 /**
  * The subcontractor's upload surface, on the job itself.
@@ -20,7 +21,12 @@ import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
 const KINDS = [
   { key: "IMAGE_360", label: "360° panoramas", hint: "Equirectangular JPEGs from a 360 camera" },
   { key: "PHOTOS", label: "Photos", hint: "Ordinary site photos and defect evidence" },
-  { key: "DRONE_IMAGERY", label: "Drone imagery", hint: "Raw flight images, straight off the card" },
+  { key: "DRONE_IMAGERY", label: "Drone imagery (raw photos)", hint: "Raw flight images, straight off the card" },
+  {
+    key: "DRONE_MAP",
+    label: "Finished drone map / 3D (DroneDeploy export)",
+    hint: "Maps, elevation, point clouds and 3D models exported from DroneDeploy or another mapping tool",
+  },
   {
     key: "MATTERPORT",
     label: "Matterport space",
@@ -314,7 +320,7 @@ export function CaptureUploadPanel({
               {busy ? "Linking…" : "Link space"}
             </button>
           </>
-        ) : kind === "IMAGE_360" ? null : (
+        ) : kind === "IMAGE_360" || kind === "DRONE_MAP" ? null : (
           <input
             ref={inputRef}
             type="file"
@@ -329,6 +335,12 @@ export function CaptureUploadPanel({
           />
         )}
       </div>
+
+      {kind === "DRONE_MAP" ? (
+        <div className="mt-2">
+          <DroneMapUploader jobId={jobId} siteId={siteId} />
+        </div>
+      ) : null}
 
       {kind === "IMAGE_360" ? (
         // 360s go through the importer: it reads each file's date and GPS,

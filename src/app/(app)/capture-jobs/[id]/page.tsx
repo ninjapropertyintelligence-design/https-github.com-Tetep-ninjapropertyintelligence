@@ -17,6 +17,10 @@ import { IssueJobButton } from "@/components/admin/VendorManager";
 import { CaptureJobMap } from "@/components/capture/CaptureJobMap";
 import { VendorSiteImports } from "@/components/capture/VendorSiteImports";
 import { ConditionScoreForm } from "@/components/capture/ConditionScoreForm";
+import { DeliveredDroneWork, type DeliveredDroneCapture } from "@/components/capture/DeliveredDroneWork";
+import { droneMapLayersFor } from "@/lib/drone-map-layers";
+import { getStorageProvider } from "@/lib/storage";
+import { captureReviewWhere } from "@/lib/tenant-scope";
 import { evidenceScopeWhere } from "@/lib/tenant-scope";
 
 /**
@@ -149,6 +153,50 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     select: { id: true, captureJobSiteId: true, latitude: true, longitude: true },
     take: 2000,
   });
+
+  // Drone work delivered on each site — map, layers, raw photos — so it can be
+  // judged here before approval. Read through the review filter like
+  // everything else, so the customer sees it only once approved.
+  const storage = getStorageProvider();
+  const droneCaptures = await prisma.droneCapture.findMany({
+    where: { captureJobSiteId: { in: job.sites.map((s) => s.id) }, ...captureReviewWhere(ctx) },
+    orderBy: { createdAt: "desc" },
+    include: {
+      datasets: {
+        include: {
+          outputs: { orderBy: { createdAt: "asc" } },
+          images: { orderBy: { createdAt: "asc" }, take: 12, select: { id: true, storageKey: true } },
+          _count: { select: { images: true } },
+        },
+      },
+    },
+  });
+  const droneBySite = new Map<string, DeliveredDroneCapture[]>();
+  for (const capture of droneCaptures) {
+    const outputs = capture.datasets.flatMap((d) => d.outputs);
+    const images = capture.datasets.flatMap((d) => d.images).slice(0, 12);
+    const imageCount = capture.datasets.reduce((n, d) => n + d._count.images, 0);
+    if (outputs.length === 0 && imageCount === 0 && capture.status !== "PROCESSING") continue;
+    const entry: DeliveredDroneCapture = {
+      id: capture.id,
+      status: capture.status,
+      notes: capture.notes,
+      imageCount,
+      outputs: await Promise.all(
+        outputs.map(async (o) => ({
+          id: o.id,
+          outputType: o.outputType,
+          storageKey: o.storageKey,
+          downloadUrl: await storage.getDownloadUrl(o.storageKey),
+          preview: (o.metadata as { preview?: boolean } | null)?.preview === true,
+        })),
+      ),
+      images: await Promise.all(images.map(async (i) => ({ id: i.id, downloadUrl: await storage.getDownloadUrl(i.storageKey) }))),
+    };
+    const list = droneBySite.get(capture.captureJobSiteId!) ?? [];
+    list.push(entry);
+    droneBySite.set(capture.captureJobSiteId!, list);
+  }
 
   const canPlacePins = can(ctx, "canManageCaptureJobs") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
   const canReview = can(ctx, "canReviewCaptures");
@@ -352,6 +400,22 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                       ) : null}
                     </>
                   ) : null}
+
+                  <DeliveredDroneWork
+                    captures={droneBySite.get(site.id) ?? []}
+                    token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+                    canPrepareDeepZoom={isVendor || can(ctx, "canManageCaptureJobs")}
+                    mapLayers={droneMapLayersFor(
+                      droneCaptures
+                        .filter((c) => c.captureJobSiteId === site.id)
+                        .map((c) => ({
+                          id: c.id,
+                          capturedAt: c.capturedAt,
+                          createdAt: c.createdAt,
+                          outputs: c.datasets.flatMap((d) => d.outputs),
+                        })),
+                    )}
+                  />
 
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}

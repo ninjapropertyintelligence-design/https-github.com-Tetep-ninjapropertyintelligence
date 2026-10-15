@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { rgbGeoTiff } from "../helpers/geotiff";
 
 /**
  * The platform team's capture workflow, and the customer's view of its team,
@@ -131,4 +132,36 @@ test("a vendor can reach every way of delivering: connections, flights, scans an
   await expect(page.getByText("Matterport is not connected.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Enter condition scores" })).toBeVisible();
   await expect(page.getByRole("button", { name: "+ Add an asset" })).toBeVisible();
+});
+
+test("a vendor uploads a finished DroneDeploy map, and the platform team sees it to approve", async ({ page }) => {
+  await signIn(page, "vendor@demo.com");
+  await page.goto("/capture-jobs");
+  await page.getByRole("link", { name: /Q4 condition sweep/ }).click();
+  await page.waitForURL(/\/capture-jobs\/[^/?]+$/);
+  const jobUrl = page.url();
+
+  await page.locator("select[id^='kind-']").first().selectOption("DRONE_MAP");
+  await page.getByLabel("Finished drone files").setInputFiles([
+    // Georeferenced in UTM zone 15, at Store #1052 in Kansas City.
+    {
+      name: "Store 1052 Orthomosaic.tif",
+      mimeType: "image/tiff",
+      buffer: rgbGeoTiff(64, 32, { zone: 15, easting: 363460, northing: 4328860, pixelMeters: 0.5 }),
+    },
+  ]);
+  await expect(page.getByLabel("What Store 1052 Orthomosaic.tif is")).toHaveValue("ORTHOMOSAIC");
+  await page.getByRole("button", { name: /Upload 1 file/ }).click();
+  await expect(page.getByText("uploaded, with a viewable preview placed on the map")).toBeVisible({ timeout: 20000 });
+
+  await page.context().clearCookies();
+  await signIn(page, "platformadmin@demo.com");
+  await page.goto(jobUrl);
+  await expect(page.getByText("Drone work delivered")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Drone map" }).first()).toBeVisible();
+  // The map viewer: placed at preview resolution until deep zoom is set up, with measuring.
+  await expect(page.getByText("Preview resolution")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Measure distance" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Measure area" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Store_1052_Orthomosaic\.tif/ }).first()).toBeVisible();
 });

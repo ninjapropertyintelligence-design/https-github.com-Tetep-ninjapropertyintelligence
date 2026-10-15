@@ -312,3 +312,17 @@ export async function contextForCaptureEvidence(ctx: SessionContext, evidenceId:
   if (!evidence) throw new ApiError(404, "Evidence not found");
   return platformActingContext(ctx, evidence.organization);
 }
+
+/**
+ * Resolves the context to read one drone output with. For the platform team,
+ * only an output delivered against a capture job — the work it reviews.
+ */
+export async function contextForDroneOutput(ctx: SessionContext, outputId: string): Promise<SessionContext> {
+  if (!isPlatformOperator(ctx)) return ctx;
+  const output = await prisma.droneOutput.findFirst({
+    where: { id: outputId, dataset: { capture: { captureJobSiteId: { not: null } } } },
+    select: { dataset: { select: { capture: { select: { property: { select: { organization: { select: { id: true, name: true } } } } } } } } },
+  });
+  if (!output) throw new ApiError(404, "Drone output not found");
+  return platformActingContext(ctx, output.dataset.capture.property.organization);
+}
