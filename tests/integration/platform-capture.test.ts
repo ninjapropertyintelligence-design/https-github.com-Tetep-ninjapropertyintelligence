@@ -4,6 +4,7 @@ import { Role } from "@/generated/prisma/client";
 import {
   createCaptureJobForOrganization,
   createVendorForOrganization,
+  createSiteForOrganization,
   createVendorLogin,
   listAllCaptureJobs,
   listOrganizationVendors,
@@ -191,5 +192,68 @@ describe("the platform team's reach inside a customer", () => {
 
     expect((await contextForCaptureEvidence(platformCtx(), delivered.id)).organizationId).toBe(org.id);
     await expect(contextForCaptureEvidence(platformCtx(), customersOwn.id)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("the platform team adds a site while ordering work", () => {
+  it("creates it in the customer's account, then puts it on a job with its requirements", async () => {
+    const portfolio = await prisma.portfolio.findFirstOrThrow({ where: { organizationId: org.id } });
+    const newSite = await createSiteForOrganization(platformCtx(), org.id, {
+      name: `New store ${suffix}`,
+      portfolioId: portfolio.id,
+      addressLine1: "9 Market St",
+      city: "Springfield",
+      state: "MO",
+      postalCode: "65801",
+      country: "US",
+      propertyType: "Retail",
+      // Coordinates given, so the test never reaches a geocoder.
+      latitude: 37.2,
+      longitude: -93.3,
+    });
+    expect(newSite.organizationId).toBe(org.id);
+
+    const vendor = await createVendorForOrganization(platformCtx(), org.id, { name: "Route Co" });
+    const job = await createCaptureJobForOrganization(
+      platformCtx(),
+      org.id,
+      {
+        title: "With requirements",
+        vendorId: vendor.id,
+        propertyIds: [newSite.id],
+        deliverables: ["PHOTOS"],
+        shots: [
+          { label: "Roof — RTU row", kind: "PHOTO", notes: "Include the data plate" },
+          { label: "Main entrance", kind: "IMAGE_360", required: false },
+        ],
+      },
+      { issue: true },
+    );
+    const shots = await prisma.captureShot.findMany({
+      where: { site: { jobId: job.id } },
+      orderBy: { sequence: "asc" },
+    });
+    expect(shots.map((s) => [s.label, s.kind, s.required, s.notes])).toEqual([
+      ["Roof — RTU row", "PHOTO", true, "Include the data plate"],
+      ["Main entrance", "IMAGE_360", false, null],
+    ]);
+  });
+
+  it("refuses a customer, and a portfolio from another customer", async () => {
+    const otherPortfolio = await prisma.portfolio.findFirstOrThrow({ where: { organizationId: otherOrg.id } });
+    const input = {
+      name: "Nope",
+      portfolioId: otherPortfolio.id,
+      addressLine1: "1 A St",
+      city: "X",
+      state: "TX",
+      postalCode: "1",
+      country: "US",
+      propertyType: "Retail",
+      latitude: 30,
+      longitude: -97,
+    };
+    await expect(createSiteForOrganization(ownerCtx(), org.id, input)).rejects.toMatchObject({ status: 403 });
+    await expect(createSiteForOrganization(platformCtx(), org.id, input)).rejects.toMatchObject({ status: 400 });
   });
 });

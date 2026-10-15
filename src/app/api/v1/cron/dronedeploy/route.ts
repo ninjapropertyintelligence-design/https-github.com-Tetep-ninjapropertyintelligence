@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runDueDroneDeployImports } from "@/lib/dronedeploy-import-service";
+import { runDueDroneDeployImports, runVendorDroneDeployImports } from "@/lib/dronedeploy-import-service";
 import { isCronAuthorized } from "@/lib/cron-auth";
 
 export const maxDuration = 300;
@@ -14,8 +14,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ data: null, error: "Unauthorized", meta: {} }, { status: 401 });
   }
   const results = await runDueDroneDeployImports();
+  // Maps vendors picked from their own accounts, on their own keys.
+  const vendor = await runVendorDroneDeployImports();
   return NextResponse.json({
-    data: { organizationsProcessed: results.length, results },
+    data: { organizationsProcessed: results.length, results, vendor },
     error: null,
     meta: {},
   });

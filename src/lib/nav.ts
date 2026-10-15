@@ -47,6 +47,10 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canPerformCapture")) {
     items.push({ label: "Capture Jobs", href: "/capture-jobs", section: "Manage", icon: "capture" });
   }
+  // A vendor company's own DroneDeploy and Matterport accounts.
+  if (ctx.vendorId && can(ctx, "canPerformCapture")) {
+    items.push({ label: "Connections", href: "/settings/connections", section: "Manage", icon: "webhook" });
+  }
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Reports", href: "/reports", section: "Insights", icon: "report" });
     items.push({ label: "Cost to Serve", href: "/reports/cogs", section: "Insights", icon: "cost" });

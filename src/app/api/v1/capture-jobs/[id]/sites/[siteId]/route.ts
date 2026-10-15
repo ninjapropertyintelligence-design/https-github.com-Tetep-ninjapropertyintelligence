@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { withApiHandler, ApiError, requirePermission } from "@/lib/api-utils";
 import {
+  addSiteAsset,
   resolveDroneTargetForSite,
   reviewCaptureSite,
   setShotLocations,
@@ -49,6 +50,15 @@ const bodySchema = z.discriminatedUnion("action", [
       .min(1)
       .max(50),
   }),
+  // An asset to rate, when the site has none listed for the one being scored.
+  z.object({
+    action: z.literal("add-asset"),
+    name: z.string().min(1).max(200),
+    assetType: z.string().min(1).max(100),
+    manufacturer: z.string().max(100).nullish(),
+    model: z.string().max(100).nullish(),
+    serialNumber: z.string().max(100).nullish(),
+  }),
   z.object({
     action: z.literal("review"),
     accept: z.boolean(),
@@ -72,6 +82,8 @@ export const POST = withApiHandler<NextResponse, RouteParams>(async (session, re
     case "shot-locations":
       requirePermission(ctx, "canManageCaptureJobs");
       return NextResponse.json(await setShotLocations(ctx, id, siteId, body.locations));
+    case "add-asset":
+      return NextResponse.json(await addSiteAsset(ctx, id, siteId, body), { status: 201 });
     case "review":
       return NextResponse.json(
         await reviewCaptureSite(ctx, id, siteId, { accept: body.accept, reason: body.reason }),

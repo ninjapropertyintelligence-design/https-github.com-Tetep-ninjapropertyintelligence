@@ -52,10 +52,30 @@ test("the platform team gives a vendor a login and sends it a job", async ({ pag
   await page.getByRole("combobox", { name: /^Vendor/ }).selectOption({ label: vendorName });
   await page.getByPlaceholder("Filter by name, city or region").fill("1052");
   await page.getByRole("button", { name: "Select shown" }).click();
+
+  // A site the customer does not have yet, added from the job and ticked for it.
+  const siteName = `E2E Store ${randomUUID().slice(0, 6)}`;
+  await page.getByRole("button", { name: "+ Add a new site" }).click();
+  await page.getByLabel("Site name").fill(siteName);
+  await page.getByLabel("Street address").fill("1 Test Way");
+  await page.getByLabel("City", { exact: true }).fill("Springfield");
+  await page.getByLabel("State", { exact: true }).fill("MO");
+  await page.getByLabel("ZIP code").fill("65801");
+  await page.getByRole("button", { name: "Add site", exact: true }).click();
+  await expect(page.getByText(`${siteName} added to the customer`)).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText(/Sites \(2 of/)).toBeVisible();
+
+  // What the vendor must capture at each site.
+  await page.getByRole("button", { name: "+ Add requirement" }).click();
+  await page.getByLabel("Requirement 1", { exact: true }).fill("Roof — RTU row");
+  await page.getByLabel("Notes for requirement 1").fill("Include the data plate");
+
   await page.getByRole("button", { name: "Send to vendor" }).click();
 
   await page.waitForURL(/\/capture-jobs\/[^/?]+$/);
   await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  await expect(page.getByText(siteName)).toBeVisible();
+  await expect(page.getByText("Include the data plate").first()).toBeVisible();
   await expect(page.getByText(/issued/).first()).toBeVisible();
 
   await page.goto("/admin/capture-jobs");
@@ -94,4 +114,21 @@ test("a portfolio admin sees team activity, a regional manager does not", async 
   await expect(page.getByRole("link", { name: "Activity", exact: true })).toHaveCount(0);
   await page.goto("/settings/activity");
   await page.waitForURL(/\/dashboard/);
+});
+
+test("a vendor can reach every way of delivering: connections, flights, scans and condition scores", async ({ page }) => {
+  await signIn(page, "vendor@demo.com");
+  await page.getByRole("link", { name: "Connections" }).click();
+  await page.waitForURL(/\/settings\/connections/);
+  await expect(page.getByRole("button", { name: "Connect DroneDeploy" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Connect Matterport" })).toBeVisible();
+
+  // The seeded job asks for drone, Matterport and condition scores.
+  await page.goto("/capture-jobs");
+  await page.getByRole("link", { name: /Q4 condition sweep/ }).click();
+  await page.waitForURL(/\/capture-jobs\/[^/?]+$/);
+  await expect(page.getByText("DroneDeploy is not connected.")).toBeVisible();
+  await expect(page.getByText("Matterport is not connected.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enter condition scores" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "+ Add an asset" })).toBeVisible();
 });
