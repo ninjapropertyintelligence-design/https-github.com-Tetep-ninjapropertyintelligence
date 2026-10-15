@@ -31,11 +31,14 @@ import { getPhotogrammetryProvider } from "@/lib/integrations/manual-photogramme
 const ALLOWED_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tif", ".tiff"];
 const ALLOWED_OUTPUT_EXTENSIONS_BY_TYPE: Record<DroneOutputType, string[]> = {
   PHOTO_SET: [".jpg", ".jpeg", ".png", ".zip"],
-  ORTHOMOSAIC: [".tif", ".tiff", ".jpg", ".jpeg", ".png"],
-  POINT_CLOUD: [".las", ".laz", ".ply", ".xyz"],
-  MESH_3D: [".obj", ".glb", ".gltf", ".ply", ".fbx"],
-  DSM: [".tif", ".tiff"],
-  DTM: [".tif", ".tiff"],
+  // .zip throughout: DroneDeploy exports many layers as an archive (a
+  // 3D model is its .obj with textures), and the import pipeline already
+  // stores those as-is. They are kept and offered for download.
+  ORTHOMOSAIC: [".tif", ".tiff", ".jpg", ".jpeg", ".png", ".zip"],
+  POINT_CLOUD: [".las", ".laz", ".ply", ".xyz", ".zip"],
+  MESH_3D: [".obj", ".glb", ".gltf", ".ply", ".fbx", ".zip"],
+  DSM: [".tif", ".tiff", ".zip"],
+  DTM: [".tif", ".tiff", ".zip"],
 };
 
 function extensionOf(filenameOrKey: string): string {

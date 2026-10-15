@@ -581,6 +581,16 @@ export async function reviewCaptureSite(
     throw new ApiError(400, "A rejection needs a reason the vendor can act on");
   }
 
+  if (decision.accept) {
+    // Drone files a vendor uploaded by hand have no processing step to finish
+    // them; approval is what makes the capture complete. A DroneDeploy import
+    // finishes itself when its layers are copied in.
+    await prisma.droneCapture.updateMany({
+      where: { captureJobSiteId: siteId, droneDeployImport: null, status: { in: ["CREATED", "UPLOADING", "PROCESSING"] } },
+      data: { status: "READY" },
+    });
+  }
+
   const updated = await prisma.captureJobSite.update({
     where: { id: siteId },
     data: {
@@ -678,8 +688,16 @@ export async function resolveDroneTargetForSite(
     throw new ApiError(409, `This job is ${job.status.toLowerCase()} and no longer accepts uploads`);
   }
 
+  // Only this job site's own capture. Any in-flight capture on the property
+  // could be the customer's own or a DroneDeploy import; filing the vendor's
+  // files there would skip review and leave them off the job.
   const existing = await prisma.droneCapture.findFirst({
-    where: { propertyId: site.propertyId, status: { in: ["CREATED", "UPLOADING", "PROCESSING"] } },
+    where: {
+      propertyId: site.propertyId,
+      captureJobSiteId: site.id,
+      droneDeployImport: null,
+      status: { in: ["CREATED", "UPLOADING", "PROCESSING"] },
+    },
     orderBy: { createdAt: "desc" },
     include: { datasets: { orderBy: { createdAt: "desc" }, take: 1 } },
   });

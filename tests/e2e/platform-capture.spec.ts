@@ -132,3 +132,62 @@ test("a vendor can reach every way of delivering: connections, flights, scans an
   await expect(page.getByRole("button", { name: "Enter condition scores" })).toBeVisible();
   await expect(page.getByRole("button", { name: "+ Add an asset" })).toBeVisible();
 });
+
+/**
+ * A small uncompressed RGB TIFF — the same container as DroneDeploy's GeoTIFF
+ * map export — built here so the spec needs no binary fixture.
+ */
+function rgbTiff(width: number, height: number): Buffer {
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let i = 0; i < width * height; i++) {
+    pixels[i * 3] = 40;
+    pixels[i * 3 + 1] = (i % width) * 4;
+    pixels[i * 3 + 2] = 90;
+  }
+  const entries: Array<[number, number, number, number]> = []; // tag, type, count, value
+  const bitsOffset = 8;
+  const dataOffset = bitsOffset + 6;
+  const ifdOffset = dataOffset + pixels.length;
+  entries.push([256, 3, 1, width], [257, 3, 1, height], [258, 3, 3, bitsOffset], [259, 3, 1, 1], [262, 3, 1, 2]);
+  entries.push([273, 4, 1, dataOffset], [277, 3, 1, 3], [278, 3, 1, height], [279, 4, 1, pixels.length], [284, 3, 1, 1]);
+  const header = Buffer.alloc(8);
+  header.write("II", 0, "ascii");
+  header.writeUInt16LE(42, 2);
+  header.writeUInt32LE(ifdOffset, 4);
+  const bits = Buffer.alloc(6);
+  [8, 8, 8].forEach((b, i) => bits.writeUInt16LE(b, i * 2));
+  const ifd = Buffer.alloc(2 + entries.length * 12 + 4);
+  ifd.writeUInt16LE(entries.length, 0);
+  entries.forEach(([tag, type, count, value], i) => {
+    const at = 2 + i * 12;
+    ifd.writeUInt16LE(tag, at);
+    ifd.writeUInt16LE(type, at + 2);
+    ifd.writeUInt32LE(count, at + 4);
+    if (type === 3 && count === 1) ifd.writeUInt16LE(value, at + 8);
+    else ifd.writeUInt32LE(value, at + 8);
+  });
+  return Buffer.concat([header, bits, pixels, ifd]);
+}
+
+test("a vendor uploads a finished DroneDeploy map, and the platform team sees it to approve", async ({ page }) => {
+  await signIn(page, "vendor@demo.com");
+  await page.goto("/capture-jobs");
+  await page.getByRole("link", { name: /Q4 condition sweep/ }).click();
+  await page.waitForURL(/\/capture-jobs\/[^/?]+$/);
+  const jobUrl = page.url();
+
+  await page.locator("select[id^='kind-']").first().selectOption("DRONE_MAP");
+  await page.getByLabel("Finished drone files").setInputFiles([
+    { name: "Store 1052 Orthomosaic.tif", mimeType: "image/tiff", buffer: rgbTiff(64, 32) },
+  ]);
+  await expect(page.getByLabel("What Store 1052 Orthomosaic.tif is")).toHaveValue("ORTHOMOSAIC");
+  await page.getByRole("button", { name: /Upload 1 file/ }).click();
+  await expect(page.getByText("uploaded, with a viewable preview")).toBeVisible({ timeout: 20000 });
+
+  await page.context().clearCookies();
+  await signIn(page, "platformadmin@demo.com");
+  await page.goto(jobUrl);
+  await expect(page.getByText("Drone work delivered")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Drone map" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /Store_1052_Orthomosaic\.tif/ }).first()).toBeVisible();
+});
