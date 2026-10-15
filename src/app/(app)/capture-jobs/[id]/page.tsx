@@ -18,6 +18,7 @@ import { CaptureJobMap } from "@/components/capture/CaptureJobMap";
 import { VendorSiteImports } from "@/components/capture/VendorSiteImports";
 import { ConditionScoreForm } from "@/components/capture/ConditionScoreForm";
 import { DeliveredDroneWork, type DeliveredDroneCapture } from "@/components/capture/DeliveredDroneWork";
+import { droneMapLayersFor } from "@/lib/drone-map-layers";
 import { getStorageProvider } from "@/lib/storage";
 import { captureReviewWhere } from "@/lib/tenant-scope";
 import { evidenceScopeWhere } from "@/lib/tenant-scope";
@@ -400,7 +401,21 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     </>
                   ) : null}
 
-                  <DeliveredDroneWork captures={droneBySite.get(site.id) ?? []} />
+                  <DeliveredDroneWork
+                    captures={droneBySite.get(site.id) ?? []}
+                    token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+                    canPrepareDeepZoom={isVendor || can(ctx, "canManageCaptureJobs")}
+                    mapLayers={droneMapLayersFor(
+                      droneCaptures
+                        .filter((c) => c.captureJobSiteId === site.id)
+                        .map((c) => ({
+                          id: c.id,
+                          capturedAt: c.capturedAt,
+                          createdAt: c.createdAt,
+                          outputs: c.datasets.flatMap((d) => d.outputs),
+                        })),
+                    )}
+                  />
 
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}

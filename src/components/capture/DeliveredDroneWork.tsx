@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { isViewableIn3D } from "@/components/exterior/Object3DViewer";
 import { OUTPUT_LABELS, displayFilename, isBrowserImage } from "@/lib/drone-display";
+import { DroneMapViewer, type DroneMapLayer } from "@/components/drone/DroneMapViewer";
 
 const Object3DViewer = dynamic(() => import("@/components/exterior/Object3DViewer").then((m) => m.Object3DViewer), {
   ssr: false,
@@ -25,13 +26,25 @@ export interface DeliveredDroneCapture {
  * map, a 3D view of the model or point cloud, and every exported layer to
  * download — so the platform team can judge it before approving.
  */
-export function DeliveredDroneWork({ captures }: { captures: DeliveredDroneCapture[] }) {
+export function DeliveredDroneWork({
+  captures,
+  mapLayers = [],
+  token = null,
+  canPrepareDeepZoom = false,
+}: {
+  captures: DeliveredDroneCapture[];
+  /** The delivered maps placed on the satellite map, when their files carry a location. */
+  mapLayers?: DroneMapLayer[];
+  token?: string | null;
+  canPrepareDeepZoom?: boolean;
+}) {
   const [expanded, setExpanded] = useState<string | null>(null);
   if (captures.length === 0) return null;
 
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-border bg-background p-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-muted">Drone work delivered</p>
+      {mapLayers.length > 0 ? <DroneMapViewer token={token} layers={mapLayers} canPrepareDeepZoom={canPrepareDeepZoom} /> : null}
       {captures.map((capture) => {
         const map = capture.outputs.find((o) => o.outputType === "ORTHOMOSAIC" && isBrowserImage(o.storageKey));
         const files = capture.outputs.filter((o) => !o.preview);

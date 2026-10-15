@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { guessOutputType, type FinishedOutputType as OutputType } from "@/lib/drone-display";
+import { cornersFromBBox, isSupportedEpsg, type LngLat } from "@/lib/geo/georeference";
 
 /**
  * Finished drone outputs a vendor exported from DroneDeploy (or any
@@ -54,14 +55,29 @@ async function putFile(file: Blob, filename: string, contentType: string): Promi
   return signed.key;
 }
 
-/** A JPEG preview of a GeoTIFF map, made from its smallest sufficient overview. */
-async function geotiffPreview(file: File): Promise<Blob> {
+/**
+ * A JPEG preview of a GeoTIFF map, made from its smallest sufficient
+ * overview, and where its corners are on Earth — read from the file's own
+ * georeferencing, so the viewer can lay it on the satellite map in place.
+ */
+async function geotiffPreview(file: File): Promise<{ blob: Blob; corners: [LngLat, LngLat, LngLat, LngLat] | null; epsg: number | null }> {
   const { fromBlob } = await import("geotiff");
   const tiff = await fromBlob(file);
   const count = await tiff.getImageCount();
+  const full = await tiff.getImage(0);
+  let corners: [LngLat, LngLat, LngLat, LngLat] | null = null;
+  let epsg: number | null = null;
+  try {
+    const keys = (full.getGeoKeys?.() ?? {}) as { ProjectedCSTypeGeoKey?: number; GeographicTypeGeoKey?: number };
+    epsg = keys.ProjectedCSTypeGeoKey ?? keys.GeographicTypeGeoKey ?? null;
+    const bbox = full.getBoundingBox() as [number, number, number, number];
+    if (epsg && isSupportedEpsg(epsg)) corners = cornersFromBBox(bbox, epsg);
+  } catch {
+    // Not georeferenced: the map is still shown, just not placed.
+  }
   // Overviews, when present, follow the full-resolution image. The smallest
   // one that is still at least preview-sized is far cheaper to decode.
-  let image = await tiff.getImage(0);
+  let image = full;
   for (let i = 1; i < count; i++) {
     const candidate = await tiff.getImage(i);
     if (Math.max(candidate.getWidth(), candidate.getHeight()) >= PREVIEW_SIZE) image = candidate;
@@ -88,9 +104,10 @@ async function geotiffPreview(file: File): Promise<Blob> {
     pixels.data[p * 4 + 3] = 255;
   }
   context.putImageData(pixels, 0, 0);
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not encode the preview"))), "image/jpeg", 0.85),
+  const blob = await new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Could not encode the preview"))), "image/jpeg", 0.85),
   );
+  return { blob, corners, epsg };
 }
 
 export function DroneMapUploader({ jobId, siteId }: { jobId: string; siteId: string }) {
@@ -120,7 +137,7 @@ export function DroneMapUploader({ jobId, siteId }: { jobId: string; siteId: str
         try {
           const contentType = file.type || "application/octet-stream";
           const key = await putFile(file, file.name, contentType);
-          await call(`/api/v1/drone/datasets/${datasetId}/outputs`, {
+          const registered = await call<{ id: string }>(`/api/v1/drone/datasets/${datasetId}/outputs`, {
             outputType: type,
             storageKey: key,
             mimeType: contentType,
@@ -137,19 +154,34 @@ export function DroneMapUploader({ jobId, siteId }: { jobId: string; siteId: str
               try {
                 const preview = await geotiffPreview(file);
                 const previewName = `${file.name.replace(/\.tiff?$/i, "")}-preview.jpg`;
-                const previewKey = await putFile(preview, previewName, "image/jpeg");
+                const previewKey = await putFile(preview.blob, previewName, "image/jpeg");
                 await call(`/api/v1/drone/datasets/${datasetId}/outputs`, {
                   outputType: "ORTHOMOSAIC",
                   storageKey: previewKey,
                   mimeType: "image/jpeg",
-                  sizeBytes: preview.size,
-                  metadata: { originalFilename: previewName, previewOf: key, preview: true, source: "vendor-upload" },
+                  sizeBytes: preview.blob.size,
+                  metadata: {
+                    originalFilename: previewName,
+                    previewOf: key,
+                    previewOfOutputId: registered.id,
+                    preview: true,
+                    source: "vendor-upload",
+                    corners: preview.corners,
+                    epsg: preview.epsg,
+                  },
                 });
-                note = "uploaded, with a viewable preview";
+                note = preview.corners
+                  ? "uploaded, with a viewable preview placed on the map"
+                  : "uploaded, with a viewable preview (no location data in the file, so it is not placed on the map)";
               } catch {
                 note = "uploaded; a preview could not be made from this file — also upload a JPG export so it can be viewed";
               }
             }
+          }
+          // Deep zoom: hand the full map to Mapbox to tile. Not waited on —
+          // it runs on the server, and is simply skipped where not set up.
+          if (type === "ORTHOMOSAIC" && isGeoTiff) {
+            void fetch(`/api/v1/drone/outputs/${registered.id}/tiles`, { method: "POST" }).catch(() => {});
           }
           update(i, { status: "done", note });
           ok++;

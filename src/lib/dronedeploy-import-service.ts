@@ -11,6 +11,8 @@ import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 import { logEvent } from "@/lib/observability";
+import { mapboxTilingConfig } from "@/lib/integrations/mapbox-tiling";
+import { startTilingForOutput } from "@/lib/drone-map-service";
 
 /**
  * DRONEDEPLOY AUTO-IMPORT.
@@ -594,6 +596,13 @@ async function advanceImport(
         data: { status: "IMPORTED", droneOutputId: output.id, errorMessage: null },
       });
       result.exportsImported++;
+      // Deep zoom for the map, where Mapbox tiling is set up. Never allowed to
+      // fail the import: the map is in storage either way.
+      if (exp.outputType === "ORTHOMOSAIC" && mapboxTilingConfig() && /\.tiff?$/i.test(output.storageKey)) {
+        await startTilingForOutput(output.id).catch((err) =>
+          logEvent("mapbox.api_call", { ok: false, errorMessage: err instanceof Error ? err.message : String(err) }),
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const attempts = exp.attempts + 1;
