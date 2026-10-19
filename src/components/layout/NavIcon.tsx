@@ -96,6 +96,12 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
       <path d="M9.5 12l1.8 1.8 3.4-3.6" strokeLinecap="round" strokeLinejoin="round" />
     </>
   ),
+  bell: (
+    <>
+      <path d="M6 16V11a6 6 0 1112 0v5l1.5 2h-15L6 16z" strokeLinejoin="round" />
+      <path d="M10 20.5a2 2 0 004 0" strokeLinecap="round" />
+    </>
+  ),
   webhook: (
     <>
       <circle cx="6.5" cy="17.5" r="3" />

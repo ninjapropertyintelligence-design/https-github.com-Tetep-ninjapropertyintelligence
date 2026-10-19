@@ -6,7 +6,7 @@ import { issueScopeWhere, propertyScopeWhere } from "@/lib/session-context";
 import { createIssueSchema } from "@/lib/validation";
 import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
-import { notifyPropertyStakeholders, notifyUser } from "@/lib/notifications";
+import { notifyPropertyStakeholders, notifyUser, notifyVendorUsers } from "@/lib/notifications";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 
 // GET /api/v1/issues?propertyId=&severity=&status=&assigneeId=&vendorId=&search=&page=&pageSize=
@@ -67,6 +67,14 @@ export const POST = withApiHandler(async (ctx, req) => {
     if (!asset) throw new ApiError(400, "Invalid assetId for this property");
   }
 
+  if (input.vendorId) {
+    const vendor = await prisma.vendor.findFirst({
+      where: { id: input.vendorId, organizationId: ctx.organizationId },
+      select: { id: true },
+    });
+    if (!vendor) throw new ApiError(400, "That vendor company does not exist in this organization");
+  }
+
   const issue = await prisma.issue.create({
     data: {
       organizationId: ctx.organizationId,
@@ -83,6 +91,8 @@ export const POST = withApiHandler(async (ctx, req) => {
       estimatedCost: input.estimatedCost ?? null,
       dueDate: input.dueDate ?? null,
       createdById: ctx.userId,
+      // Raised with someone already sent to fix it.
+      ...(input.vendorId || input.assigneeId ? { status: "ASSIGNED" as const } : {}),
     },
   });
 
@@ -119,6 +129,16 @@ export const POST = withApiHandler(async (ctx, req) => {
           userId: issue.assigneeId,
           type: "ISSUE_ASSIGNED",
           title: `Assigned: ${issue.title}`,
+          body: property.name,
+          link: `/issues/${issue.id}`,
+        })
+      : Promise.resolve(),
+    issue.vendorId
+      ? notifyVendorUsers({
+          organizationId: ctx.organizationId,
+          vendorId: issue.vendorId,
+          type: "ISSUE_ASSIGNED",
+          title: `Repair assigned: ${issue.title}`,
           body: property.name,
           link: `/issues/${issue.id}`,
         })
