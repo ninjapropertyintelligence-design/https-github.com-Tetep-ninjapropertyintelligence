@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { healthBandFor, DEFAULT_CATEGORY_WEIGHTS, SCORING_CATEGORIES, inferCategoryFromAssetType } from "@/lib/scoring-categories";
+import { healthBandFor, displayBandFor, LOW_CONFIDENCE_THRESHOLD, DEFAULT_CATEGORY_WEIGHTS, SCORING_CATEGORIES, inferCategoryFromAssetType } from "@/lib/scoring-categories";
 
 describe("healthBandFor", () => {
   it.each([
@@ -15,6 +15,19 @@ describe("healthBandFor", () => {
     [0, "Critical"],
   ])("bands score %i as %s", (score, expected) => {
     expect(healthBandFor(score)).toBe(expected);
+  });
+});
+
+describe("displayBandFor", () => {
+  it("withholds the band when the score rests on too little data", () => {
+    // The case that read as "Health 96 · Confidence 6% · Excellent".
+    expect(displayBandFor(96, 6)).toBe("Not enough data");
+    expect(displayBandFor(30, LOW_CONFIDENCE_THRESHOLD - 0.1)).toBe("Not enough data");
+  });
+
+  it("shows the score's band once confidence reaches the threshold", () => {
+    expect(displayBandFor(96, LOW_CONFIDENCE_THRESHOLD)).toBe("Excellent");
+    expect(displayBandFor(58.2, 65)).toBe("Poor");
   });
 });
 
