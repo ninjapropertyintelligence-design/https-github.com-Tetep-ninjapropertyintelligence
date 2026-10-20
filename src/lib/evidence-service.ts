@@ -7,6 +7,7 @@ import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recordUsage } from "@/lib/cost-metering";
 import { FEATURE_FLAGS, requireFeature } from "@/lib/feature-flags";
 import { hasPermission } from "@/lib/permissions";
+import { afterAnswerFileAttached, assertAnswerAttachable } from "@/lib/assessment-service";
 
 /**
  * Evidence registration.
@@ -28,6 +29,8 @@ export interface CreateEvidenceInput {
   assetId?: string | null;
   issueId?: string | null;
   assessmentId?: string | null;
+  /** The assessment answer this file answers, e.g. a photo question's photo. Implies its assessment. */
+  assessmentAnswerId?: string | null;
   captureDate?: Date | null;
   /** The shot position this file was taken from, when it was taken on a route. */
   captureShotId?: string | null;
@@ -123,6 +126,17 @@ async function assertAssetsOnProperties(
   }
 }
 
+/** An assessment id on a file must be an assessment the caller can see, on the file's own property. */
+async function assertAssessmentOnProperty(ctx: SessionContext, assessmentId: string, propertyId: string | null) {
+  const assessment = await prisma.assessment.findFirst({
+    where: { AND: [{ id: assessmentId }, { organizationId: ctx.organizationId }, { property: propertyScopeWhere(ctx) }] },
+    select: { propertyId: true },
+  });
+  if (!assessment || assessment.propertyId !== propertyId) {
+    throw new ApiError(400, "Invalid assessmentId for this property, or you don't have access to it");
+  }
+}
+
 export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
   // Permission first: "you may not do this at all" is a truer answer than
   // "your organization has not bought this" for someone who could never do
@@ -152,6 +166,21 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
   }
 
   if (input.issueId) await assertIssueAttachable(ctx, input.issueId, input.propertyId ?? null);
+
+  // The assessment id was taken on trust, like the asset id before it: a
+  // photo could be filed under another property's assessment. An answer id
+  // pins it exactly, and decides the assessment.
+  let assessmentId = input.assessmentId ?? null;
+  if (input.assessmentAnswerId) {
+    const attached = await assertAnswerAttachable(ctx, input.assessmentAnswerId, input.propertyId ?? null);
+    if (assessmentId && assessmentId !== attached.assessmentId) {
+      throw new ApiError(400, "That answer belongs to a different assessment");
+    }
+    assessmentId = attached.assessmentId;
+  } else if (assessmentId) {
+    await assertAssessmentOnProperty(ctx, assessmentId, input.propertyId ?? null);
+  }
+
   if (input.repairStage && !input.issueId) throw new ApiError(400, "A before/after photo needs the issue it belongs to");
 
   // A vendor's upload is held for review against the job site it delivers —
@@ -165,7 +194,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       propertyId: input.propertyId ?? null,
       assetId: input.assetId ?? null,
       issueId: input.issueId ?? null,
-      assessmentId: input.assessmentId ?? null,
+      assessmentId,
+      assessmentAnswerId: input.assessmentAnswerId ?? null,
       type: input.type,
       storageKey: input.storageKey,
       thumbnailKey: input.thumbnailKey ?? null,
@@ -191,6 +221,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
   });
 
   await learnShotLocations([evidence]);
+
+  if (evidence.assessmentAnswerId) await afterAnswerFileAttached(evidence.assessmentAnswerId, ctx.userId);
 
   // Metered per panorama, not per byte: the bytes are already sampled into
   // GB-months by the storage meter, and counting them here too would bill the
@@ -324,6 +356,12 @@ export async function createEvidenceBatch(
   }
 
   await assertAssetsOnProperties(ctx.organizationId, items);
+
+  const assessmentPairs = new Set(items.filter((i) => i.assessmentId).map((i) => `${i.assessmentId}\u0000${i.propertyId ?? ""}`));
+  for (const pair of assessmentPairs) {
+    const [assessmentId, propertyId] = pair.split("\u0000");
+    await assertAssessmentOnProperty(ctx, assessmentId, propertyId || null);
+  }
 
   for (const item of items) {
     if (!item.captureShotId) continue;

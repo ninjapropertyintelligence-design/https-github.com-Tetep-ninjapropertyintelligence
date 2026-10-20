@@ -27,6 +27,7 @@ const STATUS_STYLES: Record<string, string> = {
   ACTIVE: "bg-green-50 text-green-700",
   DRAFT: "bg-zinc-100 text-zinc-600",
   COMPLETED: "bg-green-50 text-green-700",
+  RELEASED: "bg-brand/10 text-brand",
 };
 
 export function HealthBandBadge({ band }: { band: string }) {

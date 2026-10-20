@@ -120,6 +120,9 @@ enum AssessmentStatus {
   DRAFT
   IN_PROGRESS
   COMPLETED
+  /// Completed and handed to the client. Answers stay locked, as for COMPLETED;
+  /// everything that reads "finished assessments" counts both.
+  RELEASED
 }
 
 /// What kind of capture a shot position expects.
@@ -410,6 +413,7 @@ model User {
   uploadedDocs           DocumentVersion[]       @relation("DocumentUploadedBy")
   conditionChanges       AssetConditionHistory[] @relation("ConditionChangedBy")
   assessmentsAsInspector Assessment[]            @relation("AssessmentInspector")
+  taskResponsesCompleted AssessmentTaskResponse[] @relation("TaskResponseCompletedBy")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
@@ -1015,14 +1019,68 @@ model AssessmentSection {
   position   Int    @default(0)
 
   template  AssessmentTemplate   @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  tasks     AssessmentTask[]
   questions AssessmentQuestion[]
 
   @@index([templateId])
 }
 
+/// A unit of field work inside a section ("Electrical panel", "Roof drain"),
+/// grouping the questions answered together. A repeatable task is answered
+/// once per thing found — three drains, three responses — which a flat
+/// question list cannot express.
+model AssessmentTask {
+  id            String  @id @default(cuid())
+  sectionId     String
+  name          String
+  description   String?
+  position      Int     @default(0)
+  /// Counts toward "required tasks complete" on the assessment's progress.
+  isRequired    Boolean @default(true)
+  /// May be answered more than once in one assessment.
+  isRepeatable  Boolean @default(false)
+  /// A person marks each response complete; otherwise a response is complete
+  /// as soon as its required questions are answered.
+  isCompletable Boolean @default(true)
+
+  section   AssessmentSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  questions AssessmentQuestion[]
+  responses AssessmentTaskResponse[]
+
+  @@index([sectionId])
+}
+
+/// One answering of a task in one assessment. `instance` numbers repeats of a
+/// repeatable task from 1; a non-repeatable task only ever has instance 1.
+model AssessmentTaskResponse {
+  id            String    @id @default(cuid())
+  assessmentId  String
+  taskId        String
+  instance      Int       @default(1)
+  /// What this repeat is of, e.g. "North drain", so repeats can be told apart.
+  label         String?
+  isComplete    Boolean   @default(false)
+  completedAt   DateTime?
+  completedById String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  assessment  Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  task        AssessmentTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  completedBy User?              @relation("TaskResponseCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  answers     AssessmentAnswer[]
+
+  @@unique([assessmentId, taskId, instance])
+  @@index([assessmentId])
+}
+
 model AssessmentQuestion {
   id         String                 @id @default(cuid())
   sectionId  String
+  /// The task this question is answered under. Null for a question asked once
+  /// per assessment directly in its section, as every question was before
+  /// tasks existed.
+  taskId     String?
   prompt     String
   type       AssessmentQuestionType
   position   Int                    @default(0)
@@ -1031,9 +1089,11 @@ model AssessmentQuestion {
   category   String? // maps to scoring category, e.g. "Roof"
 
   section AssessmentSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  task    AssessmentTask?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
   answers AssessmentAnswer[]
 
   @@index([sectionId])
+  @@index([taskId])
 }
 
 model Assessment {
@@ -1049,11 +1109,14 @@ model Assessment {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  template  AssessmentTemplate @relation(fields: [templateId], references: [id])
-  property  Property           @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  inspector User               @relation("AssessmentInspector", fields: [inspectorId], references: [id])
-  answers   AssessmentAnswer[]
-  evidence  Evidence[]
+  releasedAt DateTime?
+
+  template      AssessmentTemplate       @relation(fields: [templateId], references: [id])
+  property      Property                 @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  inspector     User                     @relation("AssessmentInspector", fields: [inspectorId], references: [id])
+  answers       AssessmentAnswer[]
+  taskResponses AssessmentTaskResponse[]
+  evidence      Evidence[]
 
   @@index([organizationId])
   @@index([propertyId])
@@ -1065,6 +1128,9 @@ model AssessmentAnswer {
   id             String   @id @default(cuid())
   assessmentId   String
   questionId     String
+  /// Which answering of the question's task this belongs to. Null exactly
+  /// when the question has no task.
+  taskResponseId String?
   assetId        String?
   textValue      String?
   numberValue    Float?
@@ -1074,13 +1140,15 @@ model AssessmentAnswer {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  assessment Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  question   AssessmentQuestion @relation(fields: [questionId], references: [id])
-  asset      Asset?             @relation(fields: [assetId], references: [id], onDelete: SetNull)
-  evidence   Evidence[]
+  assessment   Assessment              @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  question     AssessmentQuestion      @relation(fields: [questionId], references: [id])
+  taskResponse AssessmentTaskResponse? @relation(fields: [taskResponseId], references: [id], onDelete: Cascade)
+  asset        Asset?                  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  evidence     Evidence[]
 
-  @@unique([assessmentId, questionId, assetId])
+  @@unique([assessmentId, questionId, assetId, taskResponseId])
   @@index([assessmentId])
+  @@index([taskResponseId])
 }
 
 // ---------------------------------------------------------------------------

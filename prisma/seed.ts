@@ -269,6 +269,10 @@ async function main() {
       },
     }));
 
+  // A field-survey template in tasks: each task is a unit of work answered
+  // together, and the repeatable ones are answered once per thing found.
+  const surveyTemplate = await seedSurveyTemplate(org.id);
+
   console.log("Seeding pilot (deep) property...");
   let pilot = await prisma.property.findFirst({ where: { organizationId: org.id, customerPropertyId: "STORE-1052" } });
   if (!pilot) {
@@ -462,6 +466,18 @@ async function main() {
         status: "COMPLETED",
         startedAt: new Date(Date.now() - 20 * 86400000),
         completedAt: new Date(Date.now() - 19 * 86400000),
+      },
+    });
+  }
+  if (!(await prisma.assessment.findFirst({ where: { propertyId: pilot.id, templateId: surveyTemplate.id } }))) {
+    await prisma.assessment.create({
+      data: {
+        organizationId: org.id,
+        propertyId: pilot.id,
+        templateId: surveyTemplate.id,
+        inspectorId: inspector.id,
+        status: "DRAFT",
+        scheduledFor: new Date(Date.now() + 7 * 86400000),
       },
     });
   }
@@ -839,3 +855,114 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
+
+type SurveyQuestion = { prompt: string; type: "PHOTO" | "TEXT" | "NUMBER" | "YES_NO" | "CONDITION"; isRequired?: boolean; category?: string };
+type SurveyTask = { name: string; isRepeatable?: boolean; isRequired?: boolean; isCompletable?: boolean; questions: SurveyQuestion[] };
+
+async function seedSurveyTemplate(organizationId: string) {
+  const name = "Site Survey";
+  const existing = await prisma.assessmentTemplate.findFirst({ where: { organizationId, name } });
+  if (existing) return existing;
+
+  const sections: Array<{ name: string; tasks: SurveyTask[] }> = [
+    {
+      name: "Check-In",
+      tasks: [
+        {
+          name: "Arrival",
+          isCompletable: false,
+          questions: [
+            { prompt: "Storefront photo", type: "PHOTO", isRequired: true },
+            { prompt: "Store manager on site", type: "TEXT" },
+          ],
+        },
+      ],
+    },
+    {
+      name: "MEP Assets & Utilities",
+      tasks: [
+        {
+          name: "Electrical panel",
+          isRepeatable: true,
+          questions: [
+            { prompt: "Panel photo (door open)", type: "PHOTO", isRequired: true },
+            { prompt: "Panel label photo", type: "PHOTO", isRequired: true },
+            { prompt: "Panel condition", type: "CONDITION", category: "Electrical" },
+          ],
+        },
+        {
+          name: "Rooftop HVAC unit",
+          isRepeatable: true,
+          questions: [
+            { prompt: "Unit photo", type: "PHOTO", isRequired: true },
+            { prompt: "Nameplate photo", type: "PHOTO", isRequired: true },
+            { prompt: "Tonnage", type: "NUMBER" },
+            { prompt: "Unit condition", type: "CONDITION", category: "HVAC" },
+          ],
+        },
+        {
+          name: "Water heater",
+          questions: [
+            { prompt: "Water heater photo", type: "PHOTO", isRequired: true },
+            { prompt: "Leaking?", type: "YES_NO", isRequired: true },
+          ],
+        },
+      ],
+    },
+    {
+      name: "Deficiencies",
+      tasks: [
+        {
+          name: "Deficiency",
+          isRepeatable: true,
+          isRequired: false,
+          questions: [
+            { prompt: "Deficiency photo", type: "PHOTO", isRequired: true },
+            { prompt: "Description", type: "TEXT", isRequired: true },
+          ],
+        },
+      ],
+    },
+    {
+      name: "Check Out",
+      tasks: [
+        {
+          name: "Departure",
+          isCompletable: false,
+          questions: [{ prompt: "Departure notes", type: "TEXT", isRequired: true }],
+        },
+      ],
+    },
+  ];
+
+  const template = await prisma.assessmentTemplate.create({
+    data: { organizationId, name, description: "Field survey: check-in, MEP inventory, deficiencies, check-out" },
+  });
+  for (const [sIdx, section] of sections.entries()) {
+    const sectionRow = await prisma.assessmentSection.create({ data: { templateId: template.id, name: section.name, position: sIdx } });
+    for (const [tIdx, task] of section.tasks.entries()) {
+      const taskRow = await prisma.assessmentTask.create({
+        data: {
+          sectionId: sectionRow.id,
+          name: task.name,
+          position: tIdx,
+          isRequired: task.isRequired ?? true,
+          isRepeatable: task.isRepeatable ?? false,
+          isCompletable: task.isCompletable ?? true,
+        },
+      });
+      await prisma.assessmentQuestion.createMany({
+        data: task.questions.map((q, qIdx) => ({
+          sectionId: sectionRow.id,
+          taskId: taskRow.id,
+          prompt: q.prompt,
+          type: q.type,
+          isRequired: q.isRequired ?? false,
+          category: q.category ?? null,
+          position: qIdx,
+        })),
+      });
+    }
+  }
+  return template;
+}

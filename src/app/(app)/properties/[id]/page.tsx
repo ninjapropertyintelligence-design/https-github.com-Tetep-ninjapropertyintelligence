@@ -24,6 +24,7 @@ import { SiteMap } from "@/components/property/SiteMap";
 import { Photo360Gallery } from "@/components/media/Photo360Gallery";
 import { NearbyProperties } from "@/components/property/NearbyProperties";
 import { recordProductEvent } from "@/lib/analytics";
+import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -148,7 +149,7 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
       prisma.issue.count({ where: { propertyId, severity: "CRITICAL", status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } } }),
       prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
       prisma.asset.count({ where: { propertyId, status: "ACTIVE", criticalityScore: { gte: 4 } } }),
-      prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
+      prisma.assessment.findFirst({ where: { propertyId, status: { in: FINISHED_ASSESSMENT_STATUSES } }, orderBy: { completedAt: "desc" } }),
       prisma.matterportPropertyLink.findFirst({
         where: { propertyId, ...captureReviewWhere(ctx) },
         orderBy: { linkedAt: "desc" },

@@ -48,6 +48,7 @@ export function eventLabel(type: string): string {
     "asset.condition_changed": "Asset condition changed",
     "assessment.started": "Assessment started",
     "assessment.completed": "Assessment completed",
+    "assessment.released": "Assessment released",
     "issue.created": "Issue created",
     "issue.assigned": "Issue assigned",
     "issue.resolved": "Issue resolved",

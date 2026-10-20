@@ -27,6 +27,7 @@ const createEvidenceSchema = z.object({
   assetId: z.string().nullish(),
   issueId: z.string().nullish(),
   assessmentId: z.string().nullish(),
+  assessmentAnswerId: z.string().nullish(),
   captureDate: z.coerce.date().nullish(),
   captureShotId: z.string().nullish(),
   repairStage: z.enum(["BEFORE", "AFTER"]).nullish(),
