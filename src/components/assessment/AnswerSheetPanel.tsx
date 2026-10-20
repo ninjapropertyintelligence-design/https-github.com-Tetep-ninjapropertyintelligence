@@ -59,18 +59,26 @@ export function AnswerSheetPanel({ assessmentId, canImport }: { assessmentId: st
     <div className="space-y-3 rounded-xl border border-border bg-surface p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">Spreadsheet</h3>
+          <h3 className="text-sm font-semibold text-foreground">Report and spreadsheet</h3>
           <p className="text-xs text-muted">
             Download the survey, fill the Answer column offline, and load it back. Copy a repeatable task&apos;s rows with the next
             Response # to add another.
           </p>
         </div>
-        <a
-          href={`/api/v1/assessments/${assessmentId}/export`}
-          className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground hover:bg-zinc-50"
-        >
-          Download CSV
-        </a>
+        <span className="flex gap-2">
+          <a
+            href={`/api/v1/assessments/${assessmentId}/report`}
+            className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-foreground hover:bg-brand/90"
+          >
+            PDF report
+          </a>
+          <a
+            href={`/api/v1/assessments/${assessmentId}/export`}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-foreground hover:bg-zinc-50"
+          >
+            Download CSV
+          </a>
+        </span>
       </div>
 
       {canImport ? (
