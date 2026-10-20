@@ -415,6 +415,7 @@ model User {
   assessmentsAsInspector Assessment[]            @relation("AssessmentInspector")
   taskResponsesCompleted AssessmentTaskResponse[] @relation("TaskResponseCompletedBy")
   projectMemberships     ProjectMember[]
+  createdOverlays        PropertyOverlay[]        @relation("OverlayCreatedBy")
   createdProjects        Project[]                @relation("ProjectCreatedBy")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
@@ -603,6 +604,7 @@ model Organization {
   invitations          Invitation[]
   programs             Program[]
   projects             Project[]
+  overlays             PropertyOverlay[]
 
   @@index([slug])
 }
@@ -691,6 +693,7 @@ model Property {
   legalHolds      LegalHold[]
   usageRecords    UsageRecord[]
   projects        Project[]
+  overlays        PropertyOverlay[]
 
   /**
    * Derived geography for spatial queries (§11). Prisma has no geography
@@ -743,9 +746,10 @@ model Floor {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  building Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  building Building          @relation(fields: [buildingId], references: [id], onDelete: Cascade)
   areas    Area[]
   assets   Asset[]
+  overlays PropertyOverlay[]
 
   @@index([buildingId])
 }
@@ -995,6 +999,67 @@ model Vendor {
   invitations Invitation[]
 
   @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Map overlays
+// ---------------------------------------------------------------------------
+
+enum OverlayKind {
+  /// An image laid over the map between four edges: an aerial, a plan sheet.
+  RASTER
+  /// GeoJSON drawn on the map: boundaries, zones, utility runs.
+  VECTOR
+}
+
+enum OverlayCategory {
+  AERIAL
+  SITE_PLAN
+  FLOOR_PLAN
+  /// Furniture, fixtures and equipment plan.
+  FFE_PLAN
+  REFLECTED_CEILING_PLAN
+  ROOF_PLAN
+  OTHER
+}
+
+/// A georeferenced layer for a property's site map.
+///
+/// A raster sits between north/south/east/west edges — an axis-aligned box.
+/// A plan sheet rotated relative to north has to be rotated before upload;
+/// a four-corner fit is not modelled.
+model PropertyOverlay {
+  id             String          @id @default(cuid())
+  organizationId String
+  propertyId     String
+  /// The level a floor-scoped plan shows. Null for site-wide layers.
+  floorId        String?
+  kind           OverlayKind
+  category       OverlayCategory @default(OTHER)
+  name           String
+  storageKey     String
+  mimeType       String
+  sizeBytes      Int?
+  north          Float?
+  south          Float?
+  east           Float?
+  west           Float?
+  /// 0-1. What the layer opens at; each viewer can change it on the map.
+  defaultOpacity Float           @default(0.8)
+  /// Shown when the map opens. Others start hidden.
+  isDefault      Boolean         @default(false)
+  /// When the imagery was flown or the plan issued.
+  capturedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floor        Floor?       @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("OverlayCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([propertyId, kind])
 }
 
 // ---------------------------------------------------------------------------

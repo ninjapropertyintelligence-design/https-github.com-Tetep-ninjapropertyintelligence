@@ -28,6 +28,9 @@ import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
 import { listPrograms, listProjects } from "@/lib/project-service";
 import { ProjectTable } from "@/components/project/ProjectTable";
 import { NewProjectForm } from "@/components/project/NewProjectForm";
+import { listOverlays } from "@/lib/overlay-service";
+import { OVERLAY_CATEGORY_LABELS } from "@/lib/overlay-validation";
+import { OverlayManager } from "@/components/property/OverlayManager";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -361,25 +364,63 @@ async function SiteMapTab({
   captureId?: string;
   ctx: SessionContext;
 }) {
-  const data = await getSiteMapData(ctx, propertyId, captureId);
+  const [data, overlays, floors] = await Promise.all([
+    getSiteMapData(ctx, propertyId, captureId),
+    listOverlays(ctx, propertyId),
+    prisma.floor.findMany({ where: { building: { propertyId } }, select: { id: true, name: true }, orderBy: { level: "asc" } }),
+  ]);
   return (
-    <SiteMap
-      token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
-      property={data.property}
-      captures={data.captures.map((c) => ({
-        id: c.id,
-        capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
-        droneModel: c.droneModel,
-        status: c.status,
-      }))}
-      selectedCaptureId={data.selectedCaptureId}
-      // Serialised here: a Date does not survive the server/client boundary
-      // as a Date, and formatting on the server would pin the output to the
-      // server's locale rather than the viewer's.
-      lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
-      totalMedia={data.totalMedia}
-      layers={data.layers}
-    />
+    <>
+      <SiteMap
+        token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
+        property={data.property}
+        captures={data.captures.map((c) => ({
+          id: c.id,
+          capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
+          droneModel: c.droneModel,
+          status: c.status,
+        }))}
+        selectedCaptureId={data.selectedCaptureId}
+        // Serialised here: a Date does not survive the server/client boundary
+        // as a Date, and formatting on the server would pin the output to the
+        // server's locale rather than the viewer's.
+        lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
+        totalMedia={data.totalMedia}
+        layers={data.layers}
+        overlays={overlays.map((o) => ({
+          id: o.id,
+          kind: o.kind,
+          name: o.name,
+          categoryLabel: OVERLAY_CATEGORY_LABELS[o.category] ?? o.category,
+          north: o.north,
+          south: o.south,
+          east: o.east,
+          west: o.west,
+          defaultOpacity: o.defaultOpacity,
+          isDefault: o.isDefault,
+        }))}
+      />
+      <OverlayManager
+        propertyId={propertyId}
+        canManage={can(ctx, "canManageProperties")}
+        center={
+          data.property.latitude !== null && data.property.longitude !== null
+            ? { latitude: data.property.latitude, longitude: data.property.longitude }
+            : null
+        }
+        floors={floors}
+        overlays={overlays.map((o) => ({
+          id: o.id,
+          kind: o.kind,
+          category: o.category,
+          name: o.name,
+          floorName: o.floor?.name ?? null,
+          capturedAt: o.capturedAt ? o.capturedAt.toISOString() : null,
+          isDefault: o.isDefault,
+          sizeBytes: o.sizeBytes,
+        }))}
+      />
+    </>
   );
 }
 

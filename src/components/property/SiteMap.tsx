@@ -5,6 +5,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { SiteLayer, SiteMarker } from "@/lib/site-map";
+import { boundsToCorners } from "@/lib/overlay-validation";
+
+/** A map overlay as the site map needs it. Edges are null for a vector layer. */
+export interface SiteOverlayOption {
+  id: string;
+  kind: "RASTER" | "VECTOR";
+  name: string;
+  categoryLabel: string;
+  north: number | null;
+  south: number | null;
+  east: number | null;
+  west: number | null;
+  defaultOpacity: number;
+  isDefault: boolean;
+}
+
+const VECTOR_COLOR = "#f59e0b";
+const overlaySourceId = (id: string) => `overlay-${id}`;
+const overlayLayerIds = (o: SiteOverlayOption) =>
+  o.kind === "RASTER"
+    ? [`overlay-${o.id}-raster`]
+    : [`overlay-${o.id}-fill`, `overlay-${o.id}-line`, `overlay-${o.id}-point`];
 
 /** Serialised across the server/client boundary — a Date does not survive it. */
 export interface SiteCaptureOption {
@@ -33,6 +55,7 @@ export interface SiteMapProps {
   selectedCaptureId: string | null;
   totalMedia: number;
   layers: SiteLayer[];
+  overlays?: SiteOverlayOption[];
 }
 
 function formatCaptureDate(iso: string | null): string {
@@ -59,6 +82,7 @@ export function SiteMap({
   selectedCaptureId,
   totalMedia,
   layers,
+  overlays = [],
 }: SiteMapProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,6 +95,12 @@ export function SiteMap({
   // an empty site would read as "nothing captured here".
   const [active, setActive] = useState<Set<string>>(() => new Set(mappable.map((l) => l.key)));
   const [ready, setReady] = useState(false);
+  // Per-viewer overlay state: what is on, and how see-through. Starts from
+  // what the overlay's owner chose as its default.
+  const [overlayOn, setOverlayOn] = useState<Set<string>>(() => new Set(overlays.filter((o) => o.isDefault).map((o) => o.id)));
+  const [overlayOpacity, setOverlayOpacity] = useState<Record<string, number>>(() =>
+    Object.fromEntries(overlays.map((o) => [o.id, o.defaultOpacity])),
+  );
 
   const hasSiteCoords = property.latitude !== null && property.longitude !== null;
   const canRenderMap = !!token && hasSiteCoords;
@@ -111,6 +141,54 @@ export function SiteMap({
           .setPopup(new mapboxgl.Popup({ offset: 16 }).setText(property.name))
           .addTo(map);
 
+        // Overlays go under the markers: a plan sheet is the ground the
+        // capture pins are read against, not something drawn over them.
+        // Every one is added up front, hidden; the effect below shows and
+        // fades them without re-adding.
+        for (const o of overlays) {
+          const url = `/api/v1/overlays/${o.id}/content`;
+          if (o.kind === "RASTER" && o.north !== null && o.south !== null && o.east !== null && o.west !== null) {
+            map.addSource(overlaySourceId(o.id), {
+              type: "image",
+              url,
+              coordinates: boundsToCorners({ north: o.north, south: o.south, east: o.east, west: o.west }),
+            });
+            map.addLayer({
+              id: `overlay-${o.id}-raster`,
+              type: "raster",
+              source: overlaySourceId(o.id),
+              layout: { visibility: "none" },
+              paint: { "raster-opacity": o.defaultOpacity, "raster-fade-duration": 0 },
+            });
+          } else if (o.kind === "VECTOR") {
+            map.addSource(overlaySourceId(o.id), { type: "geojson", data: url });
+            map.addLayer({
+              id: `overlay-${o.id}-fill`,
+              type: "fill",
+              source: overlaySourceId(o.id),
+              filter: ["==", ["geometry-type"], "Polygon"],
+              layout: { visibility: "none" },
+              paint: { "fill-color": VECTOR_COLOR, "fill-opacity": o.defaultOpacity * 0.35 },
+            });
+            map.addLayer({
+              id: `overlay-${o.id}-line`,
+              type: "line",
+              source: overlaySourceId(o.id),
+              filter: ["in", ["geometry-type"], ["literal", ["Polygon", "LineString"]]],
+              layout: { visibility: "none" },
+              paint: { "line-color": VECTOR_COLOR, "line-width": 2, "line-opacity": o.defaultOpacity },
+            });
+            map.addLayer({
+              id: `overlay-${o.id}-point`,
+              type: "circle",
+              source: overlaySourceId(o.id),
+              filter: ["==", ["geometry-type"], "Point"],
+              layout: { visibility: "none" },
+              paint: { "circle-color": VECTOR_COLOR, "circle-radius": 5, "circle-opacity": o.defaultOpacity },
+            });
+          }
+        }
+
         for (const layer of mappable) {
           const created = layer.markers.map((m: SiteMarker) => {
             const el = document.createElement("div");
@@ -146,7 +224,23 @@ export function SiteMap({
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [canRenderMap, token, property.latitude, property.longitude, property.name, mappable]);
+  }, [canRenderMap, token, property.latitude, property.longitude, property.name, mappable, overlays]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    for (const o of overlays) {
+      const opacity = overlayOpacity[o.id] ?? o.defaultOpacity;
+      for (const layerId of overlayLayerIds(o)) {
+        if (!map.getLayer(layerId)) continue;
+        map.setLayoutProperty(layerId, "visibility", overlayOn.has(o.id) ? "visible" : "none");
+        if (layerId.endsWith("-raster")) map.setPaintProperty(layerId, "raster-opacity", opacity);
+        else if (layerId.endsWith("-fill")) map.setPaintProperty(layerId, "fill-opacity", opacity * 0.35);
+        else if (layerId.endsWith("-line")) map.setPaintProperty(layerId, "line-opacity", opacity);
+        else map.setPaintProperty(layerId, "circle-opacity", opacity);
+      }
+    }
+  }, [ready, overlays, overlayOn, overlayOpacity]);
 
   // Toggling hides markers in place rather than rebuilding them, so the
   // current pan and zoom survive.
@@ -312,6 +406,61 @@ export function SiteMap({
               );
             })}
           </div>
+
+          {overlays.length > 0 ? (
+            <div className="mt-6 border-t border-border pt-4">
+              <h3 className="text-base font-semibold text-foreground">Overlays</h3>
+              {(["RASTER", "VECTOR"] as const).map((kind) => {
+                const group = overlays.filter((o) => o.kind === kind);
+                if (group.length === 0) return null;
+                return (
+                  <div key={kind} className="mt-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                      {kind === "RASTER" ? "Raster overlays" : "Vector overlays"} ({group.length})
+                    </p>
+                    <ul className="mt-2 space-y-3">
+                      {group.map((o) => (
+                        <li key={o.id} className="space-y-1">
+                          <label className="flex items-center gap-2 text-sm text-foreground">
+                            <input
+                              type="checkbox"
+                              disabled={!canRenderMap}
+                              checked={overlayOn.has(o.id)}
+                              onChange={() =>
+                                setOverlayOn((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(o.id)) next.delete(o.id);
+                                  else next.add(o.id);
+                                  return next;
+                                })
+                              }
+                            />
+                            <span className="min-w-0 flex-1 truncate">{o.name}</span>
+                            <span className="text-xs text-muted">{o.categoryLabel}</span>
+                          </label>
+                          {canRenderMap && overlayOn.has(o.id) ? (
+                            <label className="flex items-center gap-2 pl-6 text-xs text-muted">
+                              Opacity
+                              <input
+                                type="range"
+                                min={0}
+                                max={100}
+                                value={Math.round((overlayOpacity[o.id] ?? o.defaultOpacity) * 100)}
+                                onChange={(e) => setOverlayOpacity((prev) => ({ ...prev, [o.id]: Number(e.target.value) / 100 }))}
+                                className="flex-1"
+                                aria-label={`${o.name} opacity`}
+                              />
+                              <span className="w-8 tabular-nums">{Math.round((overlayOpacity[o.id] ?? o.defaultOpacity) * 100)}%</span>
+                            </label>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
 
           <p className="mt-4 space-y-2 border-t border-border pt-3 text-xs leading-relaxed text-muted">
             Drone photos, 3D models, point clouds and orthomosaics are counted for the selected capture. Evidence,
