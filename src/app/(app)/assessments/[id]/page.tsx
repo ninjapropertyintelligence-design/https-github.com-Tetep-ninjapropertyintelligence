@@ -9,6 +9,7 @@ import { isAssessmentLocked } from "@/lib/assessment-progress";
 import { hasPermission } from "@/lib/permissions";
 import { formatDate } from "@/lib/format";
 import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
+import { AnswerSheetPanel } from "@/components/assessment/AnswerSheetPanel";
 
 export default async function AssessmentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -73,6 +74,8 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
         title="Reference documents"
         subtitle="Plans and records for this site, for use on the walk"
       />
+
+      <AnswerSheetPanel assessmentId={assessment.id} canImport={!readOnly} />
 
       <AssessmentRunner
         assessmentId={assessment.id}

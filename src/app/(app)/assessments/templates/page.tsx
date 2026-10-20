@@ -59,7 +59,14 @@ export default async function TemplatesPage() {
                   </td>
                   <td className="px-5 py-3 text-muted">{formatDate(t.updatedAt)}</td>
                   <td className="px-5 py-3 text-right">
-                    <TemplateActiveToggle templateId={t.id} isActive={t.isActive} />
+                    <span className="inline-flex items-center gap-1">
+                      {t.usedBy > 0 ? (
+                        <a href={`/api/v1/assessments/templates/${t.id}/export`} className="rounded-lg px-3 py-2 text-sm text-foreground hover:bg-zinc-100">
+                          Export answers
+                        </a>
+                      ) : null}
+                      <TemplateActiveToggle templateId={t.id} isActive={t.isActive} />
+                    </span>
                   </td>
                 </tr>
               ))}

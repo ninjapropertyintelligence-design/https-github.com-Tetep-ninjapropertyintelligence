@@ -116,6 +116,38 @@ export async function addTaskResponse(
   return response;
 }
 
+/**
+ * The response numbered `instance` for a task, created if it is not there
+ * yet — how a spreadsheet's "Response #" column finds its place. Numbers
+ * above 1 exist only for repeatable tasks; a label fills an unlabelled
+ * response and never overwrites one.
+ */
+export async function ensureTaskResponse(
+  ctx: SessionContext,
+  assessmentId: string,
+  input: { taskId: string; instance: number; label?: string | null },
+) {
+  const assessment = await loadAssessment(ctx, assessmentId);
+  requireWritable(ctx, assessment);
+  const task = await loadTaskOnTemplate(input.taskId, assessment.templateId);
+  if (input.instance > 1 && !task.isRepeatable) {
+    throw new ApiError(400, `"${task.name}" is not repeatable, so it has only response 1`);
+  }
+  const label = input.label?.trim() || null;
+  const existing = await prisma.assessmentTaskResponse.findUnique({
+    where: { assessmentId_taskId_instance: { assessmentId, taskId: task.id, instance: input.instance } },
+  });
+  if (existing) {
+    if (label && !existing.label) return prisma.assessmentTaskResponse.update({ where: { id: existing.id }, data: { label } });
+    return existing;
+  }
+  const created = await prisma.assessmentTaskResponse.create({
+    data: { assessmentId, taskId: task.id, instance: input.instance, label },
+  });
+  await markStarted(assessment);
+  return created;
+}
+
 async function loadResponse(ctx: SessionContext, assessmentId: string, responseId: string) {
   const assessment = await loadAssessment(ctx, assessmentId);
   const response = await prisma.assessmentTaskResponse.findFirst({
