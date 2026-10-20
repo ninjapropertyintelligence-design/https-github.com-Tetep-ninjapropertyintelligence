@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
-import { createEmbed, deleteEmbed, listEmbeds, setDocumentFlags } from "@/lib/embed-service";
+import { createEmbed, deleteEmbed, listConnectedTours, listEmbeds, setDocumentFlags, updateEmbed } from "@/lib/embed-service";
 import type { SessionContext } from "@/lib/tenant-scope";
 
 /**
@@ -84,6 +84,37 @@ describe("3D embeds", () => {
     await expect(
       createEmbed(asManager(), { propertyId: site.id, kind: "POINT_CLOUD", name: "PC", url: "https://viewer.example.com" }),
     ).rejects.toThrow(/canManageProperties/);
+  });
+});
+
+describe("editing an embed", () => {
+  it("re-checks the link against the kind it ends up with", async () => {
+    const embed = await createEmbed(asOwner(), {
+      propertyId: site.id,
+      kind: "POINT_CLOUD",
+      name: "Point cloud",
+      url: "https://viewer.example.com/potree/",
+    });
+    // Turning it into a Matterport tour without a Matterport link is refused.
+    await expect(updateEmbed(asOwner(), embed.id, { kind: "MATTERPORT" })).rejects.toThrow(/my.matterport.com/);
+    const renamed = await updateEmbed(asOwner(), embed.id, { name: "Exterior scan", capturedAt: new Date("2026-02-10") });
+    expect(renamed).toMatchObject({ name: "Exterior scan", kind: "POINT_CLOUD", url: "https://viewer.example.com/potree/" });
+    await expect(updateEmbed(asManager(), embed.id, { name: "Mine" })).rejects.toThrow(/canManageProperties/);
+    await deleteEmbed(asOwner(), embed.id);
+  });
+});
+
+describe("connected Matterport tours", () => {
+  it("lists linked spaces as viewer links, and skips ids that are not model ids", async () => {
+    const connection = await prisma.matterportConnection.create({ data: { organizationId: org.id } });
+    const good = await prisma.matterportSpace.create({ data: { connectionId: connection.id, externalSpaceId: "SxQL3iGyoDo", name: "Store tour" } });
+    const bad = await prisma.matterportSpace.create({ data: { connectionId: connection.id, externalSpaceId: "not/a model" } });
+    await prisma.matterportPropertyLink.create({ data: { propertyId: site.id, spaceId: good.id } });
+    await prisma.matterportPropertyLink.create({ data: { propertyId: site.id, spaceId: bad.id } });
+
+    const tours = await listConnectedTours(asManager(), site.id);
+    expect(tours.map((t) => [t.name, t.url])).toEqual([["Store tour", "https://my.matterport.com/show/?m=SxQL3iGyoDo"]]);
+    await expect(listConnectedTours(asManager(), other.id)).rejects.toThrow(/Property not found/);
   });
 });
 

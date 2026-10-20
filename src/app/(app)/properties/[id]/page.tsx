@@ -34,7 +34,7 @@ import { OverlayManager } from "@/components/property/OverlayManager";
 import { SpatialEmbeds } from "@/components/property/SpatialEmbeds";
 import { DocumentFlags } from "@/components/property/DocumentFlags";
 import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
-import { listEmbeds } from "@/lib/embed-service";
+import { listConnectedTours, listEmbeds } from "@/lib/embed-service";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -508,7 +508,7 @@ async function ExteriorTab({
 }
 
 async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const [pointClouds, embeds, floors] = await Promise.all([
+  const [pointClouds, embeds, floors, connectedTours] = await Promise.all([
     prisma.droneOutput.findMany({
       where: {
         outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
@@ -517,6 +517,7 @@ async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: Se
     }),
     listEmbeds(ctx, propertyId),
     prisma.floor.findMany({ where: { building: { propertyId } }, select: { id: true, name: true }, orderBy: { level: "asc" } }),
+    listConnectedTours(ctx, propertyId),
   ]);
   return (
     <Card>
@@ -531,8 +532,15 @@ async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: Se
             kind: e.kind,
             name: e.name,
             url: e.url,
+            floorId: e.floorId,
             floorName: e.floor?.name ?? null,
             capturedAt: e.capturedAt ? e.capturedAt.toISOString() : null,
+          }))}
+          connectedTours={connectedTours.map((t) => ({
+            id: t.id,
+            name: t.name,
+            url: t.url,
+            capturedAt: t.capturedAt ? t.capturedAt.toISOString() : null,
           }))}
         />
         <div>

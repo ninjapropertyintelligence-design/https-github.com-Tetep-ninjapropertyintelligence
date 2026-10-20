@@ -38,3 +38,12 @@ export function embedUrlProblem(kind: SpatialEmbedKind, raw: string): string | n
   }
   return null;
 }
+
+/**
+ * The viewer link for a Matterport model id, or null when the id is not one.
+ * Model ids are short alphanumeric strings; anything else (a pasted URL, a
+ * path) is refused rather than spliced into a link.
+ */
+export function matterportShowUrl(modelId: string): string | null {
+  return /^[A-Za-z0-9]{5,40}$/.test(modelId) ? `https://my.matterport.com/show/?m=${modelId}` : null;
+}

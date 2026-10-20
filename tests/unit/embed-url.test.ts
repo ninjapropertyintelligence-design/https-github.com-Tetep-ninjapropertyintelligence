@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { embedUrlProblem, opensInNewTab } from "@/lib/embed-url";
+import { embedUrlProblem, matterportShowUrl, opensInNewTab } from "@/lib/embed-url";
 
 describe("embedUrlProblem", () => {
   it("accepts a Matterport share link and any https viewer", () => {
@@ -24,5 +24,13 @@ describe("opensInNewTab", () => {
   it("sends BIM viewers to their own tab and frames the rest", () => {
     expect(opensInNewTab("BIM")).toBe(true);
     expect(opensInNewTab("MATTERPORT")).toBe(false);
+  });
+});
+
+describe("matterportShowUrl", () => {
+  it("builds the viewer link for a model id and refuses anything else", () => {
+    expect(matterportShowUrl("SxQL3iGyoDo")).toBe("https://my.matterport.com/show/?m=SxQL3iGyoDo");
+    expect(matterportShowUrl("https://evil.example/?m=x")).toBeNull();
+    expect(matterportShowUrl("abc&play=1")).toBeNull();
   });
 });
