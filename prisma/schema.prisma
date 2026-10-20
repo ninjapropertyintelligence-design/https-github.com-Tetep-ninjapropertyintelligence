@@ -416,6 +416,8 @@ model User {
   taskResponsesCompleted AssessmentTaskResponse[] @relation("TaskResponseCompletedBy")
   projectMemberships     ProjectMember[]
   createdOverlays        PropertyOverlay[]        @relation("OverlayCreatedBy")
+  collections            Collection[]             @relation("CollectionCreatedBy")
+  collectedItems         CollectionItem[]         @relation("CollectionItemAddedBy")
   createdProjects        Project[]                @relation("ProjectCreatedBy")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
@@ -605,6 +607,7 @@ model Organization {
   programs             Program[]
   projects             Project[]
   overlays             PropertyOverlay[]
+  collections          Collection[]
 
   @@index([slug])
 }
@@ -1002,6 +1005,54 @@ model Vendor {
 }
 
 // ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+enum CollectionVisibility {
+  /// Only the person who made it.
+  PRIVATE
+  /// Everyone in the organization — each still sees only the items on
+  /// properties they can access.
+  ORGANIZATION
+}
+
+/// A hand-picked set of photos and panoramas: "roof damage across the
+/// region", "before shots for the insurer". Items point at evidence; nothing
+/// is copied.
+model Collection {
+  id             String               @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  visibility     CollectionVisibility @default(PRIVATE)
+  createdById    String
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User             @relation("CollectionCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  items        CollectionItem[]
+
+  @@index([organizationId, visibility])
+  @@index([createdById])
+}
+
+model CollectionItem {
+  id           String   @id @default(cuid())
+  collectionId String
+  evidenceId   String
+  addedById    String?
+  addedAt      DateTime @default(now())
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  evidence   Evidence   @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  addedBy    User?      @relation("CollectionItemAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+
+  @@unique([collectionId, evidenceId])
+  @@index([evidenceId])
+}
+
+// ---------------------------------------------------------------------------
 // Map overlays
 // ---------------------------------------------------------------------------
 
@@ -1353,6 +1404,7 @@ model Evidence {
   aiFindings           AIFinding[]
   analysisJob          PhotoAnalysisJob?
   exteriorMarkers      ExteriorMarker[]
+  collectionItems      CollectionItem[]
 
   @@index([organizationId])
   @@index([propertyId])

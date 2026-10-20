@@ -7,6 +7,8 @@ import { StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { formatDate } from "@/lib/format";
 import { getProject, listProjectMembers } from "@/lib/project-service";
+import { myCollections } from "@/lib/collection-service";
+import { AddToCollection } from "@/components/collection/CollectionControls";
 import {
   AddProjectMember,
   AttachDocument,
@@ -154,24 +156,34 @@ async function AssessmentsTab({ ctx, project, canManage }: { ctx: SessionContext
 
 /** What was captured for this project: the files on its assessments. */
 async function MediaTab({ ctx, project }: { ctx: SessionContext; project: Project }) {
-  const files = await prisma.evidence.findMany({
-    where: { AND: [evidenceScopeWhere(ctx), { assessment: { projectId: project.id } }, { type: { in: ["PHOTO", "IMAGE_360"] } }] },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, type: true, createdAt: true },
-    take: 300,
-  });
+  const [files, collections] = await Promise.all([
+    prisma.evidence.findMany({
+      where: { AND: [evidenceScopeWhere(ctx), { assessment: { projectId: project.id } }, { type: { in: ["PHOTO", "IMAGE_360"] } }] },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, type: true, createdAt: true },
+      take: 300,
+    }),
+    can(ctx, "canViewPortfolio") ? myCollections(ctx) : [],
+  ]);
+  const canCollect = can(ctx, "canViewPortfolio");
   if (files.length === 0) {
     return <EmptyState title="No media yet" description="Photos taken on this project's assessments collect here." />;
   }
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted">{files.length} photos</p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted">{files.length} photos</p>
+        {canCollect ? <AddToCollection evidenceIds={files.map((f) => f.id)} collections={collections} /> : null}
+      </div>
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-8">
         {files.map((f) => (
-          <a key={f.id} href={`/api/v1/evidence/${f.id}/content`} className="block">
-            {/* eslint-disable-next-line @next/next/no-img-element -- same-origin evidence bytes, not a static asset */}
-            <img src={`/api/v1/evidence/${f.id}/content`} alt={`${f.type === "IMAGE_360" ? "360° panorama" : "Photo"} from ${formatDate(f.createdAt)}`} className="aspect-square w-full rounded-lg border border-border object-cover" />
-          </a>
+          <div key={f.id} className="space-y-1">
+            <a href={`/api/v1/evidence/${f.id}/content`} className="block">
+              {/* eslint-disable-next-line @next/next/no-img-element -- same-origin evidence bytes, not a static asset */}
+              <img src={`/api/v1/evidence/${f.id}/content`} alt={`${f.type === "IMAGE_360" ? "360° panorama" : "Photo"} from ${formatDate(f.createdAt)}`} className="aspect-square w-full rounded-lg border border-border object-cover" />
+            </a>
+            {canCollect ? <AddToCollection evidenceIds={[f.id]} collections={collections} compact /> : null}
+          </div>
         ))}
       </div>
     </div>

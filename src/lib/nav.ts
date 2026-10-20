@@ -27,6 +27,7 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canViewPortfolio")) {
     items.push({ label: "Map", href: "/map", section: "Explore", icon: "map" });
     items.push({ label: "Properties", href: "/properties", section: "Explore", icon: "building" });
+    items.push({ label: "Collections", href: "/collections", section: "Explore", icon: "collection" });
   }
   if (can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio")) {
     items.push({ label: "Assets", href: "/assets", section: "Manage", icon: "asset" });
