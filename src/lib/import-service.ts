@@ -666,6 +666,7 @@ async function applyCreate(
         propertyType: str("propertyType") || "Retail",
         squareFootage: num("squareFootage"),
         yearBuilt: num("yearBuilt"),
+        heading: num("heading"),
         updatedBy: ctx.userId,
       },
       select: { id: true },

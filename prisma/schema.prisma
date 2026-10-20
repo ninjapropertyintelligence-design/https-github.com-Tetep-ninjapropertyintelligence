@@ -668,6 +668,9 @@ model Property {
   propertyType       String              @default("Retail")
   squareFootage      Int?
   yearBuilt          Int?
+  /// Which way the site faces, in degrees clockwise from true north (0-360).
+  /// Lets a capture team orient plans and 360° imagery to the building.
+  heading            Float?
   status             PropertyStatus      @default(ACTIVE)
   retentionStatus    DataRetentionStatus @default(ACTIVE)
   isDemoData         Boolean             @default(false)

@@ -182,6 +182,7 @@ export const PROPERTY_FIELDS: TargetField[] = [
   { key: "propertyType", label: "Property type", required: false, aliases: ["property type", "type", "asset class", "category"], coerce: text(60) },
   { key: "squareFootage", label: "Square footage", required: false, aliases: ["square footage", "sq ft", "sqft", "square feet", "size", "gla", "area"], coerce: integer(0, 100_000_000) },
   { key: "yearBuilt", label: "Year built", required: false, aliases: ["year built", "built", "construction year", "year"], coerce: integer(1600, CURRENT_YEAR + 5) },
+  { key: "heading", label: "Heading (degrees)", required: false, aliases: ["heading", "bearing", "orientation", "facing"], help: "Degrees clockwise from north that the site faces, 0-360.", coerce: decimal(0, 360) },
   { key: "portfolio", label: "Portfolio", required: false, aliases: ["portfolio", "portfolio name", "group"], help: "Matched to an existing portfolio by name. Rows without one go to the portfolio chosen for this import.", coerce: text(200) },
   { key: "region", label: "Region", required: false, aliases: ["region", "region name", "market", "district", "division"], coerce: text(200) },
 ];

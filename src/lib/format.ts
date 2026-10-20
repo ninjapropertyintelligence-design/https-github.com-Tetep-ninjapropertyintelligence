@@ -11,6 +11,15 @@ export function formatDate(value: string | Date | null | undefined): string {
 }
 
 /** Date + time — for audit-style records where the exact minute matters. */
+const COMPASS_POINTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+
+/** "135° (SE)" — degrees clockwise from north, with the nearest of eight compass points. */
+export function formatHeading(degrees: number | null | undefined): string {
+  if (degrees === null || degrees === undefined || !Number.isFinite(degrees)) return "—";
+  const normalized = ((degrees % 360) + 360) % 360;
+  return `${Math.round(normalized)}° (${COMPASS_POINTS[Math.round(normalized / 45) % 8]})`;
+}
+
 export function formatDateTime(value: string | Date | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleString("en-US", {
