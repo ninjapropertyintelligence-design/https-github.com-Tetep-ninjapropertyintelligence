@@ -55,6 +55,9 @@ export const POST = withApiHandler(async (ctx, req) => {
     where: { id: input.templateId, organizationId: ctx.organizationId },
   });
   if (!template) throw new ApiError(400, "Invalid templateId");
+  // A retired template keeps answering for the assessments already run on it,
+  // but new work goes on its replacement.
+  if (!template.isActive) throw new ApiError(400, "That template has been retired; use its current version");
   if (input.projectId) await assertProjectForAssessment(ctx, input.projectId, input.propertyId);
   // The inspector id was taken on trust: anyone could be named, including a
   // user in another organization, who would then be "assigned" work here.
