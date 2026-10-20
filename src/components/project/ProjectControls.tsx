@@ -51,6 +51,40 @@ export function ProjectStatusSelect({ projectId, status }: { projectId: string; 
   );
 }
 
+/** Archive or restore, and delete with a plain account of what happens to the work on it. */
+export function ProjectLifecycle({ projectId, archived, name }: { projectId: string; archived: boolean; name: string }) {
+  const router = useRouter();
+  const { busy, error, act } = useAction();
+  return (
+    <div className="space-y-1">
+      <div className="flex gap-2">
+        <Button
+          variant="secondary"
+          disabled={busy}
+          onClick={() => act(`/api/v1/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ archived: !archived }) })}
+        >
+          {archived ? "Restore" : "Archive"}
+        </Button>
+        <Button
+          variant="ghost"
+          disabled={busy}
+          onClick={async () => {
+            const ok = window.confirm(
+              `Delete the project "${name}"?\n\nIts assessments and documents are kept and stay on the property; only the project, its team list and grouping are removed. Archive instead to keep it all together.`,
+            );
+            if (!ok) return;
+            const res = await act(`/api/v1/projects/${projectId}`, { method: "DELETE" });
+            if (res.ok) router.push("/projects");
+          }}
+        >
+          Delete
+        </Button>
+      </div>
+      <ErrorText error={error} />
+    </div>
+  );
+}
+
 export function AddProjectMember({ projectId, candidates }: { projectId: string; candidates: Array<{ id: string; name: string }> }) {
   const { busy, error, act } = useAction();
   const [userId, setUserId] = useState("");

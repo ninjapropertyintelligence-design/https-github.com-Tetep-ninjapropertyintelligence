@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
-import { getProject, updateProject } from "@/lib/project-service";
+import { deleteProject, getProject, setProjectArchived, updateProject } from "@/lib/project-service";
 import { ProjectStatus } from "@/generated/prisma/enums";
 import { z } from "zod";
 
@@ -21,10 +21,18 @@ const patchSchema = z.object({
   status: z.enum(ProjectStatus).optional(),
   startDate: z.coerce.date().nullish(),
   endDate: z.coerce.date().nullish(),
+  archived: z.boolean().optional(),
 });
 
 export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
   const { id } = await params;
-  const input = patchSchema.parse(await req.json());
-  return NextResponse.json(await updateProject(ctx, id, input));
+  const { archived, ...input } = patchSchema.parse(await req.json());
+  if (archived !== undefined) await setProjectArchived(ctx, id, archived);
+  return NextResponse.json(Object.keys(input).length > 0 ? await updateProject(ctx, id, input) : await getProject(ctx, id));
+});
+
+// DELETE — remove the project; its assessments and documents are kept and unlinked.
+export const DELETE = withApiHandler<NextResponse, RouteParams>(async (ctx, _req, { params }) => {
+  const { id } = await params;
+  return NextResponse.json(await deleteProject(ctx, id));
 });

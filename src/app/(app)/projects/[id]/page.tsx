@@ -13,6 +13,7 @@ import {
   AddProjectMember,
   AttachDocument,
   DetachDocument,
+  ProjectLifecycle,
   ProjectStatusSelect,
   ScheduleProjectAssessment,
   ToggleMemberActive,
@@ -76,8 +77,19 @@ export default async function ProjectPage({
           </p>
           {project.description ? <p className="mt-2 max-w-2xl text-sm text-foreground">{project.description}</p> : null}
         </div>
-        {canManage ? <ProjectStatusSelect projectId={project.id} status={project.status} /> : null}
+        {canManage ? (
+          <div className="flex flex-wrap items-start gap-2">
+            <ProjectStatusSelect projectId={project.id} status={project.status} />
+            <ProjectLifecycle projectId={project.id} archived={!!project.archivedAt} name={project.name} />
+          </div>
+        ) : null}
       </div>
+
+      {project.archivedAt ? (
+        <p className="rounded-lg border border-border bg-zinc-50 px-3 py-2 text-sm text-muted">
+          Archived {formatDate(project.archivedAt)}. It is hidden from project lists until restored; everything on it is kept.
+        </p>
+      ) : null}
 
       <div className="flex gap-1 overflow-x-auto border-b border-border">
         {TABS.map((t) => (

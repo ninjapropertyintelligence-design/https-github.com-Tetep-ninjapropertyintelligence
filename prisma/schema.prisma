@@ -341,6 +341,7 @@ enum ImportEntityType {
   ASSETS
   ISSUES
   CONDITIONS
+  PROJECTS
 }
 
 enum ImportStatus {
@@ -1201,6 +1202,9 @@ model Project {
   status         ProjectStatus @default(NEW)
   startDate      DateTime?
   endDate        DateTime?
+  /// Set when the project is put away: hidden from lists by default, with
+  /// everything on it kept. Clearing it brings the project back.
+  archivedAt     DateTime?
   createdById    String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt

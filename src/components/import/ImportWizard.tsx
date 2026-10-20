@@ -59,12 +59,12 @@ export function ImportWizard({
   portfolios,
   jobs,
 }: {
-  fields: Record<"PROPERTIES" | "ASSETS", TargetFieldOption[]>;
+  fields: Record<"PROPERTIES" | "ASSETS" | "PROJECTS", TargetFieldOption[]>;
   portfolios: Array<{ id: string; name: string }>;
   jobs: ImportJobSummary[];
 }) {
   const router = useRouter();
-  const [entityType, setEntityType] = useState<"PROPERTIES" | "ASSETS">("PROPERTIES");
+  const [entityType, setEntityType] = useState<"PROPERTIES" | "ASSETS" | "PROJECTS">("PROPERTIES");
   const [portfolioId, setPortfolioId] = useState(portfolios[0]?.id ?? "");
   const [file, setFile] = useState<File | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -151,7 +151,7 @@ export function ImportWizard({
               <select
                 value={entityType}
                 onChange={(e) => {
-                  setEntityType(e.target.value as "PROPERTIES" | "ASSETS");
+                  setEntityType(e.target.value as "PROPERTIES" | "ASSETS" | "PROJECTS");
                   setPreview(null);
                   setJobId(null);
                 }}
@@ -159,6 +159,7 @@ export function ImportWizard({
               >
                 <option value="PROPERTIES">Properties</option>
                 <option value="ASSETS">Assets</option>
+                <option value="PROJECTS">Projects</option>
               </select>
             </div>
 
@@ -178,7 +179,11 @@ export function ImportWizard({
                 </select>
               </div>
             ) : (
-              <p className="pb-2 text-xs text-muted">Assets are linked to properties by ID or name — import properties first.</p>
+              <p className="pb-2 text-xs text-muted">
+                {entityType === "PROJECTS"
+                  ? "Projects are linked to properties by ID or name, and to programs by name — both must exist first."
+                  : "Assets are linked to properties by ID or name — import properties first."}
+              </p>
             )}
 
             <div>

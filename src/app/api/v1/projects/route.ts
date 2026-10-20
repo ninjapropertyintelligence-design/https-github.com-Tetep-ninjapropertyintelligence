@@ -16,6 +16,7 @@ export const GET = withApiHandler(async (ctx, req) => {
       programId: url.searchParams.get("programId"),
       propertyId: url.searchParams.get("propertyId"),
       q: url.searchParams.get("q"),
+      archived: url.searchParams.get("archived") === "true",
     }),
   );
 });

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { can, getSessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
-import { ASSET_FIELDS, PROPERTY_FIELDS } from "@/lib/import/fields";
+import { ASSET_FIELDS, PROJECT_FIELDS, PROPERTY_FIELDS } from "@/lib/import/fields";
 import { ImportWizard } from "@/components/import/ImportWizard";
 import { recordProductEvent } from "@/lib/analytics";
 
@@ -41,12 +41,12 @@ export default async function ImportsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-foreground">Import Data</h1>
-        <p className="text-sm text-muted">Bring properties and assets in from a spreadsheet.</p>
+        <p className="text-sm text-muted">Bring properties, assets and projects in from a spreadsheet.</p>
       </div>
 
       <div className="max-w-5xl">
         <ImportWizard
-          fields={{ PROPERTIES: PROPERTY_FIELDS.map(toOption), ASSETS: ASSET_FIELDS.map(toOption) }}
+          fields={{ PROPERTIES: PROPERTY_FIELDS.map(toOption), ASSETS: ASSET_FIELDS.map(toOption), PROJECTS: PROJECT_FIELDS.map(toOption) }}
           portfolios={portfolios}
           jobs={jobs.map((j) => ({
             id: j.id,

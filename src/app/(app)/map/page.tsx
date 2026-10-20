@@ -38,7 +38,7 @@ export default async function MapPage() {
   const [snapshots, projects, programs] = await Promise.all([
     getLatestHealthSnapshots(properties.map((p) => p.id)),
     prisma.project.findMany({
-      where: { propertyId: { in: properties.map((p) => p.id) }, programId: { not: null } },
+      where: { propertyId: { in: properties.map((p) => p.id) }, programId: { not: null }, archivedAt: null },
       select: { propertyId: true, programId: true },
     }),
     prisma.program.findMany({ where: { organizationId: ctx.organizationId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),

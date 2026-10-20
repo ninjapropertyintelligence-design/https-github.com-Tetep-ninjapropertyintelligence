@@ -10,7 +10,7 @@ import { normalizeName } from "@/lib/import/normalize";
  * the UI renders its mapping dropdown straight from this list.
  */
 
-export type ImportEntity = "PROPERTIES" | "ASSETS";
+export type ImportEntity = "PROPERTIES" | "ASSETS" | "PROJECTS";
 
 export interface CoercionResult {
   ok: boolean;
@@ -222,7 +222,54 @@ export const ASSET_FIELDS: TargetField[] = [
   { key: "replacementCost", label: "Replacement cost", required: false, aliases: ["replacement cost", "replacement value", "cost", "value", "rcv"], help: "Currency amount; stored in cents.", coerce: money },
 ];
 
+/**
+ * Project status, accepted the way a spreadsheet writes it — "In Progress",
+ * "in-progress", "IN_PROGRESS" — and stored as the enum value. A blank cell
+ * leaves new projects at New.
+ */
+const PROJECT_STATUS_WORDS: Record<string, string> = {
+  new: "NEW",
+  "not started": "NEW",
+  "in progress": "IN_PROGRESS",
+  active: "IN_PROGRESS",
+  published: "PUBLISHED",
+  completed: "COMPLETED",
+  complete: "COMPLETED",
+  done: "COMPLETED",
+};
+const projectStatus = (raw: string): CoercionResult => {
+  const key = raw.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (key === "") return { ok: true, value: null };
+  const value = PROJECT_STATUS_WORDS[key];
+  return value ? { ok: true, value } : { ok: false, error: `"${raw}" is not a status (New, In Progress, Published, Completed)` };
+};
+
+export const PROJECT_FIELDS: TargetField[] = [
+  {
+    key: "propertyRef",
+    label: "Property (ID or name)",
+    required: true,
+    aliases: ["property", "property id", "customer property id", "store number", "store", "site", "location", "property name"],
+    help: "Matched to a property by customer property ID first, then by name.",
+    coerce: (raw) => (raw.trim() === "" ? { ok: false, error: "Required" } : text(200)(raw)),
+  },
+  {
+    key: "name",
+    label: "Project name",
+    required: true,
+    aliases: ["project name", "project", "name", "title"],
+    coerce: (raw) => (raw.trim() === "" ? { ok: false, error: "Required" } : text(200)(raw)),
+  },
+  { key: "program", label: "Program", required: false, aliases: ["program", "program name", "programme", "initiative"], help: "Matched to an existing program by name.", coerce: text(200) },
+  { key: "projectType", label: "Type", required: false, aliases: ["project type", "type", "capture scope", "scope"], coerce: text(100) },
+  { key: "status", label: "Status", required: false, aliases: ["status", "project status", "state"], coerce: projectStatus },
+  { key: "startDate", label: "Start date", required: false, aliases: ["start date", "start", "begins", "start on"], coerce: date },
+  { key: "endDate", label: "End date", required: false, aliases: ["end date", "end", "completion date", "due date", "finish date"], coerce: date },
+  { key: "description", label: "Description", required: false, aliases: ["description", "notes", "details"], coerce: text(4000) },
+];
+
 export function fieldsFor(entity: ImportEntity): TargetField[] {
+  if (entity === "PROJECTS") return PROJECT_FIELDS;
   return entity === "PROPERTIES" ? PROPERTY_FIELDS : ASSET_FIELDS;
 }
 

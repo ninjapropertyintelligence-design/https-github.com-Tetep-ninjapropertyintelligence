@@ -18,15 +18,16 @@ const TAB_LABELS: Record<ProjectStatus, string> = {
 export default async function ProjectsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; q?: string; program?: string }>;
+  searchParams: Promise<{ status?: string; q?: string; program?: string; archived?: string }>;
 }) {
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
   const params = await searchParams;
   const status = PROJECT_STATUSES.includes(params.status as ProjectStatus) ? (params.status as ProjectStatus) : null;
+  const archived = params.archived === "true";
 
-  const [{ items, counts, total }, programs] = await Promise.all([
-    listProjects(ctx, { status, q: params.q?.trim() || null, programId: params.program || null }),
+  const [{ items, counts, total, archivedCount }, programs] = await Promise.all([
+    listProjects(ctx, { status, q: params.q?.trim() || null, programId: params.program || null, archived }),
     listPrograms(ctx),
   ]);
   const canManage = can(ctx, "canManageProperties");
@@ -34,8 +35,8 @@ export default async function ProjectsPage({
     ? await prisma.property.findMany({ where: propertyScopeWhere(ctx), select: { id: true, name: true }, orderBy: { name: "asc" } })
     : [];
 
-  const href = (next: Partial<{ status: string | null; q: string; program: string }>) => {
-    const merged = { status: status ?? undefined, q: params.q, program: params.program, ...next };
+  const href = (next: Partial<{ status: string | null; q: string; program: string; archived: string | null }>) => {
+    const merged = { status: status ?? undefined, q: params.q, program: params.program, archived: archived ? "true" : undefined, ...next };
     const qs = new URLSearchParams(Object.entries(merged).filter((e): e is [string, string] => !!e[1]));
     return `/projects${qs.size ? `?${qs}` : ""}`;
   };
@@ -45,7 +46,9 @@ export default async function ProjectsPage({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold text-foreground">Projects</h1>
-          <p className="text-sm text-muted">{total} projects in scope</p>
+          <p className="text-sm text-muted">
+            {total} {archived ? "archived " : ""}projects in scope
+          </p>
         </div>
         {canManage ? <NewProjectForm properties={properties} programs={programs} /> : null}
       </div>
@@ -55,19 +58,28 @@ export default async function ProjectsPage({
           (tab) => (
             <Link
               key={tab.key ?? "all"}
-              href={href({ status: tab.key })}
+              href={href({ status: tab.key, archived: null })}
               className={`shrink-0 border-b-2 px-3 py-2.5 text-sm font-medium ${
-                status === tab.key ? "border-brand text-brand" : "border-transparent text-muted hover:text-foreground"
+                !archived && status === tab.key ? "border-brand text-brand" : "border-transparent text-muted hover:text-foreground"
               }`}
             >
-              {tab.label} <span className="tabular-nums text-xs">({tab.count})</span>
+              {tab.label} <span className="tabular-nums text-xs">({archived ? "—" : tab.count})</span>
             </Link>
           ),
         )}
+        <Link
+          href={href({ status: null, archived: "true" })}
+          className={`ml-auto shrink-0 border-b-2 px-3 py-2.5 text-sm font-medium ${
+            archived ? "border-brand text-brand" : "border-transparent text-muted hover:text-foreground"
+          }`}
+        >
+          Archived <span className="tabular-nums text-xs">({archivedCount})</span>
+        </Link>
       </div>
 
       <form className="flex flex-wrap gap-2" action="/projects">
         {status ? <input type="hidden" name="status" value={status} /> : null}
+        {archived ? <input type="hidden" name="archived" value="true" /> : null}
         <input
           name="q"
           defaultValue={params.q ?? ""}

@@ -52,7 +52,7 @@ export async function listPrograms(ctx: SessionContext) {
   return prisma.program.findMany({
     where: { organizationId: ctx.organizationId },
     orderBy: { name: "asc" },
-    include: { _count: { select: { projects: { where: projectScopeWhere(ctx) } } } },
+    include: { _count: { select: { projects: { where: { ...projectScopeWhere(ctx), archivedAt: null } } } } },
   });
 }
 
@@ -73,6 +73,8 @@ export async function createProgram(ctx: SessionContext, input: { name: string; 
 
 export interface ProjectFilters {
   status?: ProjectStatus | null;
+  /** Archived projects are listed only when asked for, and then only those. */
+  archived?: boolean;
   programId?: string | null;
   propertyId?: string | null;
   q?: string | null;
@@ -82,6 +84,7 @@ export async function listProjects(ctx: SessionContext, filters: ProjectFilters 
   const base: Prisma.ProjectWhereInput = {
     AND: [
       projectScopeWhere(ctx),
+      { archivedAt: filters.archived ? { not: null } : null },
       filters.programId ? { programId: filters.programId } : {},
       filters.propertyId ? { propertyId: filters.propertyId } : {},
       filters.q
@@ -110,7 +113,10 @@ export async function listProjects(ctx: SessionContext, filters: ProjectFilters 
   ]);
   const counts = Object.fromEntries(PROJECT_STATUSES.map((s) => [s, 0])) as Record<ProjectStatus, number>;
   for (const g of grouped) counts[g.status] = g._count._all;
-  return { items, counts, total: Object.values(counts).reduce((a, b) => a + b, 0) };
+  const archivedCount = filters.archived
+    ? Object.values(counts).reduce((a, b) => a + b, 0)
+    : await prisma.project.count({ where: { AND: [projectScopeWhere(ctx), { archivedAt: { not: null } }] } });
+  return { items, counts, total: Object.values(counts).reduce((a, b) => a + b, 0), archivedCount };
 }
 
 export async function getProject(ctx: SessionContext, projectId: string) {
@@ -201,6 +207,49 @@ export async function updateProject(ctx: SessionContext, projectId: string, inpu
     });
   }
   return updated;
+}
+
+/** Puts a project away, or brings it back. Nothing on it changes. */
+export async function setProjectArchived(ctx: SessionContext, projectId: string, archived: boolean) {
+  requireManager(ctx);
+  const project = await loadProject(ctx, projectId);
+  const updated = await prisma.project.update({
+    where: { id: project.id },
+    data: { archivedAt: archived ? (project.archivedAt ?? new Date()) : null },
+  });
+  await writeAuditLog({
+    organizationId: ctx.organizationId,
+    actorUserId: ctx.userId,
+    action: archived ? "project.archived" : "project.restored",
+    entityType: "Project",
+    entityId: project.id,
+  });
+  return updated;
+}
+
+/**
+ * Deletes a project. What was done under it stays: its assessments and
+ * documents are unlinked, not deleted, because they are the record of work
+ * at the property whether or not the project that organized it still
+ * exists. Only the project, its team roster and its grouping go.
+ */
+export async function deleteProject(ctx: SessionContext, projectId: string) {
+  requireManager(ctx);
+  const project = await loadProject(ctx, projectId);
+  const [assessments, documents] = await Promise.all([
+    prisma.assessment.count({ where: { projectId: project.id } }),
+    prisma.document.count({ where: { projectId: project.id } }),
+  ]);
+  await prisma.project.delete({ where: { id: project.id } });
+  await writeAuditLog({
+    organizationId: ctx.organizationId,
+    actorUserId: ctx.userId,
+    action: "project.deleted",
+    entityType: "Project",
+    entityId: project.id,
+    metadata: { name: project.name, propertyId: project.propertyId, unlinkedAssessments: assessments, unlinkedDocuments: documents },
+  });
+  return { unlinkedAssessments: assessments, unlinkedDocuments: documents };
 }
 
 // ---------------------------------------------------------------------------

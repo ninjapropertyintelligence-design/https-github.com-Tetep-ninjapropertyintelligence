@@ -37,8 +37,8 @@ export const POST = withApiHandler(async (ctx, req) => {
   const targetPortfolioId = form?.get("targetPortfolioId") ? String(form.get("targetPortfolioId")) : null;
 
   if (!(file instanceof File)) throw new ApiError(400, "Attach a .csv, .tsv, or .xlsx file");
-  if (entityType !== "PROPERTIES" && entityType !== "ASSETS") {
-    throw new ApiError(400, "entityType must be PROPERTIES or ASSETS");
+  if (entityType !== "PROPERTIES" && entityType !== "ASSETS" && entityType !== "PROJECTS") {
+    throw new ApiError(400, "entityType must be PROPERTIES, ASSETS or PROJECTS");
   }
   if (file.size > MAX_IMPORT_BYTES) {
     throw new ApiError(400, `That file is too large. The limit is ${MAX_IMPORT_BYTES / 1024 / 1024}MB.`);

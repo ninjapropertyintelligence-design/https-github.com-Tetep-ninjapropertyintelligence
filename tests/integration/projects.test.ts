@@ -4,6 +4,8 @@ import { Role } from "@/generated/prisma/client";
 import {
   addProjectMember,
   assertProjectForAssessment,
+  deleteProject,
+  setProjectArchived,
   createProgram,
   createProject,
   getProject,
@@ -177,5 +179,36 @@ describe("what a project can hold", () => {
     const p = await createProject(asOwner(), { propertyId: east.id, name: "Assess" });
     await assertProjectForAssessment(asOwner(), p.id, east.id);
     await expect(assertProjectForAssessment(asOwner(), p.id, west.id)).rejects.toThrow(/different property/);
+  });
+});
+
+describe("archiving and deleting", () => {
+  it("hides an archived project from the usual lists until it is restored", async () => {
+    const p = await createProject(asOwner(), { propertyId: east.id, name: "Old survey" });
+    await createProject(asOwner(), { propertyId: east.id, name: "Current" });
+    await setProjectArchived(asOwner(), p.id, true);
+
+    const active = await listProjects(asOwner());
+    expect(active.items.map((x) => x.name)).toEqual(["Current"]);
+    expect(active.archivedCount).toBe(1);
+    expect((await listProjects(asOwner(), { archived: true })).items.map((x) => x.name)).toEqual(["Old survey"]);
+    // Still reachable directly.
+    expect(await getProject(asOwner(), p.id)).not.toBeNull();
+
+    await setProjectArchived(asOwner(), p.id, false);
+    expect((await listProjects(asOwner())).items).toHaveLength(2);
+    await expect(setProjectArchived(asEastManager(), p.id, true)).rejects.toThrow(/canManageProperties/);
+  });
+
+  it("deletes the project but keeps its documents on the property", async () => {
+    const p = await createProject(asOwner(), { propertyId: east.id, name: "Doomed" });
+    const doc = await prisma.document.create({ data: { organizationId: org.id, propertyId: east.id, title: "Plan", projectId: p.id } });
+    await addProjectMember(asOwner(), p.id, manager.id);
+
+    expect(await deleteProject(asOwner(), p.id)).toEqual({ unlinkedAssessments: 0, unlinkedDocuments: 1 });
+    expect(await getProject(asOwner(), p.id)).toBeNull();
+    const kept = await prisma.document.findUniqueOrThrow({ where: { id: doc.id } });
+    expect([kept.projectId, kept.propertyId]).toEqual([null, east.id]);
+    expect(await prisma.projectMember.count({ where: { projectId: p.id } })).toBe(0);
   });
 });
