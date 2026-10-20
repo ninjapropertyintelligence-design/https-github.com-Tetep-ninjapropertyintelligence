@@ -8,6 +8,7 @@ import { getAssessmentDetail, mayWriteAssessment, progressFor } from "@/lib/asse
 import { isAssessmentLocked } from "@/lib/assessment-progress";
 import { hasPermission } from "@/lib/permissions";
 import { formatDate } from "@/lib/format";
+import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
 
 export default async function AssessmentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -65,6 +66,13 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
         )}
         <StatTile label="Photos" value={progress.photos} />
       </div>
+
+      <ReferenceDocuments
+        propertyId={assessment.property.id}
+        flag="availableInCapture"
+        title="Reference documents"
+        subtitle="Plans and records for this site, for use on the walk"
+      />
 
       <AssessmentRunner
         assessmentId={assessment.id}

@@ -31,6 +31,10 @@ import { NewProjectForm } from "@/components/project/NewProjectForm";
 import { listOverlays } from "@/lib/overlay-service";
 import { OVERLAY_CATEGORY_LABELS } from "@/lib/overlay-validation";
 import { OverlayManager } from "@/components/property/OverlayManager";
+import { SpatialEmbeds } from "@/components/property/SpatialEmbeds";
+import { DocumentFlags } from "@/components/property/DocumentFlags";
+import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
+import { listEmbeds } from "@/lib/embed-service";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -113,7 +117,7 @@ async function TabContent({
     case "assessments":
       return <AssessmentsTab propertyId={propertyId} />;
     case "documents":
-      return <DocumentsTab propertyId={propertyId} />;
+      return <DocumentsTab propertyId={propertyId} canManage={can(ctx, "canManageProperties")} />;
     case "history":
       return <HistoryTab propertyId={propertyId} />;
     case "site-map":
@@ -180,6 +184,7 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
         lastExteriorCapture={droneCapture?.capturedAt ?? null}
         warnings={warnings}
       />
+      <ReferenceDocuments propertyId={propertyId} flag="showInInfoTab" title="Key documents" />
       {/* Spatial (§11): this ordering is computed by PostGIS, not in JS. */}
       <NearbyProperties
         ctx={ctx}
@@ -300,7 +305,7 @@ async function AssessmentsTab({ propertyId }: { propertyId: string }) {
   );
 }
 
-async function DocumentsTab({ propertyId }: { propertyId: string }) {
+async function DocumentsTab({ propertyId, canManage }: { propertyId: string; canManage: boolean }) {
   const documents = await prisma.document.findMany({ where: { propertyId }, orderBy: { updatedAt: "desc" }, include: { versions: { take: 1, orderBy: { versionNumber: "desc" } } } });
   return (
     <div>
@@ -314,13 +319,24 @@ async function DocumentsTab({ propertyId }: { propertyId: string }) {
               {documents.map((d) => (
                 <li key={d.id} className="flex items-center justify-between border-b border-border px-5 py-3 text-sm last:border-0">
                   <div>
-                    <p className="font-medium text-foreground">{d.title}</p>
+                    {d.versions.length > 0 ? (
+                      <a href={`/api/v1/documents/${d.id}/download`} className="font-medium text-foreground hover:text-brand">
+                        {d.title}
+                      </a>
+                    ) : (
+                      <p className="font-medium text-foreground">{d.title}</p>
+                    )}
                     <p className="text-xs text-muted">
                       {d.documentType.replace(/_/g, " ")}
                       {d.indexStatus === "INDEXED" ? " · text indexed" : d.indexStatus === "UNSUPPORTED" ? " · not text-searchable" : d.indexStatus === "FAILED" ? " · indexing failed" : ""}
                     </p>
                   </div>
-                  <span className="text-xs text-muted">{formatDate(d.updatedAt)}</span>
+                  <div className="flex items-center gap-4">
+                    {canManage ? (
+                      <DocumentFlags documentId={d.id} showInInfoTab={d.showInInfoTab} availableInCapture={d.availableInCapture} />
+                    ) : null}
+                    <span className="text-xs text-muted">{formatDate(d.updatedAt)}</span>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -492,25 +508,45 @@ async function ExteriorTab({
 }
 
 async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const pointClouds = await prisma.droneOutput.findMany({
-    where: {
-      outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
-      dataset: { capture: { propertyId, ...captureReviewWhere(ctx) } },
-    },
-  });
+  const [pointClouds, embeds, floors] = await Promise.all([
+    prisma.droneOutput.findMany({
+      where: {
+        outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
+        dataset: { capture: { propertyId, ...captureReviewWhere(ctx) } },
+      },
+    }),
+    listEmbeds(ctx, propertyId),
+    prisma.floor.findMany({ where: { building: { propertyId } }, select: { id: true, name: true }, orderBy: { level: "asc" } }),
+  ]);
   return (
     <Card>
-      <CardHeader title="Digital Twin" subtitle="Point cloud / mesh outputs from drone processing" />
-      <CardBody>
-        {pointClouds.length === 0 ? (
-          <EmptyState title="No 3D twin data yet" description="Point cloud and mesh outputs from drone processing jobs will be listed here." />
-        ) : (
-          <ul className="space-y-1 text-sm">
-            {pointClouds.map((o) => (
-              <li key={o.id}>{o.outputType} — {formatDate(o.createdAt)}</li>
-            ))}
-          </ul>
-        )}
+      <CardHeader title="Digital Twin" subtitle="Hosted 3D viewers, and point cloud / mesh outputs from drone processing" />
+      <CardBody className="space-y-6">
+        <SpatialEmbeds
+          propertyId={propertyId}
+          canManage={can(ctx, "canManageProperties")}
+          floors={floors}
+          embeds={embeds.map((e) => ({
+            id: e.id,
+            kind: e.kind,
+            name: e.name,
+            url: e.url,
+            floorName: e.floor?.name ?? null,
+            capturedAt: e.capturedAt ? e.capturedAt.toISOString() : null,
+          }))}
+        />
+        <div>
+          <h3 className="mb-2 text-sm font-semibold text-foreground">Drone 3D outputs</h3>
+          {pointClouds.length === 0 ? (
+            <EmptyState title="No 3D twin data yet" description="Point cloud and mesh outputs from drone processing jobs will be listed here." />
+          ) : (
+            <ul className="space-y-1 text-sm">
+              {pointClouds.map((o) => (
+                <li key={o.id}>{o.outputType} — {formatDate(o.createdAt)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
       </CardBody>
     </Card>
   );
