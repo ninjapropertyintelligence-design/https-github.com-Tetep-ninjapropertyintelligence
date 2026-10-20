@@ -25,6 +25,9 @@ import { Photo360Gallery } from "@/components/media/Photo360Gallery";
 import { NearbyProperties } from "@/components/property/NearbyProperties";
 import { recordProductEvent } from "@/lib/analytics";
 import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
+import { listPrograms, listProjects } from "@/lib/project-service";
+import { ProjectTable } from "@/components/project/ProjectTable";
+import { NewProjectForm } from "@/components/project/NewProjectForm";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -121,12 +124,7 @@ async function TabContent({
     case "digital-twin":
       return <DigitalTwinTab propertyId={propertyId} ctx={ctx} />;
     case "projects":
-      return (
-        <EmptyState
-          title="Projects — coming in a later phase"
-          description="Capital projects will roll up cost and scheduling across multiple issues/assets. For now, cost tracking lives on individual Issues."
-        />
-      );
+      return <ProjectsTab propertyId={propertyId} ctx={ctx} />;
     case "reports":
       return <ReportsTab propertyId={propertyId} propertyName={propertyName} />;
     case "ai":
@@ -499,5 +497,27 @@ async function ReportsTab({ propertyId, propertyName }: { propertyId: string; pr
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+async function ProjectsTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const canManage = can(ctx, "canManageProperties");
+  const [{ items }, programs, property] = await Promise.all([
+    listProjects(ctx, { propertyId }),
+    canManage ? listPrograms(ctx) : [],
+    prisma.property.findUniqueOrThrow({ where: { id: propertyId }, select: { id: true, name: true } }),
+  ]);
+  return (
+    <div className="space-y-3">
+      {canManage ? <NewProjectForm properties={[property]} programs={programs} defaultPropertyId={propertyId} /> : null}
+      {items.length === 0 ? (
+        <EmptyState
+          title="No projects at this property"
+          description="A project gathers one engagement here — its team, documents and assessments."
+        />
+      ) : (
+        <ProjectTable projects={items} showProperty={false} />
+      )}
+    </div>
   );
 }

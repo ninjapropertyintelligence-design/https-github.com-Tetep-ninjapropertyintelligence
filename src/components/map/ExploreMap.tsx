@@ -17,6 +17,8 @@ export interface MapProperty {
   regionName: string | null;
   band: string | null;
   healthScore: number | null;
+  /** Programs with a project at this location. */
+  programIds: string[];
 }
 
 const BAND_COLOR: Record<string, string> = {
@@ -97,7 +99,15 @@ function buildPopupContent(p: MapProperty, onExplore: (id: string) => void): HTM
   return root;
 }
 
-export function ExploreMap({ properties, token }: { properties: MapProperty[]; token: string }) {
+export function ExploreMap({
+  properties,
+  programs = [],
+  token,
+}: {
+  properties: MapProperty[];
+  programs?: Array<{ id: string; name: string }>;
+  token: string;
+}) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<import("mapbox-gl").Map | null>(null);
@@ -112,12 +122,16 @@ export function ExploreMap({ properties, token }: { properties: MapProperty[]; t
 
   const [query, setQuery] = useState("");
   const [band, setBand] = useState<string>("all");
+  const [program, setProgram] = useState<string>("all");
   const [panelOpen, setPanelOpen] = useState(true);
   const [ready, setReady] = useState(false);
 
   const visible = useMemo(
-    () => properties.filter((p) => matches(p, query) && (band === "all" || p.band === band)),
-    [properties, query, band],
+    () =>
+      properties.filter(
+        (p) => matches(p, query) && (band === "all" || p.band === band) && (program === "all" || p.programIds.includes(program)),
+      ),
+    [properties, query, band, program],
   );
   const visibleIds = useMemo(() => new Set(visible.map((p) => p.id)), [visible]);
 
@@ -249,6 +263,22 @@ export function ExploreMap({ properties, token }: { properties: MapProperty[]; t
                     </option>
                   ))}
                 </select>
+
+                {programs.length > 0 ? (
+                  <select
+                    aria-label="Program filter"
+                    value={program}
+                    onChange={(e) => setProgram(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none focus:border-brand"
+                  >
+                    <option value="all">Program filter — all programs</option>
+                    {programs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto">

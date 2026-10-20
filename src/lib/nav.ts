@@ -31,6 +31,9 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio")) {
     items.push({ label: "Assets", href: "/assets", section: "Manage", icon: "asset" });
   }
+  if (can(ctx, "canViewPortfolio")) {
+    items.push({ label: "Projects", href: "/projects", section: "Manage", icon: "project" });
+  }
   items.push({ label: "Issues", href: "/issues", section: "Manage", icon: "issue" });
   if (can(ctx, "canPerformAssessments")) {
     items.push({ label: "Assessments", href: "/assessments", section: "Manage", icon: "assessment" });

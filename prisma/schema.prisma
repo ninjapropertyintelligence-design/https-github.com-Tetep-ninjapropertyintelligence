@@ -414,6 +414,8 @@ model User {
   conditionChanges       AssetConditionHistory[] @relation("ConditionChangedBy")
   assessmentsAsInspector Assessment[]            @relation("AssessmentInspector")
   taskResponsesCompleted AssessmentTaskResponse[] @relation("TaskResponseCompletedBy")
+  projectMemberships     ProjectMember[]
+  createdProjects        Project[]                @relation("ProjectCreatedBy")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
@@ -599,6 +601,8 @@ model Organization {
   storageObjects       StorageObject[]
   captureJobs          CaptureJob[]
   invitations          Invitation[]
+  programs             Program[]
+  projects             Project[]
 
   @@index([slug])
 }
@@ -686,6 +690,7 @@ model Property {
   documentChunks  DocumentChunk[]
   legalHolds      LegalHold[]
   usageRecords    UsageRecord[]
+  projects        Project[]
 
   /**
    * Derived geography for spatial queries (§11). Prisma has no geography
@@ -993,6 +998,82 @@ model Vendor {
 }
 
 // ---------------------------------------------------------------------------
+// Programs and projects
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  NEW
+  IN_PROGRESS
+  /// Delivered work is visible to the client while the project stays open.
+  PUBLISHED
+  COMPLETED
+}
+
+/// A named body of work across many sites, e.g. "2026 Essential Solution".
+/// Groups projects, and is what the map filters by.
+model Program {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  projects     Project[]
+
+  @@unique([organizationId, name])
+}
+
+/// One engagement at one property: a capture, a survey, a renovation. Its
+/// assessments, documents and people are what the project tabs show.
+model Project {
+  id             String        @id @default(cuid())
+  organizationId String
+  programId      String?
+  propertyId     String
+  name           String
+  /// Free text: "Full Capture", "Survey Only".
+  projectType    String?
+  description    String?
+  status         ProjectStatus @default(NEW)
+  startDate      DateTime?
+  endDate        DateTime?
+  createdById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  program      Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+  property     Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdBy    User?           @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  members      ProjectMember[]
+  documents    Document[]
+  assessments  Assessment[]
+
+  @@index([organizationId, status])
+  @@index([propertyId])
+  @@index([programId])
+}
+
+/// Who is on a project's team. A roster, not an access grant: what a person
+/// can open is still decided by their role and property grants.
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  /// Off when someone has rotated off the project; kept for the record.
+  isActive  Boolean  @default(true)
+  addedAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
 // Assessments
 // ---------------------------------------------------------------------------
 
@@ -1102,6 +1183,8 @@ model Assessment {
   templateId     String
   propertyId     String
   inspectorId    String
+  /// The project this assessment is part of, when it was run for one.
+  projectId      String?
   status         AssessmentStatus @default(DRAFT)
   scheduledFor   DateTime?
   startedAt      DateTime?
@@ -1114,6 +1197,7 @@ model Assessment {
   template      AssessmentTemplate       @relation(fields: [templateId], references: [id])
   property      Property                 @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   inspector     User                     @relation("AssessmentInspector", fields: [inspectorId], references: [id])
+  project       Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull)
   answers       AssessmentAnswer[]
   taskResponses AssessmentTaskResponse[]
   evidence      Evidence[]
@@ -1122,6 +1206,7 @@ model Assessment {
   @@index([propertyId])
   @@index([status])
   @@index([inspectorId])
+  @@index([projectId])
 }
 
 model AssessmentAnswer {
@@ -1223,6 +1308,8 @@ model Document {
   propertyId     String?
   assetId        String?
   issueId        String?
+  /// The project this document was delivered for, e.g. a site survey's plans.
+  projectId      String?
   title          String
   documentType   DocumentType @default(OTHER)
   tags           Json         @default("[]")
@@ -1240,11 +1327,13 @@ model Document {
   property     Property?         @relation(fields: [propertyId], references: [id], onDelete: SetNull)
   asset        Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
   issue        Issue?            @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  project      Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
   versions     DocumentVersion[]
   chunks       DocumentChunk[]
 
   @@index([organizationId])
   @@index([propertyId])
+  @@index([projectId])
   @@index([assetId])
   @@index([documentType])
 }

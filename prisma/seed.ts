@@ -469,11 +469,46 @@ async function main() {
       },
     });
   }
+  console.log("Seeding a program and project for the pilot property...");
+  const program =
+    (await prisma.program.findFirst({ where: { organizationId: org.id, name: "2026 Essential Solution" } })) ??
+    (await prisma.program.create({
+      data: { organizationId: org.id, name: "2026 Essential Solution", description: "Site survey and MEP inventory across the portfolio" },
+    }));
+  const project =
+    (await prisma.project.findFirst({ where: { organizationId: org.id, propertyId: pilot.id, programId: program.id } })) ??
+    (await prisma.project.create({
+      data: {
+        organizationId: org.id,
+        propertyId: pilot.id,
+        programId: program.id,
+        name: "Store #1052 — 2026 Essential Solution",
+        projectType: "Full Capture",
+        status: "IN_PROGRESS",
+        startDate: new Date(Date.now() - 3 * 86400000),
+        endDate: new Date(Date.now() + 30 * 86400000),
+        createdById: owner.id,
+      },
+    }));
+  for (const userId of [inspector.id, facilitiesManager.id]) {
+    await prisma.projectMember.upsert({
+      where: { projectId_userId: { projectId: project.id, userId } },
+      create: { projectId: project.id, userId },
+      update: {},
+    });
+  }
+
+  // Databases seeded before projects existed have the survey without one.
+  await prisma.assessment.updateMany({
+    where: { propertyId: pilot.id, templateId: surveyTemplate.id, projectId: null },
+    data: { projectId: project.id },
+  });
   if (!(await prisma.assessment.findFirst({ where: { propertyId: pilot.id, templateId: surveyTemplate.id } }))) {
     await prisma.assessment.create({
       data: {
         organizationId: org.id,
         propertyId: pilot.id,
+        projectId: project.id,
         templateId: surveyTemplate.id,
         inspectorId: inspector.id,
         status: "DRAFT",
