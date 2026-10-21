@@ -4,6 +4,7 @@ import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
 import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { getAIProvider } from "@/lib/ai/provider-factory";
 import { NullProvider } from "@/lib/ai/providers/null-provider";
+import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
 
 export interface OnboardingStep {
   key: string;
@@ -26,7 +27,7 @@ export async function getPropertyOnboardingStatus(ctx: SessionContext, propertyI
     prisma.matterportPropertyLink.findFirst({ where: { propertyId } }),
     prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" } }),
     prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
-    prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" } }),
+    prisma.assessment.findFirst({ where: { propertyId, status: { in: FINISHED_ASSESSMENT_STATUSES } } }),
     prisma.document.count({ where: { propertyId } }),
     prisma.issue.count({ where: { propertyId } }),
     getLatestHealthSnapshot(propertyId),

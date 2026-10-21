@@ -6,6 +6,7 @@ import {
   ScoringCategory,
   inferCategoryFromAssetType,
 } from "@/lib/scoring-categories";
+import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
 
 /**
  * PROPERTY HEALTH ENGINE (spec §6-§7, §32).
@@ -124,7 +125,7 @@ export async function computePropertyHealth(propertyId: string): Promise<Propert
         .findUniqueOrThrow({ where: { id: propertyId } })
         .then((p) => getEffectiveCategoryWeights(p.organizationId)),
       prisma.assessment.findFirst({
-        where: { propertyId, status: "COMPLETED" },
+        where: { propertyId, status: { in: FINISHED_ASSESSMENT_STATUSES } },
         orderBy: { completedAt: "desc" },
       }),
       prisma.matterportPropertyLink.findFirst({
@@ -377,7 +378,7 @@ export async function getLatestHealthSnapshots(
  */
 export async function getDataConfidenceWarnings(propertyId: string): Promise<string[]> {
   const [latestAssessment, matterportLink, droneCapture, assetCounts] = await Promise.all([
-    prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
+    prisma.assessment.findFirst({ where: { propertyId, status: { in: FINISHED_ASSESSMENT_STATUSES } }, orderBy: { completedAt: "desc" } }),
     prisma.matterportPropertyLink.findFirst({ where: { propertyId }, orderBy: { linkedAt: "desc" }, include: { space: true } }),
     prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" }, orderBy: { capturedAt: "desc" } }),
     prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),

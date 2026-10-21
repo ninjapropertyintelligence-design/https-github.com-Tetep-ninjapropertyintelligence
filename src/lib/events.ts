@@ -19,6 +19,7 @@ export const EVENT_TYPES = {
   ASSET_CONDITION_CHANGED: "asset.condition_changed",
   ASSESSMENT_STARTED: "assessment.started",
   ASSESSMENT_COMPLETED: "assessment.completed",
+  ASSESSMENT_RELEASED: "assessment.released",
   ISSUE_CREATED: "issue.created",
   ISSUE_ASSIGNED: "issue.assigned",
   ISSUE_RESOLVED: "issue.resolved",

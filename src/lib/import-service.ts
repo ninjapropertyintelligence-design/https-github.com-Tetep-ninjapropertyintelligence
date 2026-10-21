@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
 import { writeAuditLog } from "@/lib/audit";
 import { SessionContext } from "@/lib/tenant-scope";
-import { Prisma } from "@/generated/prisma/client";
+import { Prisma, type ProjectStatus } from "@/generated/prisma/client";
 import { ImportEntity, fieldMap, fieldsFor, missingRequiredFields, suggestMapping } from "@/lib/import/fields";
 import { ParsedTable } from "@/lib/import/parse";
 import { parseExternalIdCell } from "@/lib/import/normalize";
@@ -136,6 +136,15 @@ export async function buildPreview(params: {
     });
   }
 
+  // Projects name their property and program; both must already exist, and
+  // saying so per row beats failing the whole commit on the first miss.
+  if (entity === "PROJECTS") {
+    const [propertyRefIndex, programByName] = await Promise.all([loadPropertyRefIndex(ctx), loadProgramIndex(ctx)]);
+    coerced.forEach(({ values, issues }, rowIndex) => {
+      issues.push(...projectRowProblems(rowIndex + 1, values, propertyRefIndex, programByName));
+    });
+  }
+
   const subjects = coerced.map(({ values }) => toDedupSubject(entity, values));
   const intraFile = findIntraFileDuplicates(subjects);
   const index = indexCandidates(await loadDedupCandidates(ctx, entity));
@@ -212,8 +221,42 @@ export async function buildPreview(params: {
   };
 }
 
+/**
+ * What makes a project row unusable beyond its own cells: a property or
+ * program that does not exist, or dates the wrong way round. Shared by the
+ * preview and the commit, so a row the preview calls an error is skipped as
+ * one rather than failing the whole import when it is applied.
+ */
+function projectRowProblems(
+  rowNumber: number,
+  values: Record<string, string | number | null>,
+  propertyRefIndex: Map<string, string>,
+  programByName: Map<string, string>,
+): RowIssue[] {
+  const problems: RowIssue[] = [];
+  const ref = typeof values.propertyRef === "string" ? values.propertyRef : "";
+  if (ref && !propertyRefIndex.has(normalizeKey(ref))) {
+    problems.push({ rowNumber, column: null, field: "propertyRef", message: `No property matches "${ref}"`, value: ref });
+  }
+  const program = typeof values.program === "string" ? values.program : "";
+  if (program && !programByName.has(normalizeKey(program))) {
+    problems.push({ rowNumber, column: null, field: "program", message: `No program named "${program}"`, value: program });
+  }
+  const start = typeof values.startDate === "string" ? values.startDate : "";
+  const end = typeof values.endDate === "string" ? values.endDate : "";
+  if (start && end && end < start) {
+    problems.push({ rowNumber, column: null, field: "endDate", message: "Ends before it starts", value: end });
+  }
+  return problems;
+}
+
 function toDedupSubject(entity: ImportEntity, values: Record<string, string | number | null>): DedupSubject {
   const str = (key: string) => (typeof values[key] === "string" ? (values[key] as string) : "");
+  if (entity === "PROJECTS") {
+    // A project is the same project when it has the same name at the same
+    // property; the same name at two stores is two projects.
+    return { name: `${str("propertyRef")}|${str("name")}`, customerPropertyId: null, externalIds: [] };
+  }
   if (entity === "ASSETS") {
     // Assets are deduped within their property, keyed on the customer asset
     // id or the name; the property reference is folded into the name key so
@@ -236,6 +279,28 @@ function toDedupSubject(entity: ImportEntity, values: Record<string, string | nu
 }
 
 async function loadDedupCandidates(ctx: SessionContext, entity: ImportEntity): Promise<DedupCandidate[]> {
+  if (entity === "PROJECTS") {
+    const projects = await prisma.project.findMany({
+      where: { organizationId: ctx.organizationId },
+      select: { id: true, name: true, property: { select: { name: true, customerPropertyId: true } } },
+    });
+    // Indexed under both ways a row can name the property, so "STORE-1052"
+    // and "Store #1052" in the file each find the existing project.
+    return projects.flatMap((p) =>
+      [p.property.customerPropertyId, p.property.name]
+        .filter((ref): ref is string => !!ref)
+        .map((ref) => ({
+          id: p.id,
+          name: `${ref}|${p.name}`,
+          customerPropertyId: null,
+          externalIds: [],
+          addressLine1: "",
+          city: "",
+          state: "",
+          postalCode: "",
+        })),
+    );
+  }
   if (entity === "ASSETS") {
     const assets = await prisma.asset.findMany({
       where: { organizationId: ctx.organizationId },
@@ -347,8 +412,10 @@ export async function commitImport(params: {
 
   const subjects: DedupSubject[] = [];
   const coercedAll: Array<{ values: Record<string, string | number | null>; hasError: boolean }> = [];
+  const propertyRefIndex = entity === "ASSETS" || entity === "PROJECTS" ? await loadPropertyRefIndex(ctx) : new Map<string, string>();
+  const programByName = entity === "PROJECTS" ? await loadProgramIndex(ctx) : new Map<string, string>();
 
-  table.rows.forEach((row) => {
+  table.rows.forEach((row, rowIndex) => {
     const values: Record<string, string | number | null> = {};
     let hasError = false;
     table.headers.forEach((header, columnIndex) => {
@@ -365,6 +432,9 @@ export async function commitImport(params: {
         const value = values[field.key];
         if (value === undefined || value === null || value === "") hasError = true;
       }
+    }
+    if (entity === "PROJECTS" && projectRowProblems(rowIndex + 1, values, propertyRefIndex, programByName).length > 0) {
+      hasError = true;
     }
     coercedAll.push({ values, hasError });
     subjects.push(toDedupSubject(entity, values));
@@ -389,8 +459,6 @@ export async function commitImport(params: {
 
   const portfolioByName = await loadPortfolioIndex(ctx);
   const regionByName = await loadRegionIndex(ctx);
-  const propertyRefIndex = entity === "ASSETS" ? await loadPropertyRefIndex(ctx) : new Map<string, string>();
-
   let created = 0;
   let updated = 0;
   let skipped = 0;
@@ -430,7 +498,7 @@ export async function commitImport(params: {
 
         if (isDuplicate && row.matchId) {
           const before = await captureBeforeImage(tx, entity, row.matchId, row.values);
-          await applyUpdate(tx, entity, row.matchId, row.values, ctx);
+          await applyUpdate(tx, entity, row.matchId, row.values, ctx, programByName);
           updated++;
           await tx.importRowResult.create({
             data: { importJobId: jobId, rowNumber: row.rowNumber, action: "UPDATED", entityId: row.matchId, beforeImage: before as Prisma.InputJsonValue },
@@ -444,6 +512,7 @@ export async function commitImport(params: {
           portfolioByName,
           regionByName,
           propertyRefIndex,
+          programByName,
         });
         created++;
         await tx.importRowResult.create({
@@ -513,15 +582,24 @@ export async function rollbackImport(params: { ctx: SessionContext; jobId: strin
         if (result.action === "CREATED") {
           // deleteMany, not delete: a record the customer already removed
           // themselves must not fail the whole rollback.
+          const where = { id: result.entityId, organizationId: ctx.organizationId };
           const removed =
             entity === "PROPERTIES"
-              ? await tx.property.deleteMany({ where: { id: result.entityId, organizationId: ctx.organizationId } })
-              : await tx.asset.deleteMany({ where: { id: result.entityId, organizationId: ctx.organizationId } });
+              ? await tx.property.deleteMany({ where })
+              : entity === "PROJECTS"
+                ? await tx.project.deleteMany({ where })
+                : await tx.asset.deleteMany({ where });
           deleted += removed.count;
         } else if (result.beforeImage && typeof result.beforeImage === "object") {
           const before = result.beforeImage as Record<string, unknown>;
           if (entity === "PROPERTIES") {
             await tx.property.updateMany({ where: { id: result.entityId, organizationId: ctx.organizationId }, data: before as Prisma.PropertyUpdateManyMutationInput });
+          } else if (entity === "PROJECTS") {
+            // Dates were stored in the image as ISO strings; programId is a plain id.
+            const data = Object.fromEntries(
+              Object.entries(before).map(([k, v]) => [k, (k === "startDate" || k === "endDate") && typeof v === "string" ? new Date(v) : v]),
+            );
+            await tx.project.updateMany({ where: { id: result.entityId, organizationId: ctx.organizationId }, data: data as Prisma.ProjectUncheckedUpdateManyInput });
           } else {
             await tx.asset.updateMany({ where: { id: result.entityId, organizationId: ctx.organizationId }, data: before as Prisma.AssetUpdateManyMutationInput });
           }
@@ -565,7 +643,9 @@ async function captureBeforeImage(
   const record =
     entity === "PROPERTIES"
       ? await tx.property.findUnique({ where: { id } })
-      : await tx.asset.findUnique({ where: { id } });
+      : entity === "PROJECTS"
+        ? await tx.project.findUnique({ where: { id } })
+        : await tx.asset.findUnique({ where: { id } });
   if (!record) return {};
 
   const before: Record<string, unknown> = {};
@@ -577,8 +657,11 @@ async function captureBeforeImage(
 }
 
 function writableColumns(entity: ImportEntity, values: Record<string, string | number | null>): string[] {
-  const skip = new Set(["portfolio", "region", "externalIds", "propertyRef"]);
-  return Object.keys(values).filter((key) => !skip.has(key) && values[key] !== undefined && values[key] !== "");
+  const skip = new Set(["portfolio", "region", "externalIds", "propertyRef", "program"]);
+  const columns = Object.keys(values).filter((key) => !skip.has(key) && values[key] !== undefined && values[key] !== "");
+  // A project's program is written as its id, resolved from the name.
+  if (entity === "PROJECTS" && typeof values.program === "string" && values.program !== "") columns.push("programId");
+  return columns;
 }
 
 async function applyUpdate(
@@ -587,12 +670,19 @@ async function applyUpdate(
   id: string,
   values: Record<string, string | number | null>,
   ctx: SessionContext,
+  programByName: Map<string, string>,
 ) {
   const data: Record<string, unknown> = {};
   for (const column of writableColumns(entity, values)) {
-    data[column] = normalizeForColumn(column, values[column]);
+    data[column] =
+      column === "programId" ? resolveProgram(programByName, values.program) : normalizeForColumn(column, values[column]);
   }
   if (Object.keys(data).length === 0) return;
+
+  if (entity === "PROJECTS") {
+    await tx.project.updateMany({ where: { id, organizationId: ctx.organizationId }, data: data as Prisma.ProjectUncheckedUpdateManyInput });
+    return;
+  }
   data.updatedBy = ctx.userId;
 
   if (entity === "PROPERTIES") {
@@ -612,6 +702,7 @@ async function applyCreate(
     portfolioByName: Map<string, string>;
     regionByName: Map<string, string>;
     propertyRefIndex: Map<string, string>;
+    programByName: Map<string, string>;
   },
 ): Promise<string> {
   const { ctx } = deps;
@@ -666,6 +757,7 @@ async function applyCreate(
         propertyType: str("propertyType") || "Retail",
         squareFootage: num("squareFootage"),
         yearBuilt: num("yearBuilt"),
+        heading: num("heading"),
         updatedBy: ctx.userId,
       },
       select: { id: true },
@@ -675,7 +767,29 @@ async function applyCreate(
 
   const propertyId = deps.propertyRefIndex.get(normalizeKey(str("propertyRef")));
   if (!propertyId) {
-    throw new ApiError(400, `No property matches "${str("propertyRef")}". Import properties before their assets.`);
+    throw new ApiError(
+      400,
+      `No property matches "${str("propertyRef")}". Import properties before their ${entity === "PROJECTS" ? "projects" : "assets"}.`,
+    );
+  }
+
+  if (entity === "PROJECTS") {
+    const created = await tx.project.create({
+      data: {
+        organizationId: ctx.organizationId,
+        propertyId,
+        programId: str("program") ? resolveProgram(deps.programByName, str("program")) : null,
+        name: str("name"),
+        projectType: str("projectType") || null,
+        description: str("description") || null,
+        status: (str("status") || "NEW") as ProjectStatus,
+        startDate: str("startDate") ? new Date(`${str("startDate")}T00:00:00.000Z`) : null,
+        endDate: str("endDate") ? new Date(`${str("endDate")}T00:00:00.000Z`) : null,
+        createdById: ctx.userId,
+      },
+      select: { id: true },
+    });
+    return created.id;
   }
 
   const installedAt = str("installedAt") ? new Date(`${str("installedAt")}T00:00:00.000Z`) : null;
@@ -702,7 +816,17 @@ async function applyCreate(
   return created.id;
 }
 
+/** A named program must resolve, as a named portfolio must: a typo is an error, not a project with no program. */
+function resolveProgram(programByName: Map<string, string>, name: string | number | null | undefined): string {
+  const programId = typeof name === "string" ? programByName.get(normalizeKey(name)) : undefined;
+  if (!programId) throw new ApiError(400, `Row references program "${name}", which does not exist in this organization`);
+  return programId;
+}
+
 function normalizeForColumn(column: string, value: string | number | null | undefined) {
+  if ((column === "startDate" || column === "endDate") && typeof value === "string" && value !== "") {
+    return new Date(`${value}T00:00:00.000Z`);
+  }
   if (column === "installedAt" && typeof value === "string" && value !== "") {
     return new Date(`${value}T00:00:00.000Z`);
   }
@@ -719,6 +843,14 @@ async function loadPortfolioIndex(ctx: SessionContext): Promise<Map<string, stri
     select: { id: true, name: true },
   });
   return new Map(portfolios.map((p) => [normalizeKey(p.name), p.id]));
+}
+
+async function loadProgramIndex(ctx: SessionContext): Promise<Map<string, string>> {
+  const programs = await prisma.program.findMany({
+    where: { organizationId: ctx.organizationId },
+    select: { id: true, name: true },
+  });
+  return new Map(programs.map((p) => [normalizeKey(p.name), p.id]));
 }
 
 async function loadRegionIndex(ctx: SessionContext): Promise<Map<string, string>> {

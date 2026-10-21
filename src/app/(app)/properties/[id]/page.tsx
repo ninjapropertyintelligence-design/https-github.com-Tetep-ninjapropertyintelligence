@@ -24,6 +24,21 @@ import { SiteMap } from "@/components/property/SiteMap";
 import { Photo360Gallery } from "@/components/media/Photo360Gallery";
 import { NearbyProperties } from "@/components/property/NearbyProperties";
 import { recordProductEvent } from "@/lib/analytics";
+import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
+import { listPrograms, listProjects } from "@/lib/project-service";
+import { ProjectTable } from "@/components/project/ProjectTable";
+import { NewProjectForm } from "@/components/project/NewProjectForm";
+import { listOverlays } from "@/lib/overlay-service";
+import { OVERLAY_CATEGORY_LABELS } from "@/lib/overlay-validation";
+import { OverlayManager } from "@/components/property/OverlayManager";
+import { SpatialEmbeds } from "@/components/property/SpatialEmbeds";
+import { DocumentFlags } from "@/components/property/DocumentFlags";
+import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
+import { listConnectedTours, listEmbeds } from "@/lib/embed-service";
+import { getPropertyMedia } from "@/lib/media-gallery";
+import { getVocabulary } from "@/lib/tag-service";
+import { myCollections } from "@/lib/collection-service";
+import { MediaGallery } from "@/components/media/MediaGallery";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -106,7 +121,7 @@ async function TabContent({
     case "assessments":
       return <AssessmentsTab propertyId={propertyId} />;
     case "documents":
-      return <DocumentsTab propertyId={propertyId} />;
+      return <DocumentsTab propertyId={propertyId} canManage={can(ctx, "canManageProperties")} />;
     case "history":
       return <HistoryTab propertyId={propertyId} />;
     case "site-map":
@@ -120,12 +135,9 @@ async function TabContent({
     case "digital-twin":
       return <DigitalTwinTab propertyId={propertyId} ctx={ctx} />;
     case "projects":
-      return (
-        <EmptyState
-          title="Projects — coming in a later phase"
-          description="Capital projects will roll up cost and scheduling across multiple issues/assets. For now, cost tracking lives on individual Issues."
-        />
-      );
+      return <ProjectsTab propertyId={propertyId} ctx={ctx} />;
+    case "media":
+      return <MediaTab propertyId={propertyId} ctx={ctx} />;
     case "reports":
       return <ReportsTab propertyId={propertyId} propertyName={propertyName} />;
     case "ai":
@@ -148,7 +160,7 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
       prisma.issue.count({ where: { propertyId, severity: "CRITICAL", status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } } }),
       prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
       prisma.asset.count({ where: { propertyId, status: "ACTIVE", criticalityScore: { gte: 4 } } }),
-      prisma.assessment.findFirst({ where: { propertyId, status: "COMPLETED" }, orderBy: { completedAt: "desc" } }),
+      prisma.assessment.findFirst({ where: { propertyId, status: { in: FINISHED_ASSESSMENT_STATUSES } }, orderBy: { completedAt: "desc" } }),
       prisma.matterportPropertyLink.findFirst({
         where: { propertyId, ...captureReviewWhere(ctx) },
         orderBy: { linkedAt: "desc" },
@@ -178,6 +190,7 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
         lastExteriorCapture={droneCapture?.capturedAt ?? null}
         warnings={warnings}
       />
+      <ReferenceDocuments propertyId={propertyId} flag="showInInfoTab" title="Key documents" />
       {/* Spatial (§11): this ordering is computed by PostGIS, not in JS. */}
       <NearbyProperties
         ctx={ctx}
@@ -298,7 +311,7 @@ async function AssessmentsTab({ propertyId }: { propertyId: string }) {
   );
 }
 
-async function DocumentsTab({ propertyId }: { propertyId: string }) {
+async function DocumentsTab({ propertyId, canManage }: { propertyId: string; canManage: boolean }) {
   const documents = await prisma.document.findMany({ where: { propertyId }, orderBy: { updatedAt: "desc" }, include: { versions: { take: 1, orderBy: { versionNumber: "desc" } } } });
   return (
     <div>
@@ -312,13 +325,24 @@ async function DocumentsTab({ propertyId }: { propertyId: string }) {
               {documents.map((d) => (
                 <li key={d.id} className="flex items-center justify-between border-b border-border px-5 py-3 text-sm last:border-0">
                   <div>
-                    <p className="font-medium text-foreground">{d.title}</p>
+                    {d.versions.length > 0 ? (
+                      <a href={`/api/v1/documents/${d.id}/download`} className="font-medium text-foreground hover:text-brand">
+                        {d.title}
+                      </a>
+                    ) : (
+                      <p className="font-medium text-foreground">{d.title}</p>
+                    )}
                     <p className="text-xs text-muted">
                       {d.documentType.replace(/_/g, " ")}
                       {d.indexStatus === "INDEXED" ? " · text indexed" : d.indexStatus === "UNSUPPORTED" ? " · not text-searchable" : d.indexStatus === "FAILED" ? " · indexing failed" : ""}
                     </p>
                   </div>
-                  <span className="text-xs text-muted">{formatDate(d.updatedAt)}</span>
+                  <div className="flex items-center gap-4">
+                    {canManage ? (
+                      <DocumentFlags documentId={d.id} showInInfoTab={d.showInInfoTab} availableInCapture={d.availableInCapture} />
+                    ) : null}
+                    <span className="text-xs text-muted">{formatDate(d.updatedAt)}</span>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -362,25 +386,63 @@ async function SiteMapTab({
   captureId?: string;
   ctx: SessionContext;
 }) {
-  const data = await getSiteMapData(ctx, propertyId, captureId);
+  const [data, overlays, floors] = await Promise.all([
+    getSiteMapData(ctx, propertyId, captureId),
+    listOverlays(ctx, propertyId),
+    prisma.floor.findMany({ where: { building: { propertyId } }, select: { id: true, name: true }, orderBy: { level: "asc" } }),
+  ]);
   return (
-    <SiteMap
-      token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
-      property={data.property}
-      captures={data.captures.map((c) => ({
-        id: c.id,
-        capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
-        droneModel: c.droneModel,
-        status: c.status,
-      }))}
-      selectedCaptureId={data.selectedCaptureId}
-      // Serialised here: a Date does not survive the server/client boundary
-      // as a Date, and formatting on the server would pin the output to the
-      // server's locale rather than the viewer's.
-      lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
-      totalMedia={data.totalMedia}
-      layers={data.layers}
-    />
+    <>
+      <SiteMap
+        token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? null}
+        property={data.property}
+        captures={data.captures.map((c) => ({
+          id: c.id,
+          capturedAt: c.capturedAt ? c.capturedAt.toISOString() : null,
+          droneModel: c.droneModel,
+          status: c.status,
+        }))}
+        selectedCaptureId={data.selectedCaptureId}
+        // Serialised here: a Date does not survive the server/client boundary
+        // as a Date, and formatting on the server would pin the output to the
+        // server's locale rather than the viewer's.
+        lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
+        totalMedia={data.totalMedia}
+        layers={data.layers}
+        overlays={overlays.map((o) => ({
+          id: o.id,
+          kind: o.kind,
+          name: o.name,
+          categoryLabel: OVERLAY_CATEGORY_LABELS[o.category] ?? o.category,
+          north: o.north,
+          south: o.south,
+          east: o.east,
+          west: o.west,
+          defaultOpacity: o.defaultOpacity,
+          isDefault: o.isDefault,
+        }))}
+      />
+      <OverlayManager
+        propertyId={propertyId}
+        canManage={can(ctx, "canManageProperties")}
+        center={
+          data.property.latitude !== null && data.property.longitude !== null
+            ? { latitude: data.property.latitude, longitude: data.property.longitude }
+            : null
+        }
+        floors={floors}
+        overlays={overlays.map((o) => ({
+          id: o.id,
+          kind: o.kind,
+          category: o.category,
+          name: o.name,
+          floorName: o.floor?.name ?? null,
+          capturedAt: o.capturedAt ? o.capturedAt.toISOString() : null,
+          isDefault: o.isDefault,
+          sizeBytes: o.sizeBytes,
+        }))}
+      />
+    </>
   );
 }
 
@@ -452,25 +514,53 @@ async function ExteriorTab({
 }
 
 async function DigitalTwinTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const pointClouds = await prisma.droneOutput.findMany({
-    where: {
-      outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
-      dataset: { capture: { propertyId, ...captureReviewWhere(ctx) } },
-    },
-  });
+  const [pointClouds, embeds, floors, connectedTours] = await Promise.all([
+    prisma.droneOutput.findMany({
+      where: {
+        outputType: { in: ["POINT_CLOUD", "MESH_3D"] },
+        dataset: { capture: { propertyId, ...captureReviewWhere(ctx) } },
+      },
+    }),
+    listEmbeds(ctx, propertyId),
+    prisma.floor.findMany({ where: { building: { propertyId } }, select: { id: true, name: true }, orderBy: { level: "asc" } }),
+    listConnectedTours(ctx, propertyId),
+  ]);
   return (
     <Card>
-      <CardHeader title="Digital Twin" subtitle="Point cloud / mesh outputs from drone processing" />
-      <CardBody>
-        {pointClouds.length === 0 ? (
-          <EmptyState title="No 3D twin data yet" description="Point cloud and mesh outputs from drone processing jobs will be listed here." />
-        ) : (
-          <ul className="space-y-1 text-sm">
-            {pointClouds.map((o) => (
-              <li key={o.id}>{o.outputType} — {formatDate(o.createdAt)}</li>
-            ))}
-          </ul>
-        )}
+      <CardHeader title="Digital Twin" subtitle="Hosted 3D viewers, and point cloud / mesh outputs from drone processing" />
+      <CardBody className="space-y-6">
+        <SpatialEmbeds
+          propertyId={propertyId}
+          canManage={can(ctx, "canManageProperties")}
+          floors={floors}
+          embeds={embeds.map((e) => ({
+            id: e.id,
+            kind: e.kind,
+            name: e.name,
+            url: e.url,
+            floorId: e.floorId,
+            floorName: e.floor?.name ?? null,
+            capturedAt: e.capturedAt ? e.capturedAt.toISOString() : null,
+          }))}
+          connectedTours={connectedTours.map((t) => ({
+            id: t.id,
+            name: t.name,
+            url: t.url,
+            capturedAt: t.capturedAt ? t.capturedAt.toISOString() : null,
+          }))}
+        />
+        <div>
+          <h3 className="mb-2 text-sm font-semibold text-foreground">Drone 3D outputs</h3>
+          {pointClouds.length === 0 ? (
+            <EmptyState title="No 3D twin data yet" description="Point cloud and mesh outputs from drone processing jobs will be listed here." />
+          ) : (
+            <ul className="space-y-1 text-sm">
+              {pointClouds.map((o) => (
+                <li key={o.id}>{o.outputType} — {formatDate(o.createdAt)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
       </CardBody>
     </Card>
   );
@@ -498,5 +588,47 @@ async function ReportsTab({ propertyId, propertyName }: { propertyId: string; pr
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+async function ProjectsTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const canManage = can(ctx, "canManageProperties");
+  const [{ items }, programs, property] = await Promise.all([
+    listProjects(ctx, { propertyId }),
+    canManage ? listPrograms(ctx) : [],
+    prisma.property.findUniqueOrThrow({ where: { id: propertyId }, select: { id: true, name: true } }),
+  ]);
+  return (
+    <div className="space-y-3">
+      {canManage ? <NewProjectForm properties={[property]} programs={programs} defaultPropertyId={propertyId} /> : null}
+      {items.length === 0 ? (
+        <EmptyState
+          title="No projects at this property"
+          description="A project gathers one engagement here — its team, documents and assessments."
+        />
+      ) : (
+        <ProjectTable projects={items} showProperty={false} />
+      )}
+    </div>
+  );
+}
+
+async function MediaTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const canCollect = can(ctx, "canViewPortfolio");
+  const [{ items, truncated }, vocabulary, collections] = await Promise.all([
+    getPropertyMedia(ctx, propertyId),
+    getVocabulary(ctx, propertyId),
+    canCollect ? myCollections(ctx) : [],
+  ]);
+  return (
+    <MediaGallery
+      items={items}
+      truncated={truncated}
+      tagTypes={vocabulary.map((t) => ({ id: t.id, name: t.name, allowMultiple: t.allowMultiple, values: t.values }))}
+      collections={collections}
+      canEdit={can(ctx, "canUploadEvidence")}
+      canCollect={canCollect}
+      currentUserId={ctx.userId}
+    />
   );
 }

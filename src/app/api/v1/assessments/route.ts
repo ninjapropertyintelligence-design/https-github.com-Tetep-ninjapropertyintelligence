@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { ApiError, requirePermission, withApiHandler } from "@/lib/api-utils";
 import { propertyScopeWhere } from "@/lib/session-context";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
+import { assertProjectForAssessment } from "@/lib/project-service";
 import { z } from "zod";
 
 // GET /api/v1/assessments?propertyId=&status=&mine=true
@@ -36,6 +37,7 @@ const createAssessmentSchema = z.object({
   templateId: z.string().min(1),
   inspectorId: z.string().min(1).optional(),
   scheduledFor: z.coerce.date().nullish(),
+  projectId: z.string().min(1).nullish(),
 });
 
 // POST /api/v1/assessments — schedule/start an assessment instance from a template.
@@ -53,6 +55,18 @@ export const POST = withApiHandler(async (ctx, req) => {
     where: { id: input.templateId, organizationId: ctx.organizationId },
   });
   if (!template) throw new ApiError(400, "Invalid templateId");
+  // A retired template keeps answering for the assessments already run on it,
+  // but new work goes on its replacement.
+  if (!template.isActive) throw new ApiError(400, "That template has been retired; use its current version");
+  if (input.projectId) await assertProjectForAssessment(ctx, input.projectId, input.propertyId);
+  // The inspector id was taken on trust: anyone could be named, including a
+  // user in another organization, who would then be "assigned" work here.
+  if (input.inspectorId && input.inspectorId !== ctx.userId) {
+    const member = await prisma.membership.findFirst({
+      where: { userId: input.inspectorId, organizationId: ctx.organizationId },
+    });
+    if (!member) throw new ApiError(400, "That inspector is not a member of this organization");
+  }
 
   const assessment = await prisma.assessment.create({
     data: {
@@ -61,6 +75,7 @@ export const POST = withApiHandler(async (ctx, req) => {
       templateId: input.templateId,
       inspectorId: input.inspectorId ?? ctx.userId,
       scheduledFor: input.scheduledFor ?? null,
+      projectId: input.projectId ?? null,
       status: "DRAFT",
     },
   });

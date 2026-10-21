@@ -27,9 +27,13 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canViewPortfolio")) {
     items.push({ label: "Map", href: "/map", section: "Explore", icon: "map" });
     items.push({ label: "Properties", href: "/properties", section: "Explore", icon: "building" });
+    items.push({ label: "Collections", href: "/collections", section: "Explore", icon: "collection" });
   }
   if (can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio")) {
     items.push({ label: "Assets", href: "/assets", section: "Manage", icon: "asset" });
+  }
+  if (can(ctx, "canViewPortfolio")) {
+    items.push({ label: "Projects", href: "/projects", section: "Manage", icon: "project" });
   }
   items.push({ label: "Issues", href: "/issues", section: "Manage", icon: "issue" });
   if (can(ctx, "canPerformAssessments")) {
@@ -63,6 +67,9 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   // enforced by the page and the API.
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Defect Rules", href: "/settings/defect-rules", section: "Administration", icon: "rules" });
+  }
+  if (can(ctx, "canManageProperties")) {
+    items.push({ label: "Tags", href: "/settings/tags", section: "Administration", icon: "collection" });
   }
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });
