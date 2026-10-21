@@ -322,7 +322,9 @@ async function DocumentsTab({ ctx, project, canManage }: { ctx: SessionContext; 
                   <ul className="mt-1 space-y-0.5 text-xs text-muted">
                     {d.versions.map((v) => (
                       <li key={v.id}>
-                        v{v.versionNumber} · {v.originalFilename} · {formatDate(v.uploadedAt)}
+                        <a href={`/api/v1/documents/${d.id}/download?version=${v.versionNumber}`} className="hover:text-brand">
+                          v{v.versionNumber} · {v.originalFilename} · {formatDate(v.uploadedAt)}
+                        </a>
                       </li>
                     ))}
                   </ul>

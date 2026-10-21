@@ -10,6 +10,7 @@ import { hasPermission } from "@/lib/permissions";
 import { formatDate } from "@/lib/format";
 import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
 import { AnswerSheetPanel } from "@/components/assessment/AnswerSheetPanel";
+import { prisma } from "@/lib/prisma";
 
 export default async function AssessmentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -77,6 +78,8 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
 
       <AnswerSheetPanel assessmentId={assessment.id} canImport={!readOnly} />
 
+      <ReportHistory assessmentId={assessment.id} organizationId={ctx.organizationId} />
+
       <AssessmentRunner
         assessmentId={assessment.id}
         propertyId={assessment.property.id}
@@ -114,6 +117,34 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
         canReopen={isManager && assessment.status === "COMPLETED"}
         canRelease={isManager && assessment.status === "COMPLETED"}
       />
+    </div>
+  );
+}
+
+/** Every report issued for this assessment, newest first: the versions of its report document. */
+async function ReportHistory({ assessmentId, organizationId }: { assessmentId: string; organizationId: string }) {
+  const document = await prisma.document.findFirst({
+    where: { assessmentId, organizationId },
+    include: {
+      versions: { orderBy: { versionNumber: "desc" }, include: { uploadedBy: { select: { name: true } } } },
+    },
+  });
+  if (!document || document.versions.length === 0) return null;
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4">
+      <h3 className="text-sm font-semibold text-foreground">Reports issued</h3>
+      <ul className="mt-2 divide-y divide-border text-sm">
+        {document.versions.map((v) => (
+          <li key={v.id} className="flex items-center justify-between py-1.5">
+            <a href={`/api/v1/documents/${document.id}/download?version=${v.versionNumber}`} className="text-foreground hover:text-brand">
+              Version {v.versionNumber}
+            </a>
+            <span className="text-xs text-muted">
+              {formatDate(v.uploadedAt)} · {v.uploadedBy.name}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

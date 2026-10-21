@@ -117,6 +117,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await prisma.document.deleteMany({ where: { organizationId: org.id } });
   await prisma.evidence.deleteMany({ where: { organizationId: org.id } });
   await prisma.assessment.deleteMany({ where: { organizationId: org.id } });
   await prisma.organization.delete({ where: { id: org.id } });
@@ -137,6 +138,23 @@ describe("survey PDF report", () => {
 
   it("is not available to someone who cannot open the assessment", async () => {
     await expect(generateAssessmentReport(ctx(inspector.id, Role.INSPECTOR, otherProperty.id), assessmentId)).rejects.toThrow(/not found/);
+  });
+
+  it("keeps each report as the next version of the assessment's report document, unless the caller only views", async () => {
+    await prisma.document.deleteMany({ where: { assessmentId } });
+    const first = await generateAssessmentReport(asInspector(), assessmentId);
+    const second = await generateAssessmentReport(asInspector(), assessmentId);
+    expect([first.saved?.versionNumber, second.saved?.versionNumber]).toEqual([1, 2]);
+    const document = await prisma.document.findFirstOrThrow({ where: { assessmentId }, include: { versions: true } });
+    expect(document).toMatchObject({ documentType: "INSPECTION_REPORT", propertyId: property.id, availableInCapture: false });
+    expect(document.versions.map((v) => v.mimeType)).toEqual(["application/pdf", "application/pdf"]);
+    const stored = await getStorageProvider().readBytes(document.versions[0].storageKey);
+    expect(stored?.subarray(0, 5).toString()).toBe("%PDF-");
+
+    const asViewer = { ...ctx(inspector.id, Role.VIEWER), grants: [] };
+    const viewed = await generateAssessmentReport(asViewer, assessmentId);
+    expect(viewed.saved).toBeNull();
+    expect(await prisma.documentVersion.count({ where: { documentId: document.id } })).toBe(2);
   });
 
   it("is recorded in the audit log and the property history", async () => {

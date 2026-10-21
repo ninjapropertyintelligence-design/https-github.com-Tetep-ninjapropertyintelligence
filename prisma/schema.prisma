@@ -1367,6 +1367,7 @@ model Assessment {
   answers       AssessmentAnswer[]
   taskResponses AssessmentTaskResponse[]
   evidence      Evidence[]
+  reports       Document[]
 
   @@index([organizationId])
   @@index([propertyId])
@@ -1477,6 +1478,9 @@ model Document {
   issueId        String?
   /// The project this document was delivered for, e.g. a site survey's plans.
   projectId      String?
+  /// The assessment this is the report of. Each generated report is a new
+  /// version of the one document, so its history is the report history.
+  assessmentId   String?
   title          String
   documentType   DocumentType @default(OTHER)
   /// Listed among the property's key documents on its Overview.
@@ -1499,12 +1503,14 @@ model Document {
   asset        Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
   issue        Issue?            @relation(fields: [issueId], references: [id], onDelete: SetNull)
   project      Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  assessment   Assessment?       @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
   versions     DocumentVersion[]
   chunks       DocumentChunk[]
 
   @@index([organizationId])
   @@index([propertyId])
   @@index([projectId])
+  @@index([assessmentId])
   @@index([assetId])
   @@index([documentType])
 }
