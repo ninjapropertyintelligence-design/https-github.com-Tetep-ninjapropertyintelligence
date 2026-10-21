@@ -93,11 +93,23 @@ async function firstResponse(assessmentId: string, taskId: string) {
 export async function addTaskResponse(
   ctx: SessionContext,
   assessmentId: string,
-  input: { taskId: string; label?: string | null },
+  input: { taskId: string; label?: string | null; clientId?: string | null },
 ) {
   const assessment = await loadAssessment(ctx, assessmentId);
   requireWritable(ctx, assessment);
   const task = await loadTaskOnTemplate(input.taskId, assessment.templateId);
+
+  // A retry of a create this device already made gets that response back,
+  // not a second repeat of the task.
+  if (input.clientId) {
+    const earlier = await prisma.assessmentTaskResponse.findUnique({
+      where: { assessmentId_clientId: { assessmentId, clientId: input.clientId } },
+    });
+    if (earlier) {
+      if (earlier.taskId !== task.id) throw new ApiError(409, "That clientId was already used for a different task");
+      return earlier;
+    }
+  }
 
   const count = await prisma.assessmentTaskResponse.count({ where: { assessmentId, taskId: task.id } });
   if (count > 0 && !task.isRepeatable) {
@@ -110,7 +122,13 @@ export async function addTaskResponse(
   });
 
   const response = await prisma.assessmentTaskResponse.create({
-    data: { assessmentId, taskId: task.id, instance: (last?.instance ?? 0) + 1, label: input.label?.trim() || null },
+    data: {
+      assessmentId,
+      taskId: task.id,
+      instance: (last?.instance ?? 0) + 1,
+      label: input.label?.trim() || null,
+      clientId: input.clientId ?? null,
+    },
   });
   await markStarted(assessment);
   return response;
@@ -256,6 +274,8 @@ export interface SaveAnswerInput {
   boolValue?: boolean | null;
   conditionValue?: number | null;
   selectValues?: string[];
+  /** The device's own id for this answer, kept so a retry can be recognised. */
+  clientId?: string | null;
 }
 
 /**
@@ -317,9 +337,21 @@ export async function saveAnswer(ctx: SessionContext, assessmentId: string, inpu
     selectValues: input.selectValues ?? [],
   };
   const existing = await prisma.assessmentAnswer.findFirst({ where });
+  // An answer is already found by its question and task response, so a
+  // retry updates the same row; the device id only has to agree with it.
+  if (input.clientId) {
+    const owner = await prisma.assessmentAnswer.findUnique({
+      where: { assessmentId_clientId: { assessmentId: assessment.id, clientId: input.clientId } },
+      select: { id: true },
+    });
+    if (owner && owner.id !== existing?.id) throw new ApiError(409, "That clientId was already used for a different answer");
+  }
   const answer = existing
-    ? await prisma.assessmentAnswer.update({ where: { id: existing.id }, data })
-    : await prisma.assessmentAnswer.create({ data: { ...where, ...data } });
+    ? await prisma.assessmentAnswer.update({
+        where: { id: existing.id },
+        data: { ...data, ...(input.clientId && !existing.clientId ? { clientId: input.clientId } : {}) },
+      })
+    : await prisma.assessmentAnswer.create({ data: { ...where, ...data, clientId: input.clientId ?? null } });
 
   if (taskResponseId) await refreshCompletion(taskResponseId, ctx.userId);
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { withApiHandler } from "@/lib/api-utils";
 import { saveAnswer } from "@/lib/assessment-service";
 import { z } from "zod";
+import { clientIdSchema } from "@/lib/client-id";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -14,6 +15,7 @@ const answerSchema = z.object({
   boolValue: z.boolean().nullish(),
   conditionValue: z.number().min(0).max(100).nullish(),
   selectValues: z.array(z.string()).default([]),
+  clientId: clientIdSchema.nullish(),
 });
 
 // POST /api/v1/assessments/[id]/answers — save one answer. See `saveAnswer`.

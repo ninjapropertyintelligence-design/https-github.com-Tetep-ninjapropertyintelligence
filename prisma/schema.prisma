@@ -1306,6 +1306,9 @@ model AssessmentTaskResponse {
   instance      Int       @default(1)
   /// What this repeat is of, e.g. "North drain", so repeats can be told apart.
   label         String?
+  /// An id the capturing device made up, so a retried create returns this
+  /// row instead of adding a second response. See `clientId` on Evidence.
+  clientId      String?
   isComplete    Boolean   @default(false)
   completedAt   DateTime?
   completedById String?
@@ -1318,6 +1321,7 @@ model AssessmentTaskResponse {
   answers     AssessmentAnswer[]
 
   @@unique([assessmentId, taskId, instance])
+  @@unique([assessmentId, clientId])
   @@index([assessmentId])
 }
 
@@ -1383,6 +1387,8 @@ model AssessmentAnswer {
   /// Which answering of the question's task this belongs to. Null exactly
   /// when the question has no task.
   taskResponseId String?
+  /// The capturing device's own id for this answer; see `clientId` on Evidence.
+  clientId       String?
   assetId        String?
   textValue      String?
   numberValue    Float?
@@ -1399,6 +1405,7 @@ model AssessmentAnswer {
   evidence     Evidence[]
 
   @@unique([assessmentId, questionId, assetId, taskResponseId])
+  @@unique([assessmentId, clientId])
   @@index([assessmentId])
   @@index([taskResponseId])
 }
@@ -1424,6 +1431,10 @@ model Evidence {
   captureShotId String?
   /// Before or after, when this photo is proof of a repair on `issueId`.
   repairStage  RepairPhotoStage?
+  /// An id the capturing device made up before upload. A device that lost
+  /// its connection retries with the same id and gets this row back, rather
+  /// than registering the photo twice — the groundwork for offline capture.
+  clientId     String?
   /// The capture-job site this was delivered against, when a subcontractor
   /// delivered it. Until that site is ACCEPTED the record is visible only to
   /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
@@ -1464,6 +1475,7 @@ model Evidence {
   @@index([captureShotId])
   @@index([captureJobSiteId])
   @@index([type])
+  @@unique([organizationId, clientId])
 }
 
 // ---------------------------------------------------------------------------

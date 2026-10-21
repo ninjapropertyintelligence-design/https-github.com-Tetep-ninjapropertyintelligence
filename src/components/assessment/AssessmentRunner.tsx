@@ -143,6 +143,7 @@ export function AssessmentRunner({
             sizeBytes: file.size,
             propertyId,
             assessmentAnswerId: answerId,
+            clientId: crypto.randomUUID(),
             captureDate: new Date(file.lastModified).toISOString(),
           }),
         });
@@ -162,7 +163,9 @@ export function AssessmentRunner({
     const data = await run(`task:${task.id}`, () =>
       apiRequest(`/api/v1/assessments/${assessmentId}/task-responses`, {
         method: "POST",
-        body: JSON.stringify({ taskId: task.id, label: label || null }),
+        // A fresh id per press: if the request is retried after a dropped
+        // connection, the server returns this response instead of a second one.
+        body: JSON.stringify({ taskId: task.id, label: label || null, clientId: crypto.randomUUID() }),
       }),
     );
     if (data?.id) setSelected((prev) => ({ ...prev, [task.id]: String(data.id) }));

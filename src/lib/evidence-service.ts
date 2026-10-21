@@ -36,6 +36,8 @@ export interface CreateEvidenceInput {
   captureShotId?: string | null;
   /** Before or after, when this photo is proof of a repair on `issueId`. */
   repairStage?: RepairPhotoStage | null;
+  /** The capturing device's own id for this file; a retry with it returns the existing row. */
+  clientId?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   metadata?: Record<string, unknown>;
@@ -149,6 +151,19 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
   const flag = CAPTURE_KIND_FLAG[input.type];
   if (flag) await requireFeature(ctx, flag);
 
+  // A device retrying an upload it already registered gets that row back —
+  // no second photo, no second meter reading, no second event. Only its own:
+  // someone else's id is refused rather than handing over their record.
+  if (input.clientId) {
+    const earlier = await prisma.evidence.findUnique({
+      where: { organizationId_clientId: { organizationId: ctx.organizationId, clientId: input.clientId } },
+    });
+    if (earlier) {
+      if (earlier.uploadedById !== ctx.userId) throw new ApiError(409, "That clientId was already used for another file");
+      return earlier;
+    }
+  }
+
   if (input.propertyId) {
     const property = await prisma.property.findFirst({
       where: { AND: [{ id: input.propertyId }, propertyScopeWhere(ctx)] },
@@ -205,6 +220,7 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       captureShotId: input.captureShotId ?? null,
       captureJobSiteId,
       repairStage: input.repairStage ?? null,
+      clientId: input.clientId ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -357,6 +373,15 @@ export async function createEvidenceBatch(
 
   await assertAssetsOnProperties(ctx.organizationId, items);
 
+  const batchClientIds = items.map((i) => i.clientId).filter((id): id is string => !!id);
+  if (new Set(batchClientIds).size !== batchClientIds.length) throw new ApiError(400, "Two files in this batch share a clientId");
+  if (batchClientIds.length > 0) {
+    const taken = await prisma.evidence.count({
+      where: { organizationId: ctx.organizationId, clientId: { in: batchClientIds }, uploadedById: { not: ctx.userId } },
+    });
+    if (taken > 0) throw new ApiError(409, "One or more clientIds were already used for another person's files");
+  }
+
   const assessmentPairs = new Set(items.filter((i) => i.assessmentId).map((i) => `${i.assessmentId}\u0000${i.propertyId ?? ""}`));
   for (const pair of assessmentPairs) {
     const [assessmentId, propertyId] = pair.split("\u0000");
@@ -393,6 +418,7 @@ export async function createEvidenceBatch(
       captureShotId: input.captureShotId ?? null,
       captureJobSiteId: input.propertyId && !input.issueId ? (reviewSites.get(input.propertyId) ?? null) : null,
       repairStage: input.repairStage ?? null,
+      clientId: input.clientId ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -404,8 +430,17 @@ export async function createEvidenceBatch(
     skipDuplicates: true,
   });
 
+  // Found by storage key, or by device id for a file this device registered
+  // in an earlier, interrupted batch under a different key.
+  const clientIds = items.map((i) => i.clientId).filter((id): id is string => !!id);
   const created = await prisma.evidence.findMany({
-    where: { organizationId: ctx.organizationId, storageKey: { in: items.map((i) => i.storageKey) } },
+    where: {
+      organizationId: ctx.organizationId,
+      OR: [
+        { storageKey: { in: items.map((i) => i.storageKey) } },
+        ...(clientIds.length ? [{ clientId: { in: clientIds }, uploadedById: ctx.userId }] : []),
+      ],
+    },
     select: { id: true, storageKey: true, type: true, sizeBytes: true, propertyId: true, createdAt: true },
   });
 
