@@ -410,7 +410,7 @@ function FileInput({
               // eslint-disable-next-line @next/next/no-img-element -- same-origin evidence bytes, not a static asset
               <img
                 key={f.id}
-                src={`/api/v1/evidence/${f.id}/content`}
+                src={`/api/v1/evidence/${f.id}/content?size=small`}
                 alt={`${question.prompt} photo`}
                 className="h-20 w-20 rounded-lg border border-border object-cover"
               />

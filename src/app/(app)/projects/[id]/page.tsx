@@ -192,7 +192,7 @@ async function MediaTab({ ctx, project }: { ctx: SessionContext; project: Projec
           <div key={f.id} className="space-y-1">
             <a href={`/api/v1/evidence/${f.id}/content`} className="block">
               {/* eslint-disable-next-line @next/next/no-img-element -- same-origin evidence bytes, not a static asset */}
-              <img src={`/api/v1/evidence/${f.id}/content`} alt={`${f.type === "IMAGE_360" ? "360° panorama" : "Photo"} from ${formatDate(f.createdAt)}`} className="aspect-square w-full rounded-lg border border-border object-cover" />
+              <img src={`/api/v1/evidence/${f.id}/content?size=small`} alt={`${f.type === "IMAGE_360" ? "360° panorama" : "Photo"} from ${formatDate(f.createdAt)}`} className="aspect-square w-full rounded-lg border border-border object-cover" />
             </a>
             {canCollect ? <AddToCollection evidenceIds={[f.id]} collections={collections} compact /> : null}
           </div>

@@ -1431,6 +1431,9 @@ model Evidence {
   captureShotId String?
   /// Before or after, when this photo is proof of a repair on `issueId`.
   repairStage  RepairPhotoStage?
+  /// The medium (about 1600px) rendition, made on first request beside the
+  /// small one in `thumbnailKey`. Recorded so retention deletes it too.
+  previewKey   String?
   /// An id the capturing device made up before upload. A device that lost
   /// its connection retries with the same id and gets this row back, rather
   /// than registering the photo twice — the groundwork for offline capture.

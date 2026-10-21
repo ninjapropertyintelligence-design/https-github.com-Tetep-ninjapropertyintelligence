@@ -75,7 +75,7 @@ export default async function CollectionsPage({
             <Link key={c.id} href={`/collections/${c.id}`} className="overflow-hidden rounded-xl border border-border bg-surface transition hover:border-brand">
               {c.coverEvidenceId ? (
                 // eslint-disable-next-line @next/next/no-img-element -- same-origin evidence bytes, not a static asset
-                <img src={`/api/v1/evidence/${c.coverEvidenceId}/content`} alt="" className="h-32 w-full object-cover" />
+                <img src={`/api/v1/evidence/${c.coverEvidenceId}/content?size=small`} alt="" className="h-32 w-full object-cover" />
               ) : (
                 <div className="grid h-32 place-items-center bg-zinc-50 text-xs text-muted">Empty</div>
               )}

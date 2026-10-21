@@ -54,7 +54,7 @@ export default async function CollectionPage({ params }: { params: Promise<{ id:
               <a href={`/api/v1/evidence/${item.evidence.id}/content`}>
                 {/* eslint-disable-next-line @next/next/no-img-element -- same-origin evidence bytes, not a static asset */}
                 <img
-                  src={`/api/v1/evidence/${item.evidence.id}/content`}
+                  src={`/api/v1/evidence/${item.evidence.id}/content?size=small`}
                   alt={`${item.evidence.type === "IMAGE_360" ? "360° panorama" : "Photo"}${item.evidence.property ? ` at ${item.evidence.property.name}` : ""}`}
                   className="aspect-square w-full rounded-lg border border-border object-cover"
                 />

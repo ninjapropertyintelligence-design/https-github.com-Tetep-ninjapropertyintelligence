@@ -4,6 +4,7 @@ import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { getStorageProvider, newObjectKey } from "@/lib/storage";
 import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
+import { getOrMakeRendition } from "@/lib/media-renditions";
 import { hasPermission } from "@/lib/permissions";
 import { StorageObjectKind } from "@/generated/prisma/client";
 import { evidenceScopeWhere, type SessionContext } from "@/lib/tenant-scope";
@@ -41,7 +42,7 @@ export async function generateAssessmentReport(ctx: SessionContext, assessmentId
   // report just because it hangs off a visible answer.
   const rows = await prisma.evidence.findMany({
     where: { AND: [{ id: { in: [...included] } }, evidenceScopeWhere(ctx)] },
-    select: { id: true, storageKey: true, sizeBytes: true },
+    select: { id: true, storageKey: true, sizeBytes: true, thumbnailKey: true, previewKey: true },
   });
   const storage = getStorageProvider();
   const photos = new Map<string, Buffer>();
@@ -49,6 +50,15 @@ export async function generateAssessmentReport(ctx: SessionContext, assessmentId
   for (const id of allIds.filter((x) => included.has(x))) {
     const row = rows.find((r) => r.id === id);
     if (!row) continue;
+    // The medium rendition when one can be made: a page-sized photo is all a
+    // report shows, and it is a fraction of the original's size. The
+    // original, under the caps, when it cannot.
+    const rendition = await getOrMakeRendition(row, "medium");
+    if (rendition && total + rendition.byteLength <= MAX_TOTAL_PHOTO_BYTES) {
+      photos.set(id, rendition);
+      total += rendition.byteLength;
+      continue;
+    }
     const declared = row.sizeBytes === null ? null : Number(row.sizeBytes);
     if (declared !== null && (declared > MAX_PHOTO_BYTES || total + declared > MAX_TOTAL_PHOTO_BYTES)) continue;
     const bytes = await storage.readBytes(row.storageKey);
