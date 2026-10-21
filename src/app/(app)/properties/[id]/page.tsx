@@ -35,6 +35,10 @@ import { SpatialEmbeds } from "@/components/property/SpatialEmbeds";
 import { DocumentFlags } from "@/components/property/DocumentFlags";
 import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
 import { listConnectedTours, listEmbeds } from "@/lib/embed-service";
+import { getPropertyMedia } from "@/lib/media-gallery";
+import { getVocabulary } from "@/lib/tag-service";
+import { myCollections } from "@/lib/collection-service";
+import { MediaGallery } from "@/components/media/MediaGallery";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -132,6 +136,8 @@ async function TabContent({
       return <DigitalTwinTab propertyId={propertyId} ctx={ctx} />;
     case "projects":
       return <ProjectsTab propertyId={propertyId} ctx={ctx} />;
+    case "media":
+      return <MediaTab propertyId={propertyId} ctx={ctx} />;
     case "reports":
       return <ReportsTab propertyId={propertyId} propertyName={propertyName} />;
     case "ai":
@@ -604,5 +610,25 @@ async function ProjectsTab({ propertyId, ctx }: { propertyId: string; ctx: Sessi
         <ProjectTable projects={items} showProperty={false} />
       )}
     </div>
+  );
+}
+
+async function MediaTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const canCollect = can(ctx, "canViewPortfolio");
+  const [{ items, truncated }, vocabulary, collections] = await Promise.all([
+    getPropertyMedia(ctx, propertyId),
+    getVocabulary(ctx, propertyId),
+    canCollect ? myCollections(ctx) : [],
+  ]);
+  return (
+    <MediaGallery
+      items={items}
+      truncated={truncated}
+      tagTypes={vocabulary.map((t) => ({ id: t.id, name: t.name, allowMultiple: t.allowMultiple, values: t.values }))}
+      collections={collections}
+      canEdit={can(ctx, "canUploadEvidence")}
+      canCollect={canCollect}
+      currentUserId={ctx.userId}
+    />
   );
 }
