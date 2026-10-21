@@ -97,6 +97,7 @@ describe("building a template", () => {
             {
               ...survey.sections[0].tasks[0],
               description: null,
+              defaultTagValueIds: [],
               questions: survey.sections[0].tasks[0].questions.map((q) => ({ ...q, category: null })),
             },
           ],

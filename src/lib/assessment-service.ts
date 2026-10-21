@@ -13,6 +13,7 @@ import {
   type AssessmentProgress,
 } from "@/lib/assessment-progress";
 import type { AssessmentStatus, Prisma } from "@/generated/prisma/client";
+import { applyTaskDefaultTags, resolveTagValues } from "@/lib/tag-service";
 
 /**
  * Running an assessment: answering its questions, task by task, and moving it
@@ -76,17 +77,19 @@ async function loadTaskOnTemplate(taskId: string, templateId: string) {
 }
 
 /** The first response to a task, created if the task has none yet. */
-async function firstResponse(assessmentId: string, taskId: string) {
+async function firstResponse(assessmentId: string, taskId: string, propertyId: string) {
   const existing = await prisma.assessmentTaskResponse.findFirst({
     where: { assessmentId, taskId },
     orderBy: { instance: "asc" },
   });
   if (existing) return existing;
-  return prisma.assessmentTaskResponse.upsert({
+  const created = await prisma.assessmentTaskResponse.upsert({
     where: { assessmentId_taskId_instance: { assessmentId, taskId, instance: 1 } },
     create: { assessmentId, taskId, instance: 1 },
     update: {},
   });
+  await applyTaskDefaultTags(created.id, taskId, propertyId);
+  return created;
 }
 
 /** Adds another response to a repeatable task ("Add new response"). */
@@ -130,6 +133,7 @@ export async function addTaskResponse(
       clientId: input.clientId ?? null,
     },
   });
+  await applyTaskDefaultTags(response.id, task.id, assessment.propertyId);
   await markStarted(assessment);
   return response;
 }
@@ -162,8 +166,25 @@ export async function ensureTaskResponse(
   const created = await prisma.assessmentTaskResponse.create({
     data: { assessmentId, taskId: task.id, instance: input.instance, label },
   });
+  await applyTaskDefaultTags(created.id, task.id, assessment.propertyId);
   await markStarted(assessment);
   return created;
+}
+
+/**
+ * Replaces a task response's tags — "this panel is on the Roof, Exterior".
+ * Photos taken under it afterwards inherit them; photos already taken keep
+ * what they have, so a correction here never silently re-files old work.
+ */
+export async function setTaskResponseTags(ctx: SessionContext, assessmentId: string, responseId: string, tagValueIds: string[]) {
+  const { assessment, response } = await loadResponse(ctx, assessmentId, responseId);
+  requireWritable(ctx, assessment);
+  const values = await resolveTagValues(ctx.organizationId, assessment.propertyId, tagValueIds);
+  await prisma.$transaction([
+    prisma.taskResponseTag.deleteMany({ where: { taskResponseId: response.id } }),
+    prisma.taskResponseTag.createMany({ data: values.map((v) => ({ taskResponseId: response.id, tagValueId: v.id })) }),
+  ]);
+  return values.map((v) => v.id);
 }
 
 async function loadResponse(ctx: SessionContext, assessmentId: string, responseId: string) {
@@ -304,7 +325,7 @@ export async function saveAnswer(ctx: SessionContext, assessmentId: string, inpu
       if (!response) throw new ApiError(400, "That task response is not this question's task on this assessment");
       taskResponseId = response.id;
     } else {
-      taskResponseId = (await firstResponse(assessment.id, question.taskId)).id;
+      taskResponseId = (await firstResponse(assessment.id, question.taskId, assessment.propertyId)).id;
     }
   } else if (input.taskResponseId) {
     throw new ApiError(400, "This question is not part of a task");
@@ -491,7 +512,7 @@ export const assessmentDetailInclude = {
       },
     },
   },
-  taskResponses: { orderBy: [{ taskId: "asc" }, { instance: "asc" }] },
+  taskResponses: { orderBy: [{ taskId: "asc" }, { instance: "asc" }], include: { tags: { select: { tagValueId: true } } } },
   answers: {
     include: {
       evidence: {

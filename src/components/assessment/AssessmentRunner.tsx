@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { apiRequest } from "@/components/settings/api-request";
+import { TagPicker, type PickerTagType } from "@/components/tags/TagPicker";
 
 interface Question {
   id: string;
@@ -34,6 +35,7 @@ interface TaskResponse {
   instance: number;
   label: string | null;
   isComplete: boolean;
+  tagValueIds: string[];
 }
 interface AnswerFile {
   id: string;
@@ -71,7 +73,9 @@ export function AssessmentRunner({
   canComplete,
   canReopen,
   canRelease,
+  tagTypes = [],
 }: {
+  tagTypes?: PickerTagType[];
   assessmentId: string;
   propertyId: string;
   sections: Section[];
@@ -89,6 +93,21 @@ export function AssessmentRunner({
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [selected, setSelected] = useState<Record<string, string>>({});
+  // Shown at once and saved in the background, so choosing a Level does not
+  // wait on the round trip; a refused save puts the error up.
+  const [responseTags, setResponseTags] = useState<Record<string, string[]>>(() =>
+    Object.fromEntries(taskResponses.map((r) => [r.id, r.tagValueIds])),
+  );
+
+  const saveResponseTags = (response: TaskResponse, tagValueIds: string[]) => {
+    setResponseTags((prev) => ({ ...prev, [response.id]: tagValueIds }));
+    return run(`tags:${response.id}`, () =>
+      apiRequest(`/api/v1/assessments/${assessmentId}/task-responses/${response.id}/tags`, {
+        method: "PUT",
+        body: JSON.stringify({ tagValueIds }),
+      }),
+    );
+  };
 
   const responsesOf = (taskId: string) => taskResponses.filter((r) => r.taskId === taskId);
 
@@ -274,6 +293,18 @@ export function AssessmentRunner({
                 {r.isComplete ? " ✓" : ""}
               </button>
             ))}
+          </div>
+        ) : null}
+
+        {active && tagTypes.some((t) => t.values.length > 0) ? (
+          <div className="border-b border-border px-5 py-2">
+            <TagPicker
+              types={tagTypes}
+              selected={responseTags[active.id] ?? active.tagValueIds}
+              disabled={readOnly}
+              onChange={(ids) => saveResponseTags(active, ids)}
+            />
+            <p className="mt-1 text-[11px] text-muted">Photos taken for this response are filed with these tags.</p>
           </div>
         ) : null}
 

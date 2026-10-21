@@ -11,6 +11,7 @@ import { formatDate } from "@/lib/format";
 import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
 import { AnswerSheetPanel } from "@/components/assessment/AnswerSheetPanel";
 import { prisma } from "@/lib/prisma";
+import { getVocabulary } from "@/lib/tag-service";
 
 export default async function AssessmentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -19,7 +20,7 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
 
   const assessment = await getAssessmentDetail(ctx, id);
   if (!assessment) notFound();
-  const progress = await progressFor(assessment);
+  const [progress, tagTypes] = await Promise.all([progressFor(assessment), getVocabulary(ctx, assessment.property.id)]);
 
   const canWrite = mayWriteAssessment(ctx, assessment);
   const readOnly = isAssessmentLocked(assessment.status) || !canWrite;
@@ -98,7 +99,9 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
           instance: r.instance,
           label: r.label,
           isComplete: r.isComplete,
+          tagValueIds: r.tags.map((t) => t.tagValueId),
         }))}
+        tagTypes={tagTypes.map((t) => ({ id: t.id, name: t.name, allowMultiple: t.allowMultiple, values: t.values }))}
         initialAnswers={assessment.answers.map((a) => ({
           id: a.id,
           questionId: a.questionId,

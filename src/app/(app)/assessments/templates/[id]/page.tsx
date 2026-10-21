@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getSessionContext, can } from "@/lib/session-context";
 import { TemplateBuilder } from "@/components/assessment/TemplateBuilder";
+import { getVocabulary } from "@/lib/tag-service";
 import { getTemplateDefinition } from "@/lib/template-service";
 import { ApiError } from "@/lib/api-error";
 
@@ -9,6 +10,7 @@ export default async function EditTemplatePage({ params }: { params: Promise<{ i
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
   if (!can(ctx, "canManageAssessmentTemplates")) redirect("/assessments");
+  const tagTypes = (await getVocabulary(ctx)).map((t) => ({ id: t.id, name: t.name, allowMultiple: t.allowMultiple, values: t.values }));
   const { id } = await params;
   const template = await getTemplateDefinition(ctx, id).catch((err) => {
     if (err instanceof ApiError && err.status === 404) return null;
@@ -28,7 +30,7 @@ export default async function EditTemplatePage({ params }: { params: Promise<{ i
         </h1>
       </div>
       {/* Keyed by id: saving as a new version navigates here with a new template, and the builder must start from it. */}
-      <TemplateBuilder key={template.id} templateId={template.id} initial={template.definition} usedBy={template.usedBy} />
+      <TemplateBuilder key={template.id} templateId={template.id} initial={template.definition} usedBy={template.usedBy} tagTypes={tagTypes} />
     </div>
   );
 }

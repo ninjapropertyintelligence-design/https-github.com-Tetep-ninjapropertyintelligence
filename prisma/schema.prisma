@@ -420,6 +420,8 @@ model User {
   collections            Collection[]             @relation("CollectionCreatedBy")
   collectedItems         CollectionItem[]         @relation("CollectionItemAddedBy")
   createdEmbeds          SpatialEmbed[]           @relation("SpatialEmbedCreatedBy")
+  flaggedEvidence        Evidence[]               @relation("EvidenceFlaggedBy")
+  evidenceComments       EvidenceComment[]
   createdProjects        Project[]                @relation("ProjectCreatedBy")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
@@ -611,6 +613,8 @@ model Organization {
   overlays             PropertyOverlay[]
   collections          Collection[]
   spatialEmbeds        SpatialEmbed[]
+  tagTypes             TagType[]
+  tagValues            TagValue[]
 
   @@index([slug])
 }
@@ -704,6 +708,7 @@ model Property {
   projects        Project[]
   overlays        PropertyOverlay[]
   spatialEmbeds   SpatialEmbed[]
+  tagValues       TagValue[]
 
   /**
    * Derived geography for spatial queries (§11). Prisma has no geography
@@ -1013,6 +1018,100 @@ model Vendor {
 }
 
 // ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+/// A kind of tag an organization describes its media by: Level, Area, Type,
+/// Category, or one of its own. Galleries filter by these.
+model TagType {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  position       Int      @default(0)
+  /// More than one value of this type on one photo, e.g. free "Tag" labels.
+  /// Off, a photo has at most one: one Level, one Area.
+  allowMultiple  Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  values       TagValue[]
+
+  @@unique([organizationId, name])
+}
+
+/// One value of a tag type, e.g. Level "Roof". Organization-wide when
+/// `propertyId` is null, or offered only at that property — a mezzanine
+/// that exists in one building.
+model TagValue {
+  id             String   @id @default(cuid())
+  organizationId String
+  tagTypeId      String
+  propertyId     String?
+  name           String
+  position       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tagType      TagType                    @relation(fields: [tagTypeId], references: [id], onDelete: Cascade)
+  property     Property?                  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  evidence     EvidenceTag[]
+  responses    TaskResponseTag[]
+  taskDefaults AssessmentTaskDefaultTag[]
+
+  @@index([tagTypeId])
+  @@index([propertyId])
+}
+
+model EvidenceTag {
+  evidenceId String
+  tagValueId String
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  tagValue TagValue @relation(fields: [tagValueId], references: [id], onDelete: Cascade)
+
+  @@id([evidenceId, tagValueId])
+  @@index([tagValueId])
+}
+
+model TaskResponseTag {
+  taskResponseId String
+  tagValueId     String
+
+  taskResponse AssessmentTaskResponse @relation(fields: [taskResponseId], references: [id], onDelete: Cascade)
+  tagValue     TagValue               @relation(fields: [tagValueId], references: [id], onDelete: Cascade)
+
+  @@id([taskResponseId, tagValueId])
+  @@index([tagValueId])
+}
+
+/// Tags a template task gives each new response, which its photos then
+/// inherit: every "Electrical panel" photo arrives tagged Category
+/// Electrical without the inspector choosing it.
+model AssessmentTaskDefaultTag {
+  taskId     String
+  tagValueId String
+
+  task     AssessmentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tagValue TagValue       @relation(fields: [tagValueId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagValueId])
+}
+
+/// A note on one photo — "this is the north unit, not the south".
+model EvidenceComment {
+  id         String   @id @default(cuid())
+  evidenceId String
+  authorId   String
+  body       String
+  createdAt  DateTime @default(now())
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  author   User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId])
+}
+
+// ---------------------------------------------------------------------------
 // 3D embeds
 // ---------------------------------------------------------------------------
 
@@ -1290,9 +1389,10 @@ model AssessmentTask {
   /// as soon as its required questions are answered.
   isCompletable Boolean @default(true)
 
-  section   AssessmentSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  questions AssessmentQuestion[]
-  responses AssessmentTaskResponse[]
+  section     AssessmentSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  questions   AssessmentQuestion[]
+  responses   AssessmentTaskResponse[]
+  defaultTags AssessmentTaskDefaultTag[]
 
   @@index([sectionId])
 }
@@ -1319,6 +1419,7 @@ model AssessmentTaskResponse {
   task        AssessmentTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   completedBy User?              @relation("TaskResponseCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
   answers     AssessmentAnswer[]
+  tags        TaskResponseTag[]
 
   @@unique([assessmentId, taskId, instance])
   @@unique([assessmentId, clientId])
@@ -1431,6 +1532,11 @@ model Evidence {
   captureShotId String?
   /// Before or after, when this photo is proof of a repair on `issueId`.
   repairStage  RepairPhotoStage?
+  /// Marked for attention. Phygii-style galleries filter on it; what it
+  /// means is each organization's convention, so it is a plain flag.
+  isFlagged    Boolean   @default(false)
+  flaggedAt    DateTime?
+  flaggedById  String?
   /// The medium (about 1600px) rendition, made on first request beside the
   /// small one in `thumbnailKey`. Recorded so retention deletes it too.
   previewKey   String?
@@ -1470,6 +1576,9 @@ model Evidence {
   analysisJob          PhotoAnalysisJob?
   exteriorMarkers      ExteriorMarker[]
   collectionItems      CollectionItem[]
+  tags                 EvidenceTag[]
+  comments             EvidenceComment[]
+  flaggedBy            User?             @relation("EvidenceFlaggedBy", fields: [flaggedById], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([propertyId])

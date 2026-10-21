@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { apiRequest } from "@/components/settings/api-request";
+import { TagPicker, type PickerTagType } from "@/components/tags/TagPicker";
 
 /** Mirrors `templateDefinitionSchema` in template-service; the server re-validates everything. */
 export interface BuilderQuestion {
@@ -19,6 +20,7 @@ export interface BuilderTask {
   isRequired: boolean;
   isRepeatable: boolean;
   isCompletable: boolean;
+  defaultTagValueIds?: string[];
   questions: BuilderQuestion[];
 }
 export interface BuilderSection {
@@ -171,7 +173,10 @@ export function TemplateBuilder({
   templateId,
   initial,
   usedBy = 0,
+  tagTypes = [],
 }: {
+  /** Organization-wide tag values only: a template is used at every property. */
+  tagTypes?: PickerTagType[];
   /** Absent when creating a new template. */
   templateId?: string;
   initial?: BuilderDefinition;
@@ -285,6 +290,12 @@ export function TemplateBuilder({
                     Marked complete by hand
                   </label>
                 </div>
+                {tagTypes.some((t) => t.values.length > 0) ? (
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted">Default tags — every response of this task starts with them, and its photos are filed under them.</p>
+                    <TagPicker types={tagTypes} selected={task.defaultTagValueIds ?? []} onChange={(ids) => setTask({ ...task, defaultTagValueIds: ids })} />
+                  </div>
+                ) : null}
                 <QuestionList questions={task.questions} onChange={(questions) => setTask({ ...task, questions })} />
               </div>
             );

@@ -68,6 +68,9 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Defect Rules", href: "/settings/defect-rules", section: "Administration", icon: "rules" });
   }
+  if (can(ctx, "canManageProperties")) {
+    items.push({ label: "Tags", href: "/settings/tags", section: "Administration", icon: "collection" });
+  }
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });
     items.push({ label: "DroneDeploy", href: "/settings/dronedeploy", section: "Administration", icon: "capture" });

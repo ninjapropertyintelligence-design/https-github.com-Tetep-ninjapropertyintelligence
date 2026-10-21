@@ -8,6 +8,7 @@ import { recordUsage } from "@/lib/cost-metering";
 import { FEATURE_FLAGS, requireFeature } from "@/lib/feature-flags";
 import { hasPermission } from "@/lib/permissions";
 import { afterAnswerFileAttached, assertAnswerAttachable } from "@/lib/assessment-service";
+import { inheritTaskResponseTags } from "@/lib/tag-service";
 
 /**
  * Evidence registration.
@@ -238,7 +239,10 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
 
   await learnShotLocations([evidence]);
 
-  if (evidence.assessmentAnswerId) await afterAnswerFileAttached(evidence.assessmentAnswerId, ctx.userId);
+  if (evidence.assessmentAnswerId) {
+    await inheritTaskResponseTags(evidence.id, evidence.assessmentAnswerId);
+    await afterAnswerFileAttached(evidence.assessmentAnswerId, ctx.userId);
+  }
 
   // Metered per panorama, not per byte: the bytes are already sampled into
   // GB-months by the storage meter, and counting them here too would bill the

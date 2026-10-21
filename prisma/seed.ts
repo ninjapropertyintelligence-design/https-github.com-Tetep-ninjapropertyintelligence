@@ -4,6 +4,7 @@ import { prisma } from "../src/lib/prisma";
 import { recalculatePropertyHealth } from "../src/lib/scoring";
 import { DEFAULT_CATEGORY_WEIGHTS } from "../src/lib/scoring-categories";
 import { getStorageProvider } from "../src/lib/storage";
+import { STANDARD_TAG_TYPES } from "../src/lib/tag-service";
 import {
   renderOrthomosaic,
   renderRoofDetail,
@@ -272,6 +273,7 @@ async function main() {
   // A field-survey template in tasks: each task is a unit of work answered
   // together, and the repeatable ones are answered once per thing found.
   const surveyTemplate = await seedSurveyTemplate(org.id);
+  await seedTags(org.id, surveyTemplate.id);
 
   console.log("Seeding pilot (deep) property...");
   let pilot = await prisma.property.findFirst({ where: { organizationId: org.id, customerPropertyId: "STORE-1052" } });
@@ -1000,4 +1002,39 @@ async function seedSurveyTemplate(organizationId: string) {
     }
   }
   return template;
+}
+
+/**
+ * The standard tag vocabulary, and default tags on the survey's tasks, so
+ * survey photos arrive in the media gallery already filed. Idempotent.
+ */
+async function seedTags(organizationId: string, surveyTemplateId: string) {
+  for (const [index, standard] of STANDARD_TAG_TYPES.entries()) {
+    const type =
+      (await prisma.tagType.findFirst({ where: { organizationId, name: standard.name } })) ??
+      (await prisma.tagType.create({ data: { organizationId, name: standard.name, position: index, allowMultiple: standard.allowMultiple ?? false } }));
+    for (const [position, name] of standard.values.entries()) {
+      const exists = await prisma.tagValue.findFirst({ where: { tagTypeId: type.id, name, propertyId: null } });
+      if (!exists) await prisma.tagValue.create({ data: { organizationId, tagTypeId: type.id, name, position } });
+    }
+  }
+  const valueId = async (typeName: string, name: string) =>
+    (await prisma.tagValue.findFirstOrThrow({ where: { organizationId, name, propertyId: null, tagType: { name: typeName } } })).id;
+  const defaults: Record<string, Array<[string, string]>> = {
+    Arrival: [["Area", "Exterior"], ["Type", "Survey"]],
+    "Electrical panel": [["Category", "Electrical"], ["Area", "Interior"], ["Type", "Survey"]],
+    "Rooftop HVAC unit": [["Category", "HVAC"], ["Level", "Roof"], ["Area", "Exterior"], ["Type", "Survey"]],
+    "Water heater": [["Category", "Plumbing"], ["Area", "Interior"], ["Type", "Survey"]],
+    Deficiency: [["Type", "Inspection"]],
+  };
+  const tasks = await prisma.assessmentTask.findMany({ where: { section: { templateId: surveyTemplateId } } });
+  for (const task of tasks) {
+    for (const [typeName, name] of defaults[task.name] ?? []) {
+      await prisma.assessmentTaskDefaultTag.upsert({
+        where: { taskId_tagValueId: { taskId: task.id, tagValueId: await valueId(typeName, name) } },
+        create: { taskId: task.id, tagValueId: await valueId(typeName, name) },
+        update: {},
+      });
+    }
+  }
 }

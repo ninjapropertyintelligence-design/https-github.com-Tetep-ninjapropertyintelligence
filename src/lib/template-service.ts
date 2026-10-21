@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/permissions";
 import type { SessionContext } from "@/lib/tenant-scope";
 import type { Prisma } from "@/generated/prisma/client";
 import { z } from "zod";
+import { resolveTagValues } from "@/lib/tag-service";
 
 /**
  * Assessment templates: sections of tasks of questions, as the builder edits
@@ -49,6 +50,8 @@ const taskSchema = z.object({
   isRequired: z.boolean().default(true),
   isRepeatable: z.boolean().default(false),
   isCompletable: z.boolean().default(true),
+  /** Organization-wide tag values every new response of this task starts with. */
+  defaultTagValueIds: z.array(z.string().min(1)).max(20).default([]),
   questions: z.array(questionSchema).min(1, "Every task needs at least one question").max(100),
 });
 
@@ -124,6 +127,27 @@ async function writeStructure(tx: Prisma.TransactionClient, templateId: string, 
       await tx.assessmentQuestion.createMany({
         data: task.questions.map((q, qIdx) => ({ ...questionRow(q, qIdx), sectionId: sectionRow.id, taskId: taskRow.id })),
       });
+      if (task.defaultTagValueIds.length > 0) {
+        await tx.assessmentTaskDefaultTag.createMany({
+          data: [...new Set(task.defaultTagValueIds)].map((tagValueId) => ({ taskId: taskRow.id, tagValueId })),
+        });
+      }
+    }
+  }
+}
+
+/**
+ * A template is used at every property, so its default tags must be
+ * organization-wide values — a property's own "Mezzanine" cannot be a
+ * default for a survey run everywhere.
+ */
+async function checkDefaultTags(ctx: SessionContext, def: TemplateDefinition) {
+  for (const task of def.sections.flatMap((s) => s.tasks)) {
+    try {
+      await resolveTagValues(ctx.organizationId, null, task.defaultTagValueIds);
+    } catch (err) {
+      if (err instanceof ApiError) throw new ApiError(400, `Task "${task.name}": ${err.message}`);
+      throw err;
     }
   }
 }
@@ -131,6 +155,7 @@ async function writeStructure(tx: Prisma.TransactionClient, templateId: string, 
 export async function createTemplate(ctx: SessionContext, input: unknown) {
   requireTemplateManager(ctx);
   const def = templateDefinitionSchema.parse(input);
+  await checkDefaultTags(ctx, def);
   const template = await prisma.$transaction(async (tx) => {
     const created = await tx.assessmentTemplate.create({
       data: { organizationId: ctx.organizationId, name: def.name, description: def.description || null },
@@ -153,6 +178,7 @@ export async function replaceTemplate(ctx: SessionContext, templateId: string, i
   requireTemplateManager(ctx);
   const template = await loadTemplate(ctx, templateId);
   const def = templateDefinitionSchema.parse(input);
+  await checkDefaultTags(ctx, def);
   const used = await prisma.assessment.count({ where: { templateId: template.id } });
   if (used > 0) {
     throw new ApiError(409, `This template has been used by ${used} assessment${used === 1 ? "" : "s"}; save your changes as a new version`);
@@ -211,7 +237,10 @@ export async function getTemplateDefinition(ctx: SessionContext, templateId: str
         orderBy: { position: "asc" },
         include: {
           questions: { where: { taskId: null }, orderBy: { position: "asc" } },
-          tasks: { orderBy: { position: "asc" }, include: { questions: { orderBy: { position: "asc" } } } },
+          tasks: {
+            orderBy: { position: "asc" },
+            include: { questions: { orderBy: { position: "asc" } }, defaultTags: { select: { tagValueId: true } } },
+          },
         },
       },
     },
@@ -236,6 +265,7 @@ export async function getTemplateDefinition(ctx: SessionContext, templateId: str
         isRequired: t.isRequired,
         isRepeatable: t.isRepeatable,
         isCompletable: t.isCompletable,
+        defaultTagValueIds: t.defaultTags.map((d) => d.tagValueId),
         questions: t.questions.map(toQuestion),
       })),
     })),
