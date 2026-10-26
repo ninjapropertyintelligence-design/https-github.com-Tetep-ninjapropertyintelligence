@@ -3,6 +3,7 @@ import { startAutoAnalysis } from "@/lib/ai/start-auto-analysis";
 import { withApiHandler } from "@/lib/api-utils";
 import { createEvidenceBatch } from "@/lib/evidence-service";
 import { z } from "zod";
+import { clientIdSchema } from "@/lib/client-id";
 
 const EVIDENCE_TYPES = [
   "PHOTO",
@@ -31,6 +32,7 @@ const schema = z.object({
         captureDate: z.coerce.date().nullish(),
         captureShotId: z.string().nullish(),
         repairStage: z.enum(["BEFORE", "AFTER"]).nullish(),
+        clientId: clientIdSchema.nullish(),
         latitude: z.number().nullish(),
         longitude: z.number().nullish(),
         metadata: z.record(z.string(), z.unknown()).default({}),

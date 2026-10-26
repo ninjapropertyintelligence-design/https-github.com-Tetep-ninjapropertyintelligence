@@ -120,6 +120,9 @@ enum AssessmentStatus {
   DRAFT
   IN_PROGRESS
   COMPLETED
+  /// Completed and handed to the client. Answers stay locked, as for COMPLETED;
+  /// everything that reads "finished assessments" counts both.
+  RELEASED
 }
 
 /// What kind of capture a shot position expects.
@@ -338,6 +341,7 @@ enum ImportEntityType {
   ASSETS
   ISSUES
   CONDITIONS
+  PROJECTS
 }
 
 enum ImportStatus {
@@ -410,6 +414,15 @@ model User {
   uploadedDocs           DocumentVersion[]       @relation("DocumentUploadedBy")
   conditionChanges       AssetConditionHistory[] @relation("ConditionChangedBy")
   assessmentsAsInspector Assessment[]            @relation("AssessmentInspector")
+  taskResponsesCompleted AssessmentTaskResponse[] @relation("TaskResponseCompletedBy")
+  projectMemberships     ProjectMember[]
+  createdOverlays        PropertyOverlay[]        @relation("OverlayCreatedBy")
+  collections            Collection[]             @relation("CollectionCreatedBy")
+  collectedItems         CollectionItem[]         @relation("CollectionItemAddedBy")
+  createdEmbeds          SpatialEmbed[]           @relation("SpatialEmbedCreatedBy")
+  flaggedEvidence        Evidence[]               @relation("EvidenceFlaggedBy")
+  evidenceComments       EvidenceComment[]
+  createdProjects        Project[]                @relation("ProjectCreatedBy")
   aiQueryLogs            AIQueryLog[]
   issueComments          IssueComment[]          @relation("IssueCommentAuthor")
   exteriorMarkers        ExteriorMarker[]        @relation("ExteriorMarkerCreatedBy")
@@ -595,6 +608,13 @@ model Organization {
   storageObjects       StorageObject[]
   captureJobs          CaptureJob[]
   invitations          Invitation[]
+  programs             Program[]
+  projects             Project[]
+  overlays             PropertyOverlay[]
+  collections          Collection[]
+  spatialEmbeds        SpatialEmbed[]
+  tagTypes             TagType[]
+  tagValues            TagValue[]
 
   @@index([slug])
 }
@@ -653,6 +673,9 @@ model Property {
   propertyType       String              @default("Retail")
   squareFootage      Int?
   yearBuilt          Int?
+  /// Which way the site faces, in degrees clockwise from true north (0-360).
+  /// Lets a capture team orient plans and 360° imagery to the building.
+  heading            Float?
   status             PropertyStatus      @default(ACTIVE)
   retentionStatus    DataRetentionStatus @default(ACTIVE)
   isDemoData         Boolean             @default(false)
@@ -682,6 +705,10 @@ model Property {
   documentChunks  DocumentChunk[]
   legalHolds      LegalHold[]
   usageRecords    UsageRecord[]
+  projects        Project[]
+  overlays        PropertyOverlay[]
+  spatialEmbeds   SpatialEmbed[]
+  tagValues       TagValue[]
 
   /**
    * Derived geography for spatial queries (§11). Prisma has no geography
@@ -734,9 +761,11 @@ model Floor {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  building Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  building Building          @relation(fields: [buildingId], references: [id], onDelete: Cascade)
   areas    Area[]
   assets   Asset[]
+  overlays PropertyOverlay[]
+  embeds   SpatialEmbed[]
 
   @@index([buildingId])
 }
@@ -1019,6 +1048,327 @@ model VendorConnection {
 }
 
 // ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+/// A kind of tag an organization describes its media by: Level, Area, Type,
+/// Category, or one of its own. Galleries filter by these.
+model TagType {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  position       Int      @default(0)
+  /// More than one value of this type on one photo, e.g. free "Tag" labels.
+  /// Off, a photo has at most one: one Level, one Area.
+  allowMultiple  Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  values       TagValue[]
+
+  @@unique([organizationId, name])
+}
+
+/// One value of a tag type, e.g. Level "Roof". Organization-wide when
+/// `propertyId` is null, or offered only at that property — a mezzanine
+/// that exists in one building.
+model TagValue {
+  id             String   @id @default(cuid())
+  organizationId String
+  tagTypeId      String
+  propertyId     String?
+  name           String
+  position       Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tagType      TagType                    @relation(fields: [tagTypeId], references: [id], onDelete: Cascade)
+  property     Property?                  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  evidence     EvidenceTag[]
+  responses    TaskResponseTag[]
+  taskDefaults AssessmentTaskDefaultTag[]
+
+  @@index([tagTypeId])
+  @@index([propertyId])
+}
+
+model EvidenceTag {
+  evidenceId String
+  tagValueId String
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  tagValue TagValue @relation(fields: [tagValueId], references: [id], onDelete: Cascade)
+
+  @@id([evidenceId, tagValueId])
+  @@index([tagValueId])
+}
+
+model TaskResponseTag {
+  taskResponseId String
+  tagValueId     String
+
+  taskResponse AssessmentTaskResponse @relation(fields: [taskResponseId], references: [id], onDelete: Cascade)
+  tagValue     TagValue               @relation(fields: [tagValueId], references: [id], onDelete: Cascade)
+
+  @@id([taskResponseId, tagValueId])
+  @@index([tagValueId])
+}
+
+/// Tags a template task gives each new response, which its photos then
+/// inherit: every "Electrical panel" photo arrives tagged Category
+/// Electrical without the inspector choosing it.
+model AssessmentTaskDefaultTag {
+  taskId     String
+  tagValueId String
+
+  task     AssessmentTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  tagValue TagValue       @relation(fields: [tagValueId], references: [id], onDelete: Cascade)
+
+  @@id([taskId, tagValueId])
+}
+
+/// A note on one photo — "this is the north unit, not the south".
+model EvidenceComment {
+  id         String   @id @default(cuid())
+  evidenceId String
+  authorId   String
+  body       String
+  createdAt  DateTime @default(now())
+
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  author   User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([evidenceId])
+}
+
+// ---------------------------------------------------------------------------
+// 3D embeds
+// ---------------------------------------------------------------------------
+
+enum SpatialEmbedKind {
+  /// A Matterport tour ("VR Showcase").
+  MATTERPORT
+  /// A hosted point-cloud viewer, e.g. Potree.
+  POINT_CLOUD
+  /// A BIM model viewer, e.g. Autodesk's. Opens in its own tab.
+  BIM
+  OTHER
+}
+
+/// A hosted 3D viewer for a property, linked rather than ingested: the tour,
+/// point cloud or model lives with the vendor that renders it, and this is
+/// where people find it. Matterport spaces connected through the API are a
+/// separate, richer path (`MatterportPropertyLink`).
+model SpatialEmbed {
+  id             String           @id @default(cuid())
+  organizationId String
+  propertyId     String
+  floorId        String?
+  kind           SpatialEmbedKind
+  name           String
+  url            String
+  capturedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floor        Floor?       @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("SpatialEmbedCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([propertyId])
+}
+
+// ---------------------------------------------------------------------------
+// Collections
+// ---------------------------------------------------------------------------
+
+enum CollectionVisibility {
+  /// Only the person who made it.
+  PRIVATE
+  /// Everyone in the organization — each still sees only the items on
+  /// properties they can access.
+  ORGANIZATION
+}
+
+/// A hand-picked set of photos and panoramas: "roof damage across the
+/// region", "before shots for the insurer". Items point at evidence; nothing
+/// is copied.
+model Collection {
+  id             String               @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  visibility     CollectionVisibility @default(PRIVATE)
+  createdById    String
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User             @relation("CollectionCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+  items        CollectionItem[]
+
+  @@index([organizationId, visibility])
+  @@index([createdById])
+}
+
+model CollectionItem {
+  id           String   @id @default(cuid())
+  collectionId String
+  evidenceId   String
+  addedById    String?
+  addedAt      DateTime @default(now())
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  evidence   Evidence   @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  addedBy    User?      @relation("CollectionItemAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+
+  @@unique([collectionId, evidenceId])
+  @@index([evidenceId])
+}
+
+// ---------------------------------------------------------------------------
+// Map overlays
+// ---------------------------------------------------------------------------
+
+enum OverlayKind {
+  /// An image laid over the map between four edges: an aerial, a plan sheet.
+  RASTER
+  /// GeoJSON drawn on the map: boundaries, zones, utility runs.
+  VECTOR
+}
+
+enum OverlayCategory {
+  AERIAL
+  SITE_PLAN
+  FLOOR_PLAN
+  /// Furniture, fixtures and equipment plan.
+  FFE_PLAN
+  REFLECTED_CEILING_PLAN
+  ROOF_PLAN
+  OTHER
+}
+
+/// A georeferenced layer for a property's site map.
+///
+/// A raster sits between north/south/east/west edges — an axis-aligned box.
+/// A plan sheet rotated relative to north has to be rotated before upload;
+/// a four-corner fit is not modelled.
+model PropertyOverlay {
+  id             String          @id @default(cuid())
+  organizationId String
+  propertyId     String
+  /// The level a floor-scoped plan shows. Null for site-wide layers.
+  floorId        String?
+  kind           OverlayKind
+  category       OverlayCategory @default(OTHER)
+  name           String
+  storageKey     String
+  mimeType       String
+  sizeBytes      Int?
+  north          Float?
+  south          Float?
+  east           Float?
+  west           Float?
+  /// 0-1. What the layer opens at; each viewer can change it on the map.
+  defaultOpacity Float           @default(0.8)
+  /// Shown when the map opens. Others start hidden.
+  isDefault      Boolean         @default(false)
+  /// When the imagery was flown or the plan issued.
+  capturedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  floor        Floor?       @relation(fields: [floorId], references: [id], onDelete: SetNull)
+  createdBy    User?        @relation("OverlayCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([propertyId, kind])
+}
+
+// ---------------------------------------------------------------------------
+// Programs and projects
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  NEW
+  IN_PROGRESS
+  /// Delivered work is visible to the client while the project stays open.
+  PUBLISHED
+  COMPLETED
+}
+
+/// A named body of work across many sites, e.g. "2026 Essential Solution".
+/// Groups projects, and is what the map filters by.
+model Program {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  projects     Project[]
+
+  @@unique([organizationId, name])
+}
+
+/// One engagement at one property: a capture, a survey, a renovation. Its
+/// assessments, documents and people are what the project tabs show.
+model Project {
+  id             String        @id @default(cuid())
+  organizationId String
+  programId      String?
+  propertyId     String
+  name           String
+  /// Free text: "Full Capture", "Survey Only".
+  projectType    String?
+  description    String?
+  status         ProjectStatus @default(NEW)
+  startDate      DateTime?
+  endDate        DateTime?
+  /// Set when the project is put away: hidden from lists by default, with
+  /// everything on it kept. Clearing it brings the project back.
+  archivedAt     DateTime?
+  createdById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  program      Program?        @relation(fields: [programId], references: [id], onDelete: SetNull)
+  property     Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdBy    User?           @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  members      ProjectMember[]
+  documents    Document[]
+  assessments  Assessment[]
+
+  @@index([organizationId, status])
+  @@index([propertyId])
+  @@index([programId])
+}
+
+/// Who is on a project's team. A roster, not an access grant: what a person
+/// can open is still decided by their role and property grants.
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  /// Off when someone has rotated off the project; kept for the record.
+  isActive  Boolean  @default(true)
+  addedAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
 // Assessments
 // ---------------------------------------------------------------------------
 
@@ -1045,14 +1395,74 @@ model AssessmentSection {
   position   Int    @default(0)
 
   template  AssessmentTemplate   @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  tasks     AssessmentTask[]
   questions AssessmentQuestion[]
 
   @@index([templateId])
 }
 
+/// A unit of field work inside a section ("Electrical panel", "Roof drain"),
+/// grouping the questions answered together. A repeatable task is answered
+/// once per thing found — three drains, three responses — which a flat
+/// question list cannot express.
+model AssessmentTask {
+  id            String  @id @default(cuid())
+  sectionId     String
+  name          String
+  description   String?
+  position      Int     @default(0)
+  /// Counts toward "required tasks complete" on the assessment's progress.
+  isRequired    Boolean @default(true)
+  /// May be answered more than once in one assessment.
+  isRepeatable  Boolean @default(false)
+  /// A person marks each response complete; otherwise a response is complete
+  /// as soon as its required questions are answered.
+  isCompletable Boolean @default(true)
+
+  section     AssessmentSection        @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  questions   AssessmentQuestion[]
+  responses   AssessmentTaskResponse[]
+  defaultTags AssessmentTaskDefaultTag[]
+
+  @@index([sectionId])
+}
+
+/// One answering of a task in one assessment. `instance` numbers repeats of a
+/// repeatable task from 1; a non-repeatable task only ever has instance 1.
+model AssessmentTaskResponse {
+  id            String    @id @default(cuid())
+  assessmentId  String
+  taskId        String
+  instance      Int       @default(1)
+  /// What this repeat is of, e.g. "North drain", so repeats can be told apart.
+  label         String?
+  /// An id the capturing device made up, so a retried create returns this
+  /// row instead of adding a second response. See `clientId` on Evidence.
+  clientId      String?
+  isComplete    Boolean   @default(false)
+  completedAt   DateTime?
+  completedById String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  assessment  Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  task        AssessmentTask     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  completedBy User?              @relation("TaskResponseCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  answers     AssessmentAnswer[]
+  tags        TaskResponseTag[]
+
+  @@unique([assessmentId, taskId, instance])
+  @@unique([assessmentId, clientId])
+  @@index([assessmentId])
+}
+
 model AssessmentQuestion {
   id         String                 @id @default(cuid())
   sectionId  String
+  /// The task this question is answered under. Null for a question asked once
+  /// per assessment directly in its section, as every question was before
+  /// tasks existed.
+  taskId     String?
   prompt     String
   type       AssessmentQuestionType
   position   Int                    @default(0)
@@ -1061,9 +1471,11 @@ model AssessmentQuestion {
   category   String? // maps to scoring category, e.g. "Roof"
 
   section AssessmentSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  task    AssessmentTask?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
   answers AssessmentAnswer[]
 
   @@index([sectionId])
+  @@index([taskId])
 }
 
 model Assessment {
@@ -1072,6 +1484,8 @@ model Assessment {
   templateId     String
   propertyId     String
   inspectorId    String
+  /// The project this assessment is part of, when it was run for one.
+  projectId      String?
   status         AssessmentStatus @default(DRAFT)
   scheduledFor   DateTime?
   startedAt      DateTime?
@@ -1079,22 +1493,33 @@ model Assessment {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  template  AssessmentTemplate @relation(fields: [templateId], references: [id])
-  property  Property           @relation(fields: [propertyId], references: [id], onDelete: Cascade)
-  inspector User               @relation("AssessmentInspector", fields: [inspectorId], references: [id])
-  answers   AssessmentAnswer[]
-  evidence  Evidence[]
+  releasedAt DateTime?
+
+  template      AssessmentTemplate       @relation(fields: [templateId], references: [id])
+  property      Property                 @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  inspector     User                     @relation("AssessmentInspector", fields: [inspectorId], references: [id])
+  project       Project?                 @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  answers       AssessmentAnswer[]
+  taskResponses AssessmentTaskResponse[]
+  evidence      Evidence[]
+  reports       Document[]
 
   @@index([organizationId])
   @@index([propertyId])
   @@index([status])
   @@index([inspectorId])
+  @@index([projectId])
 }
 
 model AssessmentAnswer {
   id             String   @id @default(cuid())
   assessmentId   String
   questionId     String
+  /// Which answering of the question's task this belongs to. Null exactly
+  /// when the question has no task.
+  taskResponseId String?
+  /// The capturing device's own id for this answer; see `clientId` on Evidence.
+  clientId       String?
   assetId        String?
   textValue      String?
   numberValue    Float?
@@ -1104,13 +1529,16 @@ model AssessmentAnswer {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  assessment Assessment         @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  question   AssessmentQuestion @relation(fields: [questionId], references: [id])
-  asset      Asset?             @relation(fields: [assetId], references: [id], onDelete: SetNull)
-  evidence   Evidence[]
+  assessment   Assessment              @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  question     AssessmentQuestion      @relation(fields: [questionId], references: [id])
+  taskResponse AssessmentTaskResponse? @relation(fields: [taskResponseId], references: [id], onDelete: Cascade)
+  asset        Asset?                  @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  evidence     Evidence[]
 
-  @@unique([assessmentId, questionId, assetId])
+  @@unique([assessmentId, questionId, assetId, taskResponseId])
+  @@unique([assessmentId, clientId])
   @@index([assessmentId])
+  @@index([taskResponseId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,6 +1562,18 @@ model Evidence {
   captureShotId String?
   /// Before or after, when this photo is proof of a repair on `issueId`.
   repairStage  RepairPhotoStage?
+  /// Marked for attention. Phygii-style galleries filter on it; what it
+  /// means is each organization's convention, so it is a plain flag.
+  isFlagged    Boolean   @default(false)
+  flaggedAt    DateTime?
+  flaggedById  String?
+  /// The medium (about 1600px) rendition, made on first request beside the
+  /// small one in `thumbnailKey`. Recorded so retention deletes it too.
+  previewKey   String?
+  /// An id the capturing device made up before upload. A device that lost
+  /// its connection retries with the same id and gets this row back, rather
+  /// than registering the photo twice — the groundwork for offline capture.
+  clientId     String?
   /// The capture-job site this was delivered against, when a subcontractor
   /// delivered it. Until that site is ACCEPTED the record is visible only to
   /// reviewers and the vendor — see `captureReviewWhere`. Null for anything
@@ -1165,6 +1605,10 @@ model Evidence {
   aiFindings           AIFinding[]
   analysisJob          PhotoAnalysisJob?
   exteriorMarkers      ExteriorMarker[]
+  collectionItems      CollectionItem[]
+  tags                 EvidenceTag[]
+  comments             EvidenceComment[]
+  flaggedBy            User?             @relation("EvidenceFlaggedBy", fields: [flaggedById], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([propertyId])
@@ -1173,6 +1617,7 @@ model Evidence {
   @@index([captureShotId])
   @@index([captureJobSiteId])
   @@index([type])
+  @@unique([organizationId, clientId])
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,8 +1630,17 @@ model Document {
   propertyId     String?
   assetId        String?
   issueId        String?
+  /// The project this document was delivered for, e.g. a site survey's plans.
+  projectId      String?
+  /// The assessment this is the report of. Each generated report is a new
+  /// version of the one document, so its history is the report history.
+  assessmentId   String?
   title          String
   documentType   DocumentType @default(OTHER)
+  /// Listed among the property's key documents on its Overview.
+  showInInfoTab      Boolean  @default(true)
+  /// Offered to the field as reference material on this property's assessments.
+  availableInCapture Boolean  @default(true)
   tags           Json         @default("[]")
   retentionClass String       @default("standard")
   // Text extraction/indexing state (spec §15 document intelligence foundation).
@@ -1202,11 +1656,15 @@ model Document {
   property     Property?         @relation(fields: [propertyId], references: [id], onDelete: SetNull)
   asset        Asset?            @relation(fields: [assetId], references: [id], onDelete: SetNull)
   issue        Issue?            @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  project      Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  assessment   Assessment?       @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
   versions     DocumentVersion[]
   chunks       DocumentChunk[]
 
   @@index([organizationId])
   @@index([propertyId])
+  @@index([projectId])
+  @@index([assessmentId])
   @@index([assetId])
   @@index([documentType])
 }

@@ -1,7 +1,7 @@
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { StatTile } from "@/components/ui/StatTile";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { formatCents, formatDate } from "@/lib/format";
+import { formatCents, formatDate, formatHeading } from "@/lib/format";
 import { displayBandFor, LOW_CONFIDENCE_THRESHOLD } from "@/lib/scoring-categories";
 import { CategoryBreakdownEntry } from "@/lib/scoring";
 import { ScoringCategory } from "@/lib/scoring-categories";
@@ -15,7 +15,7 @@ export function OverviewTab({
   lastExteriorCapture,
   warnings,
 }: {
-  property: { id: string; name: string; customerPropertyId: string | null; addressLine1: string; city: string; state: string; squareFootage: number | null; yearBuilt: number | null };
+  property: { id: string; name: string; customerPropertyId: string | null; addressLine1: string; city: string; state: string; squareFootage: number | null; yearBuilt: number | null; latitude: number | null; longitude: number | null; heading: number | null };
   health: {
     healthScore: number;
     riskScore: number;
@@ -105,6 +105,11 @@ export function OverviewTab({
             <DetailRow label="Address" value={`${property.addressLine1}, ${property.city}, ${property.state}`} />
             <DetailRow label="Square Footage" value={property.squareFootage ? property.squareFootage.toLocaleString() : "—"} />
             <DetailRow label="Year Built" value={property.yearBuilt ?? "—"} />
+            <DetailRow
+              label="Coordinates"
+              value={property.latitude !== null && property.longitude !== null ? `${property.latitude.toFixed(6)}, ${property.longitude.toFixed(6)}` : "—"}
+            />
+            <DetailRow label="Heading" value={formatHeading(property.heading)} />
             <DetailRow label="Last Assessment" value={formatDate(lastAssessment)} />
             <DetailRow label="Last Interior Capture" value={formatDate(lastInteriorCapture)} />
             <DetailRow label="Last Exterior Capture" value={formatDate(lastExteriorCapture)} />

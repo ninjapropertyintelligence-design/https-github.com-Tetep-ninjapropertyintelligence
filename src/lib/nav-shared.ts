@@ -25,6 +25,8 @@ export type NavIconKey =
   | "asset"
   | "issue"
   | "assessment"
+  | "project"
+  | "collection"
   | "import"
   | "capture"
   | "report"

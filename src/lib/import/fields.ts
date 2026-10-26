@@ -10,7 +10,7 @@ import { normalizeName } from "@/lib/import/normalize";
  * the UI renders its mapping dropdown straight from this list.
  */
 
-export type ImportEntity = "PROPERTIES" | "ASSETS";
+export type ImportEntity = "PROPERTIES" | "ASSETS" | "PROJECTS";
 
 export interface CoercionResult {
   ok: boolean;
@@ -182,6 +182,7 @@ export const PROPERTY_FIELDS: TargetField[] = [
   { key: "propertyType", label: "Property type", required: false, aliases: ["property type", "type", "asset class", "category"], coerce: text(60) },
   { key: "squareFootage", label: "Square footage", required: false, aliases: ["square footage", "sq ft", "sqft", "square feet", "size", "gla", "area"], coerce: integer(0, 100_000_000) },
   { key: "yearBuilt", label: "Year built", required: false, aliases: ["year built", "built", "construction year", "year"], coerce: integer(1600, CURRENT_YEAR + 5) },
+  { key: "heading", label: "Heading (degrees)", required: false, aliases: ["heading", "bearing", "orientation", "facing"], help: "Degrees clockwise from north that the site faces, 0-360.", coerce: decimal(0, 360) },
   { key: "portfolio", label: "Portfolio", required: false, aliases: ["portfolio", "portfolio name", "group"], help: "Matched to an existing portfolio by name. Rows without one go to the portfolio chosen for this import.", coerce: text(200) },
   { key: "region", label: "Region", required: false, aliases: ["region", "region name", "market", "district", "division"], coerce: text(200) },
 ];
@@ -221,7 +222,54 @@ export const ASSET_FIELDS: TargetField[] = [
   { key: "replacementCost", label: "Replacement cost", required: false, aliases: ["replacement cost", "replacement value", "cost", "value", "rcv"], help: "Currency amount; stored in cents.", coerce: money },
 ];
 
+/**
+ * Project status, accepted the way a spreadsheet writes it — "In Progress",
+ * "in-progress", "IN_PROGRESS" — and stored as the enum value. A blank cell
+ * leaves new projects at New.
+ */
+const PROJECT_STATUS_WORDS: Record<string, string> = {
+  new: "NEW",
+  "not started": "NEW",
+  "in progress": "IN_PROGRESS",
+  active: "IN_PROGRESS",
+  published: "PUBLISHED",
+  completed: "COMPLETED",
+  complete: "COMPLETED",
+  done: "COMPLETED",
+};
+const projectStatus = (raw: string): CoercionResult => {
+  const key = raw.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (key === "") return { ok: true, value: null };
+  const value = PROJECT_STATUS_WORDS[key];
+  return value ? { ok: true, value } : { ok: false, error: `"${raw}" is not a status (New, In Progress, Published, Completed)` };
+};
+
+export const PROJECT_FIELDS: TargetField[] = [
+  {
+    key: "propertyRef",
+    label: "Property (ID or name)",
+    required: true,
+    aliases: ["property", "property id", "customer property id", "store number", "store", "site", "location", "property name"],
+    help: "Matched to a property by customer property ID first, then by name.",
+    coerce: (raw) => (raw.trim() === "" ? { ok: false, error: "Required" } : text(200)(raw)),
+  },
+  {
+    key: "name",
+    label: "Project name",
+    required: true,
+    aliases: ["project name", "project", "name", "title"],
+    coerce: (raw) => (raw.trim() === "" ? { ok: false, error: "Required" } : text(200)(raw)),
+  },
+  { key: "program", label: "Program", required: false, aliases: ["program", "program name", "programme", "initiative"], help: "Matched to an existing program by name.", coerce: text(200) },
+  { key: "projectType", label: "Type", required: false, aliases: ["project type", "type", "capture scope", "scope"], coerce: text(100) },
+  { key: "status", label: "Status", required: false, aliases: ["status", "project status", "state"], coerce: projectStatus },
+  { key: "startDate", label: "Start date", required: false, aliases: ["start date", "start", "begins", "start on"], coerce: date },
+  { key: "endDate", label: "End date", required: false, aliases: ["end date", "end", "completion date", "due date", "finish date"], coerce: date },
+  { key: "description", label: "Description", required: false, aliases: ["description", "notes", "details"], coerce: text(4000) },
+];
+
 export function fieldsFor(entity: ImportEntity): TargetField[] {
+  if (entity === "PROJECTS") return PROJECT_FIELDS;
   return entity === "PROPERTIES" ? PROPERTY_FIELDS : ASSET_FIELDS;
 }
 
