@@ -22,7 +22,48 @@ const MAX_FOV = 90;
  * longer a faithful view from where the photo was taken. Zoom changes the
  * field of view instead of the camera's position, for the same reason.
  */
-export function Photo360Viewer({ imageUrl, label }: { imageUrl: string; label: string }) {
+/**
+ * Loads the panorama at full resolution. A panorama too big for one response
+ * arrives as horizontal strips, which are drawn one under the other onto a
+ * canvas to rebuild the original image pixel for pixel. Only a device whose
+ * GPU cannot hold a texture that large gets it scaled to the most it can.
+ */
+async function loadPanorama(urls: string[]): Promise<THREE.Texture> {
+  const strips = await Promise.all(
+    urls.map(
+      (url) =>
+        new Promise<HTMLImageElement>((resolve, reject) => {
+          const img = new Image();
+          img.decoding = "async";
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error(url));
+          img.src = url;
+        }),
+    ),
+  );
+  const width = strips[0].naturalWidth;
+  const height = strips.reduce((sum, img) => sum + img.naturalHeight, 0);
+  const gl = document.createElement("canvas").getContext("webgl");
+  const maxSize = (gl?.getParameter(gl.MAX_TEXTURE_SIZE) as number | undefined) ?? 4096;
+  const scale = Math.min(1, maxSize / width, maxSize / height);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  const context = canvas.getContext("2d")!;
+  context.imageSmoothingQuality = "high";
+  let top = 0;
+  for (const img of strips) {
+    const h = img.naturalHeight * scale;
+    context.drawImage(img, 0, top, canvas.width, h);
+    top += h;
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.generateMipmaps = true;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  return texture;
+}
+
+export function Photo360Viewer({ imageUrls, label }: { imageUrls: string[]; label: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -54,8 +95,7 @@ export function Photo360Viewer({ imageUrl, label }: { imageUrl: string; label: s
     // the camera and its target to have an orientation at all.
     camera.position.set(0, 0, 0.1);
 
-    new THREE.TextureLoader().load(
-      imageUrl,
+    loadPanorama(imageUrls).then(
       (loaded) => {
         if (disposed) {
           loaded.dispose();
@@ -104,7 +144,6 @@ export function Photo360Viewer({ imageUrl, label }: { imageUrl: string; label: s
         render();
         setStatus("ready");
       },
-      undefined,
       () => {
         if (disposed) return;
         // TextureLoader's error carries no useful detail, so this says what
@@ -136,7 +175,10 @@ export function Photo360Viewer({ imageUrl, label }: { imageUrl: string; label: s
         renderer.domElement.remove();
       }
     };
-  }, [imageUrl]);
+    // The URLs are the identity of the panorama; joined so a new array with
+    // the same contents does not reload it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageUrls.join("|")]);
 
   return (
     <div className="relative h-full w-full overflow-hidden rounded-xl bg-shell">

@@ -411,6 +411,7 @@ async function SiteMapTab({
         lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
         totalMedia={data.totalMedia}
         layers={data.layers}
+        canAnnotate={can(ctx, "canManageProperties")}
         overlays={overlays.map((o) => ({
           id: o.id,
           kind: o.kind,

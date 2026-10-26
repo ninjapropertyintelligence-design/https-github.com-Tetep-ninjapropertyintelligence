@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
 import { SessionContext, captureReviewWhere, propertyScopeWhere } from "@/lib/tenant-scope";
+import { ringCentre, type LngLat } from "@/lib/annotation-validation";
 
 /**
  * The per-site "what has been captured here" model behind the Site Map tab.
  *
- * Every layer is counted. Only some can be *placed*: `DroneImage` and
- * `Evidence` carry latitude/longitude, and nothing else in the schema does.
+ * Every layer is counted. Only some can be *placed*: `DroneImage`,
+ * `Evidence` and the points and areas people draw (`SiteAnnotation`) carry a
+ * position, and nothing else in the schema does.
  * A layer without coordinates is reported with `mapped: false` and an empty
  * marker list rather than being pinned at the property centroid — dropping a
  * document or an asset on the building's coordinate would invent a position
@@ -22,6 +24,15 @@ export interface SiteMarker {
   label: string;
 }
 
+/** A drawn area of interest, as the map needs it. */
+export interface SiteArea {
+  id: string;
+  label: string;
+  description: string | null;
+  color: string;
+  ring: LngLat[];
+}
+
 export interface SiteLayer {
   key: string;
   label: string;
@@ -31,6 +42,8 @@ export interface SiteLayer {
   /** True when this layer's records carry coordinates and can be drawn. */
   mapped: boolean;
   markers: SiteMarker[];
+  /** Polygons, for the areas-of-interest layer only. */
+  areas?: SiteArea[];
   /** Tab on the property page that owns this layer, for the count to link to. */
   href: string | null;
 }
@@ -112,7 +125,7 @@ export async function getSiteMapData(
   // branching every call site.
   const captureFilter = { dataset: { captureId: selected?.id ?? "__none__" } };
 
-  const [droneImages, evidence, outputs, vrTours, assets, openIssues, documents, assessments] =
+  const [droneImages, evidence, outputs, vrTours, assets, openIssues, documents, assessments, embeds, annotations] =
     await Promise.all([
       prisma.droneImage.findMany({
         where: captureFilter,
@@ -134,9 +147,20 @@ export async function getSiteMapData(
       prisma.issue.count({ where: { propertyId, status: { notIn: ["RESOLVED", "CLOSED"] } } }),
       prisma.document.count({ where: { propertyId } }),
       prisma.assessment.count({ where: { propertyId } }),
+      prisma.spatialEmbed.groupBy({
+        by: ["kind"],
+        where: { propertyId, organizationId: ctx.organizationId },
+        _count: { _all: true },
+      }),
+      prisma.siteAnnotation.findMany({
+        where: { propertyId, organizationId: ctx.organizationId },
+        orderBy: { title: "asc" },
+        select: { id: true, kind: true, title: true, description: true, color: true, latitude: true, longitude: true, polygon: true },
+      }),
     ]);
 
   const outputCount = (type: string) => outputs.find((o) => o.outputType === type)?._count._all ?? 0;
+  const embedCount = (kind: string) => embeds.find((e) => e.kind === kind)?._count._all ?? 0;
 
   /** Keeps a record out of the marker list unless it has BOTH coordinates. */
   function placed<T extends { id: string; latitude: number | null; longitude: number | null }>(
@@ -157,64 +181,130 @@ export async function getSiteMapData(
   // count. They are the only capture kind with BOTH coordinates and a viewer,
   // so their pins open the thing they point at.
   const panoramas = evidence.filter((e) => e.type === "IMAGE_360");
-  const otherEvidence = evidence.filter((e) => e.type !== "IMAGE_360");
   const panoramaMarkers = placed(panoramas, () => "360° panorama");
-  const evidenceMarkers = placed(otherEvidence, (r) => r.type.replace(/_/g, " "));
+  // HD images are aerial: the selected flight's raw drone photos, plus drone
+  // imagery uploaded as evidence. Project photos are the ground-level photos
+  // people take on site; videos are their own layer.
+  const droneEvidence = evidence.filter((e) => e.type === "DRONE_IMAGE");
+  const photos = evidence.filter((e) => e.type === "PHOTO");
+  const videos = evidence.filter((e) => e.type === "VIDEO");
+  const hdMarkers = [...droneMarkers, ...placed(droneEvidence, () => "Drone image")];
+  const evidenceMarkers = placed(photos, () => "Photo");
+  const videoMarkers = placed(videos, () => "Video");
+
+  const points = annotations.filter((a) => a.kind === "POINT");
+  const pointMarkers = placed(points, (r) => r.title);
+  const areas: SiteArea[] = annotations
+    .filter((a) => a.kind === "AREA" && Array.isArray(a.polygon) && a.polygon.length >= 3)
+    .map((a) => ({ id: a.id, label: a.title, description: a.description, color: a.color, ring: a.polygon as LngLat[] }));
 
   const layers: SiteLayer[] = [
     {
       key: "drone-photos",
-      label: "Drone Photos",
-      color: "#2453ff",
-      count: droneImages.length,
+      label: "HD Images",
+      color: "#9333ea",
+      count: droneImages.length + droneEvidence.length,
       // A layer is only "mapped" when something in it actually landed a pin.
       // Reporting mapped:true for a set of photos that all lack EXIF geotags
       // would offer a toggle that visibly does nothing.
-      mapped: droneMarkers.length > 0,
-      markers: droneMarkers,
+      mapped: hdMarkers.length > 0,
+      markers: hdMarkers,
       href: tab("exterior"),
     },
     {
       key: "evidence-photos",
-      label: "Evidence Photos",
-      color: "#e2691a",
-      count: otherEvidence.length,
+      label: "Project Photos",
+      color: "#e2a33a",
+      count: photos.length,
       mapped: evidenceMarkers.length > 0,
       markers: evidenceMarkers,
-      href: tab("issues"),
+      href: tab("media"),
     },
     {
       key: "360-images",
-      label: "360° Panoramas",
-      color: "#c026d3",
+      label: "360 Images",
+      color: "#38a3f1",
       count: panoramas.length,
       mapped: panoramaMarkers.length > 0,
       markers: panoramaMarkers,
       href: tab("360"),
     },
     {
-      key: "vr-tours",
-      label: "3DVR Tours",
-      color: "#12a594",
-      count: vrTours,
-      mapped: false,
-      markers: [],
-      href: tab("interior"),
+      key: "project-videos",
+      label: "Project Videos",
+      color: "#c53030",
+      count: videos.length,
+      mapped: videoMarkers.length > 0,
+      markers: videoMarkers,
+      href: tab("media"),
     },
     {
-      key: "3d-models",
-      label: "3D Models",
-      color: "#1a9c5c",
-      count: outputCount("MESH_3D"),
+      key: "video-embeds",
+      label: "Video Embeds",
+      color: "#2f855a",
+      count: embedCount("VIDEO"),
       mapped: false,
       markers: [],
       href: tab("digital-twin"),
     },
     {
+      key: "3d-models",
+      label: "3D Models",
+      color: "#1a9c5c",
+      // Drone meshes for the selected flight, and BIM models linked as embeds.
+      count: outputCount("MESH_3D") + embedCount("BIM"),
+      mapped: false,
+      markers: [],
+      href: tab("digital-twin"),
+    },
+    {
+      key: "vr-tours",
+      label: "3DVR Tours",
+      color: "#12a594",
+      // Connected Matterport spaces and Matterport tours linked as embeds.
+      count: vrTours + embedCount("MATTERPORT"),
+      mapped: false,
+      markers: [],
+      href: tab("digital-twin"),
+    },
+    {
+      key: "custom-embeds",
+      label: "Custom Embeds",
+      color: "#276749",
+      count: embedCount("OTHER"),
+      mapped: false,
+      markers: [],
+      href: tab("digital-twin"),
+    },
+    {
+      key: "points-of-interest",
+      label: "Points of Interest",
+      color: "#22c55e",
+      count: points.length,
+      mapped: pointMarkers.length > 0,
+      markers: pointMarkers,
+      href: null,
+    },
+    {
+      key: "areas-of-interest",
+      label: "Areas of Interest",
+      color: "#16a34a",
+      count: areas.length,
+      mapped: areas.length > 0,
+      // Each area also gets a pin at its centre, so it can be found and
+      // clicked like any other marker.
+      markers: areas.map((a) => {
+        const [longitude, latitude] = ringCentre(a.ring);
+        return { id: a.id, latitude, longitude, label: a.label };
+      }),
+      areas,
+      href: null,
+    },
+    {
       key: "point-clouds",
       label: "Point Clouds",
       color: "#7c5cff",
-      count: outputCount("POINT_CLOUD"),
+      count: outputCount("POINT_CLOUD") + embedCount("POINT_CLOUD"),
       mapped: false,
       markers: [],
       href: tab("digital-twin"),
@@ -283,6 +373,9 @@ export async function getSiteMapData(
     "drone-photos",
     "evidence-photos",
     "360-images",
+    "project-videos",
+    "video-embeds",
+    "custom-embeds",
     "vr-tours",
     "3d-models",
     "point-clouds",

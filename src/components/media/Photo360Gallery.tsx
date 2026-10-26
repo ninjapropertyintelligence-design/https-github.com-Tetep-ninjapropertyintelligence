@@ -11,7 +11,8 @@ export interface Panorama360Option {
   capturedAt: string | null;
   latitude: number | null;
   longitude: number | null;
-  imageUrl: string;
+  /** The panorama at full resolution: one URL, or its strips top to bottom. */
+  imageUrls: string[];
 }
 
 /**
@@ -75,7 +76,7 @@ export function Photo360Gallery({
 
       <div className="flex flex-col gap-4 lg:flex-row">
         <div className="h-[560px] min-w-0 flex-1">
-          {selected ? <Photo360Viewer imageUrl={selected.imageUrl} label={selected.label} /> : null}
+          {selected ? <Photo360Viewer imageUrls={selected.imageUrls} label={selected.label} /> : null}
         </div>
 
         <ul className="w-full shrink-0 space-y-2 lg:w-[300px]">

@@ -3,6 +3,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-error";
 import { captureReviewWhere, propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { FEATURE_FLAGS, isFeatureEnabled } from "@/lib/feature-flags";
+import { panoramaStripUrls } from "@/lib/media-renditions";
 
 /**
  * 360 panoramas for one property.
@@ -35,7 +36,8 @@ export interface Panorama360 {
    * behind this path streams the bytes from this origin and sets the
    * recorded content type.
    */
-  imageUrl: string;
+  /** Full resolution: the original, or its strips when too big to send whole. */
+  imageUrls: string[];
 }
 
 export interface Property360Data {
@@ -76,7 +78,7 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
     // the most recent view of the site. Undated rows sort last rather than
     // first, which is what NULL would otherwise do.
     orderBy: [{ captureDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-    select: { id: true, storageKey: true, captureDate: true, latitude: true, longitude: true },
+    select: { id: true, storageKey: true, captureDate: true, latitude: true, longitude: true, sizeBytes: true },
     take: 200,
   });
 
@@ -86,7 +88,7 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
     capturedAt: row.captureDate,
     latitude: row.latitude,
     longitude: row.longitude,
-    imageUrl: `/api/v1/evidence/${row.id}/content`,
+    imageUrls: panoramaStripUrls(row.id, row.sizeBytes),
   }));
 
   return {
