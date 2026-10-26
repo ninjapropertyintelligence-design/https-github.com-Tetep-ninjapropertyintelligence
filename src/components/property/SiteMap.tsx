@@ -6,6 +6,13 @@ import { useRouter } from "next/navigation";
 import "mapbox-gl/dist/mapbox-gl.css";
 import type { SiteLayer, SiteMarker } from "@/lib/site-map";
 import { boundsToCorners } from "@/lib/overlay-validation";
+import { apiRequest } from "@/components/settings/api-request";
+import type { LngLat } from "@/lib/annotation-validation";
+
+const AREAS_KEY = "areas-of-interest";
+const DRAFT_SOURCE = "annotation-draft";
+
+type DrawMode = "POINT" | "AREA" | null;
 
 /** A map overlay as the site map needs it. Edges are null for a vector layer. */
 export interface SiteOverlayOption {
@@ -56,6 +63,8 @@ export interface SiteMapProps {
   totalMedia: number;
   layers: SiteLayer[];
   overlays?: SiteOverlayOption[];
+  /** Whether this viewer may add and remove points and areas of interest. */
+  canAnnotate?: boolean;
 }
 
 function formatCaptureDate(iso: string | null): string {
@@ -83,6 +92,7 @@ export function SiteMap({
   totalMedia,
   layers,
   overlays = [],
+  canAnnotate = false,
 }: SiteMapProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -101,6 +111,22 @@ export function SiteMap({
   const [overlayOpacity, setOverlayOpacity] = useState<Record<string, number>>(() =>
     Object.fromEntries(overlays.map((o) => [o.id, o.defaultOpacity])),
   );
+
+  // Drawing a point or area of interest. The mode lives in a ref too, because
+  // the map's click handler is bound once when the map loads.
+  const [mode, setMode] = useState<DrawMode>(null);
+  const modeRef = useRef<DrawMode>(null);
+  const [draft, setDraft] = useState<LngLat[]>([]);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftNotes, setDraftNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [drawError, setDrawError] = useState<string | null>(null);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  const pointsLayer = layers.find((l) => l.key === "points-of-interest");
+  const areasLayer = layers.find((l) => l.key === AREAS_KEY);
 
   const hasSiteCoords = property.latitude !== null && property.longitude !== null;
   const canRenderMap = !!token && hasSiteCoords;
@@ -189,6 +215,40 @@ export function SiteMap({
           }
         }
 
+        // Areas of interest: filled polygons under the pins.
+        const areas = layers.find((l) => l.key === AREAS_KEY)?.areas ?? [];
+        if (areas.length > 0) {
+          map.addSource(AREAS_KEY, {
+            type: "geojson",
+            data: {
+              type: "FeatureCollection",
+              features: areas.map((a) => ({
+                type: "Feature" as const,
+                properties: { color: a.color },
+                geometry: { type: "Polygon" as const, coordinates: [[...a.ring, a.ring[0]]] },
+              })),
+            },
+          });
+          map.addLayer({ id: `${AREAS_KEY}-fill`, type: "fill", source: AREAS_KEY, paint: { "fill-color": ["get", "color"], "fill-opacity": 0.25 } });
+          map.addLayer({ id: `${AREAS_KEY}-line`, type: "line", source: AREAS_KEY, paint: { "line-color": ["get", "color"], "line-width": 2 } });
+        }
+
+        // What is being drawn right now: corners as dots joined by a line.
+        map.addSource(DRAFT_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+        map.addLayer({ id: `${DRAFT_SOURCE}-line`, type: "line", source: DRAFT_SOURCE, paint: { "line-color": "#facc15", "line-width": 2, "line-dasharray": [2, 1] } });
+        map.addLayer({
+          id: `${DRAFT_SOURCE}-point`,
+          type: "circle",
+          source: DRAFT_SOURCE,
+          paint: { "circle-color": "#facc15", "circle-radius": 5, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 },
+        });
+        map.on("click", (e) => {
+          const current = modeRef.current;
+          if (!current) return;
+          const corner: LngLat = [e.lngLat.lng, e.lngLat.lat];
+          setDraft((prev) => (current === "POINT" ? [corner] : [...prev, corner]));
+        });
+
         for (const layer of mappable) {
           const created = layer.markers.map((m: SiteMarker) => {
             const el = document.createElement("div");
@@ -224,7 +284,62 @@ export function SiteMap({
       mapRef.current?.remove();
       mapRef.current = null;
     };
+    // `layers` is read for the areas, which change exactly when `mappable` does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canRenderMap, token, property.latitude, property.longitude, property.name, mappable, overlays]);
+
+  // Redraw the draft whenever a corner is added.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    const source = map.getSource(DRAFT_SOURCE) as import("mapbox-gl").GeoJSONSource | undefined;
+    if (!source) return;
+    const features: GeoJSON.Feature[] = draft.map((c) => ({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: c } }));
+    if (mode === "AREA" && draft.length > 1) {
+      features.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: draft.length > 2 ? [...draft, draft[0]] : draft },
+      });
+    }
+    source.setData({ type: "FeatureCollection", features });
+    map.getCanvas().style.cursor = mode ? "crosshair" : "";
+  }, [draft, mode, ready]);
+
+  function startDrawing(next: DrawMode) {
+    setMode(next);
+    setDraft([]);
+    setDraftTitle("");
+    setDraftNotes("");
+    setDrawError(null);
+  }
+
+  const draftComplete = mode === "POINT" ? draft.length === 1 : mode === "AREA" ? draft.length >= 3 : false;
+
+  async function saveDraft() {
+    if (!mode || !draftComplete) return;
+    setSaving(true);
+    setDrawError(null);
+    const body =
+      mode === "POINT"
+        ? { kind: "POINT", title: draftTitle, description: draftNotes || null, latitude: draft[0][1], longitude: draft[0][0] }
+        : { kind: "AREA", title: draftTitle, description: draftNotes || null, polygon: draft };
+    const res = await apiRequest(`/api/v1/properties/${property.id}/annotations`, { method: "POST", body: JSON.stringify(body) });
+    setSaving(false);
+    if (!res.ok) {
+      setDrawError(res.error);
+      return;
+    }
+    startDrawing(null);
+    router.refresh();
+  }
+
+  async function removeAnnotation(id: string, title: string) {
+    if (!window.confirm(`Remove "${title}" from the map?`)) return;
+    const res = await apiRequest(`/api/v1/annotations/${id}`, { method: "DELETE" });
+    if (!res.ok) setDrawError(res.error);
+    else router.refresh();
+  }
 
   useEffect(() => {
     const map = mapRef.current;
@@ -249,6 +364,10 @@ export function SiteMap({
     for (const [key, markers] of markersRef.current) {
       const visible = active.has(key);
       for (const marker of markers) marker.getElement().style.display = visible ? "" : "none";
+    }
+    const map = mapRef.current;
+    for (const id of [`${AREAS_KEY}-fill`, `${AREAS_KEY}-line`]) {
+      if (map?.getLayer(id)) map.setLayoutProperty(id, "visibility", active.has(AREAS_KEY) ? "visible" : "none");
     }
   }, [active, ready]);
 
@@ -407,6 +526,104 @@ export function SiteMap({
             })}
           </div>
 
+          <div className="mt-4 flex justify-end">
+            <Link
+              href={`/properties/${property.id}?tab=media`}
+              className="rounded-full bg-brand px-4 py-1.5 text-sm font-medium text-white transition hover:opacity-90"
+            >
+              View all media
+            </Link>
+          </div>
+
+          {canAnnotate || (pointsLayer?.count ?? 0) > 0 || (areasLayer?.count ?? 0) > 0 ? (
+            <div className="mt-6 border-t border-border pt-4">
+              <h3 className="text-base font-semibold text-foreground">Points &amp; areas of interest</h3>
+              {canAnnotate && canRenderMap ? (
+                <div className="mt-3 space-y-3">
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startDrawing(mode === "POINT" ? null : "POINT")}
+                      aria-pressed={mode === "POINT"}
+                      className={`rounded-lg border px-3 py-1.5 text-sm ${mode === "POINT" ? "border-brand text-brand" : "border-border text-foreground hover:bg-background"}`}
+                    >
+                      + Point
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startDrawing(mode === "AREA" ? null : "AREA")}
+                      aria-pressed={mode === "AREA"}
+                      className={`rounded-lg border px-3 py-1.5 text-sm ${mode === "AREA" ? "border-brand text-brand" : "border-border text-foreground hover:bg-background"}`}
+                    >
+                      + Area
+                    </button>
+                  </div>
+                  {mode ? (
+                    <div className="space-y-2 rounded-lg border border-border bg-background p-3">
+                      <p className="text-xs text-muted">
+                        {mode === "POINT"
+                          ? draft.length === 0
+                            ? "Click the map where the point goes."
+                            : "Click again to move it."
+                          : `Click the map to add corners (${draft.length} so far, at least 3).`}
+                      </p>
+                      {mode === "AREA" && draft.length > 0 ? (
+                        <button type="button" onClick={() => setDraft((d) => d.slice(0, -1))} className="text-xs text-brand hover:underline">
+                          Undo last corner
+                        </button>
+                      ) : null}
+                      <input
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                        placeholder={mode === "POINT" ? "Title, e.g. Roof hatch" : "Title, e.g. Staging area"}
+                        className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+                      />
+                      <textarea
+                        value={draftNotes}
+                        onChange={(e) => setDraftNotes(e.target.value)}
+                        placeholder="Notes (optional)"
+                        rows={2}
+                        className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+                      />
+                      {drawError ? <p className="text-xs text-[var(--band-critical)]">{drawError}</p> : null}
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          disabled={!draftComplete || !draftTitle.trim() || saving}
+                          onClick={saveDraft}
+                          className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                        >
+                          {saving ? "Saving…" : "Save"}
+                        </button>
+                        <button type="button" onClick={() => startDrawing(null)} className="rounded-lg border border-border px-3 py-1.5 text-sm">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {!mode && drawError ? <p className="mt-2 text-xs text-[var(--band-critical)]">{drawError}</p> : null}
+              <ul className="mt-3 space-y-1.5">
+                {[
+                  ...(pointsLayer?.markers ?? []).map((m) => ({ id: m.id, title: m.label, kind: "Point" })),
+                  ...(areasLayer?.areas ?? []).map((a) => ({ id: a.id, title: a.label, kind: "Area" })),
+                ].map((a) => (
+                  <li key={a.id} className="flex items-center justify-between gap-2 text-sm">
+                    <span className="min-w-0 truncate text-foreground">
+                      {a.title} <span className="text-xs text-muted">· {a.kind}</span>
+                    </span>
+                    {canAnnotate ? (
+                      <button type="button" onClick={() => removeAnnotation(a.id, a.title)} className="text-xs text-muted hover:text-[var(--band-critical)]">
+                        Remove
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           {overlays.length > 0 ? (
             <div className="mt-6 border-t border-border pt-4">
               <h3 className="text-base font-semibold text-foreground">Overlays</h3>
@@ -463,13 +680,13 @@ export function SiteMap({
           ) : null}
 
           <p className="mt-4 space-y-2 border-t border-border pt-3 text-xs leading-relaxed text-muted">
-            Drone photos, 3D models, point clouds and orthomosaics are counted for the selected capture. Evidence,
+            Flight imagery, drone 3D models, point clouds and orthomosaics are counted for the selected capture. Evidence,
             assets, issues, assessments and documents belong to the property rather than to a flight, so they do not
             change when you switch capture dates.
           </p>
           <p className="mt-2 text-xs leading-relaxed text-muted">
-            Only drone photos, 360° panoramas and evidence photos carry coordinates in this schema, so only those can be
-            placed on the map. Everything else is counted here and opens in its own tab.
+            HD images, project photos and videos, 360 images, and the points and areas drawn here carry coordinates, so
+            only those are placed on the map. Everything else is counted here and opens in its own tab.
           </p>
         </div>
       </aside>

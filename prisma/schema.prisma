@@ -420,6 +420,7 @@ model User {
   collections            Collection[]             @relation("CollectionCreatedBy")
   collectedItems         CollectionItem[]         @relation("CollectionItemAddedBy")
   createdEmbeds          SpatialEmbed[]           @relation("SpatialEmbedCreatedBy")
+  createdAnnotations     SiteAnnotation[]         @relation("SiteAnnotationCreatedBy")
   flaggedEvidence        Evidence[]               @relation("EvidenceFlaggedBy")
   evidenceComments       EvidenceComment[]
   createdProjects        Project[]                @relation("ProjectCreatedBy")
@@ -613,6 +614,7 @@ model Organization {
   overlays             PropertyOverlay[]
   collections          Collection[]
   spatialEmbeds        SpatialEmbed[]
+  siteAnnotations      SiteAnnotation[]
   tagTypes             TagType[]
   tagValues            TagValue[]
 
@@ -708,6 +710,7 @@ model Property {
   projects        Project[]
   overlays        PropertyOverlay[]
   spatialEmbeds   SpatialEmbed[]
+  siteAnnotations SiteAnnotation[]
   tagValues       TagValue[]
 
   /**
@@ -1152,6 +1155,8 @@ enum SpatialEmbedKind {
   POINT_CLOUD
   /// A BIM model viewer, e.g. Autodesk's. Opens in its own tab.
   BIM
+  /// A hosted video (YouTube, Vimeo or any https player link).
+  VIDEO
   OTHER
 }
 
@@ -1176,6 +1181,43 @@ model SpatialEmbed {
   property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   floor        Floor?       @relation(fields: [floorId], references: [id], onDelete: SetNull)
   createdBy    User?        @relation("SpatialEmbedCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([propertyId])
+}
+
+// ---------------------------------------------------------------------------
+// Points and areas of interest
+// ---------------------------------------------------------------------------
+
+enum SiteAnnotationKind {
+  /// A labelled pin: "roof hatch", "gas shut-off".
+  POINT
+  /// A labelled polygon: "staging area", "re-roofed 2024".
+  AREA
+}
+
+/// Something a person marked on the site map. Drawn by hand, so unlike
+/// captured media its position is a person's statement, not a GPS reading.
+model SiteAnnotation {
+  id             String             @id @default(cuid())
+  organizationId String
+  propertyId     String
+  kind           SiteAnnotationKind
+  title          String
+  description    String?
+  color          String             @default("#16a34a")
+  /// The pin, for a POINT.
+  latitude       Float?
+  longitude      Float?
+  /// The ring for an AREA: [[longitude, latitude], ...], not closed.
+  polygon        Json?
+  createdById    String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("SiteAnnotationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([propertyId])
 }
