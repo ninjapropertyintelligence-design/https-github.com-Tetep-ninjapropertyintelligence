@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { isViewableIn3D } from "@/components/exterior/Object3DViewer";
 import { OUTPUT_LABELS, displayFilename, isBrowserImage } from "@/lib/drone-display";
@@ -151,8 +151,7 @@ export function DeliveredDroneWork({
                 ‹
               </button>
             ) : null}
-            {/* eslint-disable-next-line @next/next/no-img-element -- an authenticated API route */}
-            <img key={current.id} src={current.previewUrl} alt="" className="max-h-full max-w-full object-contain" />
+            <FullResolutionImage key={current.id} previewUrl={current.previewUrl} originalUrl={current.originalUrl} />
             {viewing.index < viewing.images.length - 1 ? (
               <button
                 type="button"
@@ -166,6 +165,64 @@ export function DeliveredDroneWork({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * One HD image at its full resolution. The preview shows at once; the
+ * original replaces it as soon as it has downloaded, so what is on screen
+ * ends up being every pixel the drone captured. Clicking toggles between
+ * fitting the screen and 100% (one image pixel per screen pixel), scrolled
+ * to wherever was clicked.
+ */
+function FullResolutionImage({ previewUrl, originalUrl }: { previewUrl: string; originalUrl: string }) {
+  const [src, setSrc] = useState(previewUrl);
+  const [full, setFull] = useState(false);
+  const [actualSize, setActualSize] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      setSrc(originalUrl);
+      setFull(true);
+    };
+    img.src = originalUrl;
+    return () => {
+      img.onload = null;
+    };
+  }, [originalUrl]);
+
+  function toggle(event: React.MouseEvent<HTMLImageElement>) {
+    const box = event.currentTarget.getBoundingClientRect();
+    const fx = (event.clientX - box.left) / box.width;
+    const fy = (event.clientY - box.top) / box.height;
+    const next = !actualSize;
+    setActualSize(next);
+    if (next) {
+      // Once laid out at full size, scroll so the clicked spot is centred.
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        el.scrollLeft = fx * el.scrollWidth - el.clientWidth / 2;
+        el.scrollTop = fy * el.scrollHeight - el.clientHeight / 2;
+      });
+    }
+  }
+
+  return (
+    <div ref={scrollRef} className={`h-full w-full ${actualSize ? "overflow-auto" : "flex items-center justify-center overflow-hidden"}`}>
+      {/* eslint-disable-next-line @next/next/no-img-element -- an authenticated API route */}
+      <img
+        src={src}
+        alt=""
+        onClick={toggle}
+        className={actualSize ? "max-w-none cursor-zoom-out" : "max-h-full max-w-full cursor-zoom-in object-contain"}
+      />
+      <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/60 px-3 py-1 text-xs text-white">
+        {full ? "Full resolution" : "Loading full resolution…"} · click to {actualSize ? "fit to screen" : "zoom to 100%"}
+      </span>
     </div>
   );
 }
