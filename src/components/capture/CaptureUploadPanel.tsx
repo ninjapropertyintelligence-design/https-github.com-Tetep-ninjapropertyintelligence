@@ -344,26 +344,32 @@ export function CaptureUploadPanel({
               dragging ? "border-brand bg-surface" : "border-border"
             }`}
           >
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => inputRef.current?.click()}
-              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+            {/* A label wrapping the input, not a button calling .click() on a
+                display:none input: some phone browsers (older iOS Safari in
+                particular) will not open a picker for a hidden input. The
+                input stays in the page, visually hidden, and the label's tap
+                opens it natively everywhere. */}
+            <label
+              aria-disabled={busy}
+              className={`cursor-pointer rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 ${
+                busy ? "pointer-events-none opacity-50" : ""
+              }`}
             >
               {busy ? "Uploading…" : kind === "DRONE_IMAGERY" ? "Choose drone photos" : "Choose photos"}
-            </button>
+              <input
+                ref={inputRef}
+                type="file"
+                multiple
+                disabled={busy}
+                className="sr-only"
+                accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
+                onChange={(e) => {
+                  const chosen = Array.from(e.target.files ?? []);
+                  if (chosen.length > 0) upload(chosen);
+                }}
+              />
+            </label>
             <span className="text-xs text-muted">or drop them here</span>
-            <input
-              ref={inputRef}
-              type="file"
-              multiple
-              hidden
-              accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
-              onChange={(e) => {
-                const chosen = Array.from(e.target.files ?? []);
-                if (chosen.length > 0) upload(chosen);
-              }}
-            />
           </div>
         )}
       </div>
