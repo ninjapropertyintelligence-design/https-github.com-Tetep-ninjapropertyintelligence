@@ -101,6 +101,7 @@ export function CaptureUploadPanel({
   const [shotId, setShotId] = useState<string>(() => shots.find((s) => !s.captured)?.id ?? "");
   const [files, setFiles] = useState<FileState[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [spaceRef, setSpaceRef] = useState("");
@@ -210,10 +211,13 @@ export function CaptureUploadPanel({
               const index = start + i + offset;
               mark(index, { status: "uploading" });
               try {
+                // A stalled connection fails the file instead of leaving the
+                // panel busy, and its controls disabled, forever.
                 const put = await fetch(signed[i + offset].url, {
                   method: "PUT",
                   body: file,
                   headers: { "Content-Type": file.type || "application/octet-stream" },
+                  signal: AbortSignal.timeout(Math.max(120_000, (file.size / (256 * 1024)) * 1000)),
                 });
                 if (!put.ok) throw new Error(`storage refused the file (HTTP ${put.status})`);
                 mark(index, { status: "uploaded" });
@@ -321,18 +325,46 @@ export function CaptureUploadPanel({
             </button>
           </>
         ) : kind === "IMAGE_360" || kind === "DRONE_MAP" ? null : (
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            disabled={busy}
-            accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
-            onChange={(e) => {
-              const chosen = Array.from(e.target.files ?? []);
-              if (chosen.length > 0) upload(chosen);
+          // Our own button opening a hidden input, and a drop zone: the
+          // browser's native file control is small, styled differently on
+          // every browser, and was reported not opening a picker at all.
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
             }}
-            className="max-w-full text-sm text-foreground file:mr-2 file:rounded-lg file:border file:border-border file:bg-surface file:px-2.5 file:py-1.5 file:text-sm file:text-foreground"
-          />
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              const chosen = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/") || /\.(jpe?g|png|tiff?|heic)$/i.test(f.name));
+              if (chosen.length > 0 && !busy) upload(chosen);
+            }}
+            className={`flex flex-1 flex-wrap items-center gap-2 rounded-lg border border-dashed px-3 py-1.5 ${
+              dragging ? "border-brand bg-surface" : "border-border"
+            }`}
+          >
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+              className="rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+            >
+              {busy ? "Uploading…" : kind === "DRONE_IMAGERY" ? "Choose drone photos" : "Choose photos"}
+            </button>
+            <span className="text-xs text-muted">or drop them here</span>
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              hidden
+              accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
+              onChange={(e) => {
+                const chosen = Array.from(e.target.files ?? []);
+                if (chosen.length > 0) upload(chosen);
+              }}
+            />
+          </div>
         )}
       </div>
 
