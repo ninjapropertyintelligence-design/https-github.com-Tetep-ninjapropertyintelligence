@@ -49,6 +49,21 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
       <path d="M8.5 11.5l2.5 2.5 4.5-5" strokeLinecap="round" strokeLinejoin="round" />
     </>
   ),
+  project: (
+    <>
+      {/* A folder: a project is the place a site's work is kept together. */}
+      <path d="M3.5 7.5a2 2 0 012-2h4l2 2h7a2 2 0 012 2v8a2 2 0 01-2 2h-13a2 2 0 01-2-2z" strokeLinejoin="round" />
+      <path d="M3.5 10.5h17" />
+    </>
+  ),
+  collection: (
+    <>
+      {/* Stacked frames: a hand-picked set of photos. */}
+      <rect x="7" y="7" width="13" height="12" rx="1.5" />
+      <path d="M4 15.5V5.5A1.5 1.5 0 015.5 4H16" strokeLinecap="round" />
+      <path d="M9.5 16l3-3.5 2.5 2.5 1.5-1.5 2 2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </>
+  ),
   capture: (
     <>
       {/* A clipboard with a checked line: a work order, not a camera — the
@@ -94,6 +109,12 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
     <>
       <path d="M12 3l7 3v5.5c0 4.3-2.9 8.2-7 9.5-4.1-1.3-7-5.2-7-9.5V6l7-3z" strokeLinejoin="round" />
       <path d="M9.5 12l1.8 1.8 3.4-3.6" strokeLinecap="round" strokeLinejoin="round" />
+    </>
+  ),
+  bell: (
+    <>
+      <path d="M6 16V11a6 6 0 1112 0v5l1.5 2h-15L6 16z" strokeLinejoin="round" />
+      <path d="M10 20.5a2 2 0 004 0" strokeLinecap="round" />
     </>
   ),
   webhook: (

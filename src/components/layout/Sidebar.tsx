@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSyncExternalStore } from "react";
-import { NavItem, groupNavItems } from "@/lib/nav-shared";
+import { NavItem, activeNavHref, groupNavItems } from "@/lib/nav-shared";
 import { NavIcon } from "@/components/layout/NavIcon";
 
 const STORAGE_KEY = "nav:collapsed";
@@ -70,6 +70,7 @@ export function Sidebar({ items, orgName, roleLabel }: { items: NavItem[]; orgNa
   const pathname = usePathname();
   const collapsed = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const groups = groupNavItems(items);
+  const activeHref = activeNavHref(items, pathname);
 
   return (
     <aside
@@ -116,7 +117,7 @@ export function Sidebar({ items, orgName, roleLabel }: { items: NavItem[]; orgNa
             )}
             <div className="space-y-0.5">
               {group.items.map((item) => {
-                const active = pathname === item.href || pathname.startsWith(item.href + "/");
+                const active = item.href === activeHref;
                 return (
                   <Link
                     key={item.href}

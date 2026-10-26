@@ -25,6 +25,8 @@ export type NavIconKey =
   | "asset"
   | "issue"
   | "assessment"
+  | "project"
+  | "collection"
   | "import"
   | "capture"
   | "report"
@@ -32,6 +34,7 @@ export type NavIconKey =
   | "ai"
   | "settings"
   | "shield"
+  | "bell"
   | "webhook"
   | "retention"
   | "storage"
@@ -54,4 +57,17 @@ export function groupNavItems(items: NavItem[]): Array<{ section: NavSection; it
   return NAV_SECTIONS.map((section) => ({ section, items: items.filter((i) => i.section === section) })).filter(
     (g) => g.items.length > 0,
   );
+}
+
+/**
+ * The one item to highlight for a path: the longest href that matches it.
+ * A prefix test alone lights "Reports" on /reports/cogs and "Administration"
+ * on every /settings/* page, alongside the item actually open.
+ */
+export function activeNavHref(items: NavItem[], pathname: string): string | null {
+  let best: string | null = null;
+  for (const { href } of items) {
+    if ((pathname === href || pathname.startsWith(href + "/")) && (!best || href.length > best.length)) best = href;
+  }
+  return best;
 }

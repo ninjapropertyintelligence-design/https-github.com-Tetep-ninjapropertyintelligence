@@ -35,7 +35,18 @@ export default async function MapPage() {
       region: { select: { name: true } },
     },
   });
-  const snapshots = await getLatestHealthSnapshots(properties.map((p) => p.id));
+  const [snapshots, projects, programs] = await Promise.all([
+    getLatestHealthSnapshots(properties.map((p) => p.id)),
+    prisma.project.findMany({
+      where: { propertyId: { in: properties.map((p) => p.id) }, programId: { not: null }, archivedAt: null },
+      select: { propertyId: true, programId: true },
+    }),
+    prisma.program.findMany({ where: { organizationId: ctx.organizationId }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+  ]);
+  const programsByProperty = new Map<string, string[]>();
+  for (const p of projects) {
+    programsByProperty.set(p.propertyId, [...(programsByProperty.get(p.propertyId) ?? []), p.programId!]);
+  }
   const snapByProperty = new Map(snapshots.map((s) => [s.propertyId, s]));
 
   const points = properties
@@ -55,6 +66,7 @@ export default async function MapPage() {
         regionName: p.region?.name ?? null,
         healthScore: snap?.healthScore ?? null,
         band: snap ? healthBandFor(snap.healthScore) : null,
+        programIds: programsByProperty.get(p.id) ?? [],
       };
     });
 
@@ -98,7 +110,7 @@ export default async function MapPage() {
 
   return (
     <div className="-m-6 h-[calc(100vh-3.5rem)]">
-      <ExploreMap properties={points} token={token} />
+      <ExploreMap properties={points} programs={programs.filter((p) => projects.some((x) => x.programId === p.id))} token={token} />
     </div>
   );
 }

@@ -16,6 +16,7 @@ export const createPropertySchema = z.object({
   propertyType: z.string().max(100).default("Retail"),
   squareFootage: z.number().int().positive().nullish(),
   yearBuilt: z.number().int().min(1800).max(2100).nullish(),
+  heading: z.number().min(0).max(360).nullish(),
 });
 
 export const updatePropertySchema = createPropertySchema.partial().extend({

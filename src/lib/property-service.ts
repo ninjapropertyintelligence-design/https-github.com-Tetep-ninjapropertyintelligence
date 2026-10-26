@@ -66,6 +66,7 @@ export async function createProperty(ctx: SessionContext, input: CreatePropertyI
       propertyType: input.propertyType,
       squareFootage: input.squareFootage ?? null,
       yearBuilt: input.yearBuilt ?? null,
+      heading: input.heading ?? null,
       updatedBy: ctx.userId,
     },
   });

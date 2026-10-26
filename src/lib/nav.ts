@@ -22,6 +22,7 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
       { label: "Vendors", href: "/admin/vendors", section: "Manage", icon: "vendor" },
       { label: "Platform Administration", href: "/admin", section: "Administration", icon: "platform" },
       { label: "Security", href: "/settings/security", section: "Administration", icon: "shield" },
+      { label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" },
     ];
   }
 
@@ -30,9 +31,13 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canViewPortfolio")) {
     items.push({ label: "Map", href: "/map", section: "Explore", icon: "map" });
     items.push({ label: "Properties", href: "/properties", section: "Explore", icon: "building" });
+    items.push({ label: "Collections", href: "/collections", section: "Explore", icon: "collection" });
   }
   if (can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio")) {
     items.push({ label: "Assets", href: "/assets", section: "Manage", icon: "asset" });
+  }
+  if (can(ctx, "canViewPortfolio")) {
+    items.push({ label: "Projects", href: "/projects", section: "Manage", icon: "project" });
   }
   items.push({ label: "Issues", href: "/issues", section: "Manage", icon: "issue" });
   if (can(ctx, "canPerformAssessments")) {
@@ -69,11 +74,16 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   // Every role can manage its own second factor, so this is not permission-gated.
   items.push({ label: "Security", href: "/settings/security", section: "Administration", icon: "shield" });
+  // Everyone chooses for their own inbox, so this is not permission-gated either.
+  items.push({ label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" });
   // The rulebook turns confirmed AI findings into repair costs, so it is
   // shown to whoever may see financial exposure; editing is narrower and
   // enforced by the page and the API.
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Defect Rules", href: "/settings/defect-rules", section: "Administration", icon: "rules" });
+  }
+  if (can(ctx, "canManageProperties")) {
+    items.push({ label: "Tags", href: "/settings/tags", section: "Administration", icon: "collection" });
   }
   if (can(ctx, "canManageIntegrations")) {
     items.push({ label: "Webhooks", href: "/settings/webhooks", section: "Administration", icon: "webhook" });

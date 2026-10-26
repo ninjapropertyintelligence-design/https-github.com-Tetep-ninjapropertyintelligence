@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
-import { Prisma, StorageObjectKind, type Evidence, type EvidenceType } from "@/generated/prisma/client";
-import { propertyScopeWhere, reviewSiteIdForUpload, type SessionContext } from "@/lib/tenant-scope";
+import { Prisma, StorageObjectKind, type Evidence, type EvidenceType, type RepairPhotoStage } from "@/generated/prisma/client";
+import { issueScopeWhere, propertyScopeWhere, reviewSiteIdForUpload, type SessionContext } from "@/lib/tenant-scope";
 import { registerStorageObjectBestEffort } from "@/lib/storage-tiering";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recordUsage } from "@/lib/cost-metering";
 import { FEATURE_FLAGS, requireFeature } from "@/lib/feature-flags";
 import { hasPermission } from "@/lib/permissions";
+import { afterAnswerFileAttached, assertAnswerAttachable } from "@/lib/assessment-service";
+import { inheritTaskResponseTags } from "@/lib/tag-service";
 
 /**
  * Evidence registration.
@@ -28,9 +30,15 @@ export interface CreateEvidenceInput {
   assetId?: string | null;
   issueId?: string | null;
   assessmentId?: string | null;
+  /** The assessment answer this file answers, e.g. a photo question's photo. Implies its assessment. */
+  assessmentAnswerId?: string | null;
   captureDate?: Date | null;
   /** The shot position this file was taken from, when it was taken on a route. */
   captureShotId?: string | null;
+  /** Before or after, when this photo is proof of a repair on `issueId`. */
+  repairStage?: RepairPhotoStage | null;
+  /** The capturing device's own id for this file; a retry with it returns the existing row. */
+  clientId?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   metadata?: Record<string, unknown>;
@@ -80,6 +88,22 @@ const CAPTURE_KIND_FLAG: Partial<Record<EvidenceType, (typeof FEATURE_FLAGS)[key
 };
 
 /**
+ * An issue id on an upload must be an issue the caller can see, on the same
+ * property. Without this, naming another issue's id would attach a photo —
+ * possibly an "after" photo — to a repair the uploader has nothing to do with.
+ */
+async function assertIssueAttachable(ctx: SessionContext, issueId: string, propertyId: string | null) {
+  const issue = await prisma.issue.findFirst({
+    where: { AND: [{ id: issueId }, issueScopeWhere(ctx)] },
+    select: { propertyId: true },
+  });
+  if (!issue) throw new ApiError(400, "Invalid issueId, or you don't have access to it");
+  if (propertyId && issue.propertyId !== propertyId) {
+    throw new ApiError(400, "That issue is on a different property");
+  }
+}
+
+/**
  * Every asset a file names must be on that file's own property.
  *
  * The asset id was taken on trust. That let a photo of one building name an
@@ -105,6 +129,17 @@ async function assertAssetsOnProperties(
   }
 }
 
+/** An assessment id on a file must be an assessment the caller can see, on the file's own property. */
+async function assertAssessmentOnProperty(ctx: SessionContext, assessmentId: string, propertyId: string | null) {
+  const assessment = await prisma.assessment.findFirst({
+    where: { AND: [{ id: assessmentId }, { organizationId: ctx.organizationId }, { property: propertyScopeWhere(ctx) }] },
+    select: { propertyId: true },
+  });
+  if (!assessment || assessment.propertyId !== propertyId) {
+    throw new ApiError(400, "Invalid assessmentId for this property, or you don't have access to it");
+  }
+}
+
 export async function createEvidence(ctx: SessionContext, input: CreateEvidenceInput): Promise<Evidence> {
   // Permission first: "you may not do this at all" is a truer answer than
   // "your organization has not bought this" for someone who could never do
@@ -116,6 +151,19 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
   // being told its own property is invalid.
   const flag = CAPTURE_KIND_FLAG[input.type];
   if (flag) await requireFeature(ctx, flag);
+
+  // A device retrying an upload it already registered gets that row back —
+  // no second photo, no second meter reading, no second event. Only its own:
+  // someone else's id is refused rather than handing over their record.
+  if (input.clientId) {
+    const earlier = await prisma.evidence.findUnique({
+      where: { organizationId_clientId: { organizationId: ctx.organizationId, clientId: input.clientId } },
+    });
+    if (earlier) {
+      if (earlier.uploadedById !== ctx.userId) throw new ApiError(409, "That clientId was already used for another file");
+      return earlier;
+    }
+  }
 
   if (input.propertyId) {
     const property = await prisma.property.findFirst({
@@ -133,8 +181,28 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
     await assertShotBelongsToProperty(input.captureShotId, input.propertyId);
   }
 
-  // A vendor's upload is held for review against the job site it delivers.
-  const captureJobSiteId = input.propertyId ? await reviewSiteIdForUpload(ctx, input.propertyId) : null;
+  if (input.issueId) await assertIssueAttachable(ctx, input.issueId, input.propertyId ?? null);
+
+  // The assessment id was taken on trust, like the asset id before it: a
+  // photo could be filed under another property's assessment. An answer id
+  // pins it exactly, and decides the assessment.
+  let assessmentId = input.assessmentId ?? null;
+  if (input.assessmentAnswerId) {
+    const attached = await assertAnswerAttachable(ctx, input.assessmentAnswerId, input.propertyId ?? null);
+    if (assessmentId && assessmentId !== attached.assessmentId) {
+      throw new ApiError(400, "That answer belongs to a different assessment");
+    }
+    assessmentId = attached.assessmentId;
+  } else if (assessmentId) {
+    await assertAssessmentOnProperty(ctx, assessmentId, input.propertyId ?? null);
+  }
+
+  if (input.repairStage && !input.issueId) throw new ApiError(400, "A before/after photo needs the issue it belongs to");
+
+  // A vendor's upload is held for review against the job site it delivers —
+  // unless it is repair proof, which belongs to the repair's own review.
+  const captureJobSiteId =
+    input.propertyId && !input.issueId ? await reviewSiteIdForUpload(ctx, input.propertyId) : null;
 
   const evidence = await prisma.evidence.create({
     data: {
@@ -142,7 +210,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       propertyId: input.propertyId ?? null,
       assetId: input.assetId ?? null,
       issueId: input.issueId ?? null,
-      assessmentId: input.assessmentId ?? null,
+      assessmentId,
+      assessmentAnswerId: input.assessmentAnswerId ?? null,
       type: input.type,
       storageKey: input.storageKey,
       thumbnailKey: input.thumbnailKey ?? null,
@@ -151,6 +220,8 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
       captureDate: input.captureDate ?? null,
       captureShotId: input.captureShotId ?? null,
       captureJobSiteId,
+      repairStage: input.repairStage ?? null,
+      clientId: input.clientId ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -167,6 +238,11 @@ export async function createEvidence(ctx: SessionContext, input: CreateEvidenceI
   });
 
   await learnShotLocations([evidence]);
+
+  if (evidence.assessmentAnswerId) {
+    await inheritTaskResponseTags(evidence.id, evidence.assessmentAnswerId);
+    await afterAnswerFileAttached(evidence.assessmentAnswerId, ctx.userId);
+  }
 
   // Metered per panorama, not per byte: the bytes are already sampled into
   // GB-months by the storage meter, and counting them here too would bill the
@@ -293,7 +369,28 @@ export async function createEvidenceBatch(
     }
   }
 
+  for (const issueId of new Set(items.map((i) => i.issueId).filter((id): id is string => !!id))) {
+    for (const item of items.filter((i) => i.issueId === issueId)) {
+      await assertIssueAttachable(ctx, issueId, item.propertyId ?? null);
+    }
+  }
+
   await assertAssetsOnProperties(ctx.organizationId, items);
+
+  const batchClientIds = items.map((i) => i.clientId).filter((id): id is string => !!id);
+  if (new Set(batchClientIds).size !== batchClientIds.length) throw new ApiError(400, "Two files in this batch share a clientId");
+  if (batchClientIds.length > 0) {
+    const taken = await prisma.evidence.count({
+      where: { organizationId: ctx.organizationId, clientId: { in: batchClientIds }, uploadedById: { not: ctx.userId } },
+    });
+    if (taken > 0) throw new ApiError(409, "One or more clientIds were already used for another person's files");
+  }
+
+  const assessmentPairs = new Set(items.filter((i) => i.assessmentId).map((i) => `${i.assessmentId}\u0000${i.propertyId ?? ""}`));
+  for (const pair of assessmentPairs) {
+    const [assessmentId, propertyId] = pair.split("\u0000");
+    await assertAssessmentOnProperty(ctx, assessmentId, propertyId || null);
+  }
 
   for (const item of items) {
     if (!item.captureShotId) continue;
@@ -323,7 +420,9 @@ export async function createEvidenceBatch(
       sizeBytes: input.sizeBytes ?? null,
       captureDate: input.captureDate ?? null,
       captureShotId: input.captureShotId ?? null,
-      captureJobSiteId: input.propertyId ? (reviewSites.get(input.propertyId) ?? null) : null,
+      captureJobSiteId: input.propertyId && !input.issueId ? (reviewSites.get(input.propertyId) ?? null) : null,
+      repairStage: input.repairStage ?? null,
+      clientId: input.clientId ?? null,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
       metadata: (input.metadata ?? {}) as unknown as Prisma.InputJsonValue,
@@ -335,8 +434,17 @@ export async function createEvidenceBatch(
     skipDuplicates: true,
   });
 
+  // Found by storage key, or by device id for a file this device registered
+  // in an earlier, interrupted batch under a different key.
+  const clientIds = items.map((i) => i.clientId).filter((id): id is string => !!id);
   const created = await prisma.evidence.findMany({
-    where: { organizationId: ctx.organizationId, storageKey: { in: items.map((i) => i.storageKey) } },
+    where: {
+      organizationId: ctx.organizationId,
+      OR: [
+        { storageKey: { in: items.map((i) => i.storageKey) } },
+        ...(clientIds.length ? [{ clientId: { in: clientIds }, uploadedById: ctx.userId }] : []),
+      ],
+    },
     select: { id: true, storageKey: true, type: true, sizeBytes: true, propertyId: true, createdAt: true },
   });
 

@@ -4,6 +4,8 @@ import { can, getSessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { TeamInvitations } from "@/components/settings/TeamInvitations";
+import { TeamMembers, type TeamMember as EditableMember } from "@/components/settings/TeamMembers";
+import type { MembershipOptions, ScopeType } from "@/components/settings/MembershipFields";
 import { listPendingInvitations } from "@/lib/invitation-service";
 import { listTeamMembers } from "@/lib/team-activity-service";
 import { ROLE_LABELS } from "@/lib/role-labels";
@@ -13,7 +15,8 @@ import { Role } from "@/generated/prisma/client";
 /**
  * The team: everyone in the organization, what each person can see, and when
  * they were last signed in and active — with a way into each person's
- * activity, and the invitations still waiting on someone.
+ * activity, changing someone's role or access or removing them, and the
+ * invitations still waiting on someone.
  */
 export default async function TeamPage() {
   const ctx = await getSessionContext();
@@ -21,8 +24,13 @@ export default async function TeamPage() {
   if (!ctx.organizationId || !can(ctx, "canManageTeam")) redirect("/dashboard");
 
   const canSeeActivity = can(ctx, "canViewTeamActivity");
-  const [members, pending, vendors, portfolios, regions, properties] = await Promise.all([
+  const [members, memberships, pending, vendors, portfolios, regions, properties] = await Promise.all([
     listTeamMembers(ctx),
+    prisma.membership.findMany({
+      where: { organizationId: ctx.organizationId },
+      include: { user: true, vendor: { select: { name: true } }, accessGrants: true },
+      orderBy: { createdAt: "asc" },
+    }),
     listPendingInvitations(ctx),
     prisma.vendor.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.portfolio.findMany({ where: { organizationId: ctx.organizationId }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
@@ -43,6 +51,49 @@ export default async function TeamPage() {
     .filter((r) => r !== Role.PLATFORM_ADMIN && (r !== Role.OWNER || ctx.role === Role.OWNER))
     .map((r) => ({ value: r, label: ROLE_LABELS[r] }));
   const now = new Date();
+
+  const options: MembershipOptions = {
+    roles: invitableRoles,
+    vendors: vendors.map((v) => ({ id: v.id, label: v.name })),
+    scopes: {
+      PORTFOLIO: portfolios.map((p) => ({ id: p.id, label: p.name })),
+      REGION: regions.map((r) => ({ id: r.id, label: `${r.name} (${r.portfolio.name})` })),
+      PROPERTY: properties.map((p) => ({
+        id: p.id,
+        label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
+      })),
+    },
+  };
+  const scopeName = new Map(
+    [...portfolios, ...regions, ...properties].map((x) => [x.id, x.name] as const),
+  );
+
+  const editable: EditableMember[] = memberships.map((m) => {
+    const grantIds = m.accessGrants.map((g) => (g.portfolioId ?? g.regionId ?? g.propertyId) as string);
+    const scopeType = (m.accessGrants[0]?.scopeType ?? "PROPERTY") as ScopeType;
+    const names = grantIds.map((id) => scopeName.get(id)).filter((n): n is string => !!n);
+    const accessSummary =
+      grantIds.length === 0
+        ? null
+        : names.length > 0 && names.length <= 2
+          ? names.join(", ")
+          : `${grantIds.length} ${scopeType === "PROPERTY" ? "properties" : scopeType === "REGION" ? "regions" : "portfolios"}`;
+    return {
+      membershipId: m.id,
+      name: m.user.name,
+      email: m.user.email,
+      role: m.role,
+      roleLabel: ROLE_LABELS[m.role],
+      vendorId: m.vendorId,
+      vendorName: m.vendor?.name ?? null,
+      scopeType,
+      scopeIds: grantIds,
+      accessSummary,
+      isSelf: m.userId === ctx.userId,
+      // Mirrors the server: never yourself, and Owners only by Owners.
+      manageable: m.userId !== ctx.userId && (m.role !== Role.OWNER || ctx.role === Role.OWNER),
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -105,17 +156,15 @@ export default async function TeamPage() {
             </tbody>
           </table>
         </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Roles and access" subtitle="Change someone's role or what they can see, remove them, or invite someone new" />
+        <CardBody className="p-0">
+          <TeamMembers members={editable} options={options} canManage />
+        </CardBody>
         <TeamInvitations
-          roles={invitableRoles}
-          vendors={vendors.map((v) => ({ id: v.id, label: v.name }))}
-          scopes={{
-            PORTFOLIO: portfolios.map((p) => ({ id: p.id, label: p.name })),
-            REGION: regions.map((r) => ({ id: r.id, label: `${r.name} (${r.portfolio.name})` })),
-            PROPERTY: properties.map((p) => ({
-              id: p.id,
-              label: [p.name, [p.city, p.state].filter(Boolean).join(", ")].filter(Boolean).join(" — "),
-            })),
-          }}
+          options={options}
           pending={pending.map((inv) => ({
             id: inv.id,
             email: inv.email,

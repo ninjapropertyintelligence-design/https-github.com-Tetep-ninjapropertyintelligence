@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { SessionContext, propertyScopeWhere } from "@/lib/tenant-scope";
 import { getLatestHealthSnapshots } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
+import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
 
 /**
  * ONE SOURCE OF TRUTH for every portfolio-level KPI (spec §35 "One Source of
@@ -117,7 +118,7 @@ export async function getPortfolioDashboard(ctx: SessionContext) {
 
   const assessedProperties = await prisma.assessment.groupBy({
     by: ["propertyId"],
-    where: { property: scopedWhere, status: "COMPLETED" },
+    where: { property: scopedWhere, status: { in: FINISHED_ASSESSMENT_STATUSES } },
     _max: { completedAt: true },
   });
   const overdueThreshold = new Date(Date.now() - 365 * 86400000);

@@ -10,6 +10,10 @@ import { SeverityBadge, StatusBadge } from "@/components/ui/Badge";
 import { formatCents, formatDate, formatRelativeTime } from "@/lib/format";
 import { IssueStatusForm } from "@/components/issue/IssueStatusForm";
 import { CommentForm } from "@/components/issue/CommentForm";
+import { RepairPanel } from "@/components/issue/RepairPanel";
+import { AssignRepairForm } from "@/components/issue/AssignRepairForm";
+import { isRepairer } from "@/lib/repair-service";
+import { Role } from "@/generated/prisma/client";
 
 export default async function IssueDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -20,18 +24,47 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
     where: { AND: [{ id }, issueScopeWhere(ctx)] },
     include: {
       property: { select: { id: true, name: true } },
-      asset: { select: { id: true, name: true } },
+      asset: { select: { id: true, name: true, conditionScore: true } },
       assignee: { select: { name: true } },
       vendor: { select: { name: true } },
       createdBy: { select: { name: true } },
+      repairSubmittedBy: { select: { name: true } },
+      verifiedBy: { select: { name: true } },
       comments: { orderBy: { createdAt: "asc" }, include: { author: { select: { name: true } } } },
-      evidence: true,
+      evidence: { orderBy: { createdAt: "asc" } },
       documents: true,
       aiFinding: true,
     },
   });
   if (!issue) notFound();
 
+  const repairer = isRepairer(ctx, issue);
+  // Sending someone to fix it is a management decision, never the repairer's.
+  const canAssign = ctx.role !== Role.VENDOR && can(ctx, "canCreateIssues") && issue.status !== "VERIFIED" && issue.status !== "CLOSED";
+  const [vendorOptions, staffOptions] = canAssign
+    ? await Promise.all([
+        prisma.vendor.findMany({
+          where: { organizationId: ctx.organizationId },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true, trade: true },
+        }),
+        prisma.membership.findMany({
+          where: { organizationId: ctx.organizationId, role: { notIn: [Role.VIEWER, Role.VENDOR] } },
+          include: { user: { select: { id: true, name: true } } },
+          orderBy: { user: { name: "asc" } },
+        }),
+      ])
+    : [[], []];
+  const repairPhotos = issue.evidence
+    .filter((e) => e.repairStage !== null)
+    .map((e) => ({
+      id: e.id,
+      stage: e.repairStage as "BEFORE" | "AFTER",
+      url: `/api/v1/evidence/${e.id}/content`,
+      takenAt: formatDate(e.captureDate ?? e.createdAt),
+      superseded:
+        e.repairStage === "AFTER" && issue.repairSentBackAt !== null && e.createdAt <= issue.repairSentBackAt,
+    }));
   // An issue confirmed from an AI finding shows that photo with the defect
   // outlined, so the record carries what the inspector actually agreed to.
   // Only when the viewer may see the photo: a vendor's capture is held for
@@ -92,14 +125,45 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
             <DetailRow label="Due Date" value={formatDate(issue.dueDate)} />
             <DetailRow label="Source" value={issue.source.replace(/_/g, " ")} />
             <DetailRow label="Created By" value={issue.createdBy.name} />
-            {can(ctx, "canCreateIssues") || can(ctx, "canResolveIssues") ? (
-              <div className="pt-2">
+            {ctx.role !== Role.VENDOR && (can(ctx, "canCreateIssues") || can(ctx, "canResolveIssues")) ? (
+              <div className="space-y-3 pt-2">
+                {canAssign ? (
+                  <AssignRepairForm
+                    issueId={issue.id}
+                    version={issue.version}
+                    vendors={vendorOptions.map((v) => ({ id: v.id, label: v.trade ? `${v.name} (${v.trade})` : v.name }))}
+                    staff={staffOptions.map((m) => ({ id: m.user.id, label: m.user.name }))}
+                    currentVendorId={issue.vendorId}
+                    currentAssigneeId={issue.assigneeId}
+                  />
+                ) : null}
                 <IssueStatusForm issueId={issue.id} currentStatus={issue.status} version={issue.version} />
               </div>
             ) : null}
           </CardBody>
         </Card>
       </div>
+
+      <RepairPanel
+        repair={{
+          issueId: issue.id,
+          propertyId: issue.propertyId,
+          status: issue.status,
+          repairerLabel: issue.vendor?.name ?? issue.assignee?.name ?? null,
+          notes: issue.repairNotes,
+          submittedAt: issue.repairSubmittedAt ? formatDate(issue.repairSubmittedAt) : null,
+          submittedBy: issue.repairSubmittedBy?.name ?? null,
+          sentBackReason: issue.repairSentBackReason,
+          verifiedAt: issue.verifiedAt ? formatDate(issue.verifiedAt) : null,
+          verifiedBy: issue.verifiedBy?.name ?? null,
+          actualCostDollars: issue.actualCost !== null ? (issue.actualCost / 100).toFixed(2) : null,
+          asset: issue.asset ? { name: issue.asset.name, conditionScore: issue.asset.conditionScore } : null,
+          photos: repairPhotos,
+        }}
+        isRepairer={repairer}
+        canVerify={can(ctx, "canVerifyRepairs") && !repairer}
+        canUpload={can(ctx, "canUploadEvidence")}
+      />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>

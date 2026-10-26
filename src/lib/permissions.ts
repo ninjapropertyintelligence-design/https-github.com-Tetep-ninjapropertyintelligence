@@ -34,6 +34,10 @@ export const PERMISSIONS = [
   // publishes vendor work to everyone on the property, so it is the platform
   // operator's quality gate, not something a customer role does.
   "canReviewCaptures",
+  // Checking a finished repair's proof and accepting it, or sending it back.
+  // Wider than capture review on purpose: the managers who look after a
+  // building are the ones who know whether the leak is actually fixed.
+  "canVerifyRepairs",
   "canViewAuditLogs",
   // Who is on the team and what they have been doing: last sign-in, last
   // activity, and the per-person activity log. Narrower than canViewAuditLogs,
@@ -109,6 +113,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canPerformCapture",
     "canManageDroneJobs",
     "canManageVendors",
+    "canVerifyRepairs",
     "canViewTeamActivity",
   ],
 
@@ -123,6 +128,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canViewAI",
     "canExportData",
     "canManageVendors",
+    "canVerifyRepairs",
   ],
 
   [Role.FACILITIES_MANAGER]: [
@@ -135,6 +141,7 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canViewFinancialExposure",
     "canViewAI",
     "canManageVendors",
+    "canVerifyRepairs",
   ],
 
   [Role.INSPECTOR]: [

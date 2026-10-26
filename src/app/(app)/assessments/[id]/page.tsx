@@ -1,27 +1,33 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getSessionContext, propertyScopeWhere } from "@/lib/session-context";
-import { prisma } from "@/lib/prisma";
+import { getSessionContext } from "@/lib/session-context";
 import { StatusBadge } from "@/components/ui/Badge";
+import { StatTile } from "@/components/ui/StatTile";
 import { AssessmentRunner } from "@/components/assessment/AssessmentRunner";
+import { getAssessmentDetail, mayWriteAssessment, progressFor } from "@/lib/assessment-service";
+import { isAssessmentLocked } from "@/lib/assessment-progress";
+import { hasPermission } from "@/lib/permissions";
+import { formatDate } from "@/lib/format";
+import { ReferenceDocuments } from "@/components/property/ReferenceDocuments";
+import { AnswerSheetPanel } from "@/components/assessment/AnswerSheetPanel";
+import { prisma } from "@/lib/prisma";
+import { getVocabulary } from "@/lib/tag-service";
 
 export default async function AssessmentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
   if (!ctx) redirect("/login");
   const { id } = await params;
 
-  const assessment = await prisma.assessment.findFirst({
-    where: { AND: [{ id }, { property: propertyScopeWhere(ctx) }] },
-    include: {
-      property: { select: { id: true, name: true } },
-      template: { include: { sections: { include: { questions: { orderBy: { position: "asc" } } }, orderBy: { position: "asc" } } } },
-      answers: true,
-      inspector: { select: { name: true } },
-    },
-  });
+  const assessment = await getAssessmentDetail(ctx, id);
   if (!assessment) notFound();
+  const [progress, tagTypes] = await Promise.all([progressFor(assessment), getVocabulary(ctx, assessment.property.id)]);
 
-  const readOnly = assessment.status === "COMPLETED" || (assessment.inspectorId !== ctx.userId && !ctx.permissions.includes("canManageAssessmentTemplates"));
+  const canWrite = mayWriteAssessment(ctx, assessment);
+  const readOnly = isAssessmentLocked(assessment.status) || !canWrite;
+  const isManager = hasPermission(ctx.role, "canManageAssessmentTemplates");
+  const hasTasks = progress.requiredTasks > 0 || progress.taskResponses > 0;
+
+  const toOptions = (options: unknown) => (Array.isArray(options) ? (options as string[]) : []);
 
   return (
     <div className="space-y-4">
@@ -33,19 +39,115 @@ export default async function AssessmentDetailPage({ params }: { params: Promise
           <h1 className="text-xl font-semibold text-foreground">{assessment.template.name}</h1>
           <StatusBadge status={assessment.status} />
         </div>
-        <p className="text-sm text-muted">Inspector: {assessment.inspector.name}</p>
+        <p className="text-sm text-muted">
+          Inspector: {assessment.inspector.name}
+          {assessment.completedAt ? ` · Completed ${formatDate(assessment.completedAt)}` : ""}
+          {assessment.releasedAt ? ` · Released ${formatDate(assessment.releasedAt)}` : ""}
+        </p>
       </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {hasTasks ? (
+          <>
+            <StatTile
+              label="Required tasks complete"
+              value={`${progress.requiredTasksComplete} of ${progress.requiredTasks}`}
+              tone={progress.requiredTasks > 0 && progress.requiredTasksComplete === progress.requiredTasks ? "good" : "default"}
+            />
+            <StatTile label="Task responses complete" value={progress.taskResponsesComplete} />
+            <StatTile
+              label="Task responses incomplete"
+              value={progress.taskResponsesIncomplete}
+              tone={progress.taskResponsesIncomplete > 0 ? "warning" : "default"}
+            />
+          </>
+        ) : (
+          <StatTile
+            label="Required questions answered"
+            value={`${progress.requiredQuestionsAnswered} of ${progress.requiredQuestions}`}
+          />
+        )}
+        <StatTile label="Photos" value={progress.photos} />
+      </div>
+
+      <ReferenceDocuments
+        propertyId={assessment.property.id}
+        flag="availableInCapture"
+        title="Reference documents"
+        subtitle="Plans and records for this site, for use on the walk"
+      />
+
+      <AnswerSheetPanel assessmentId={assessment.id} canImport={!readOnly} />
+
+      <ReportHistory assessmentId={assessment.id} organizationId={ctx.organizationId} />
 
       <AssessmentRunner
         assessmentId={assessment.id}
+        propertyId={assessment.property.id}
         sections={assessment.template.sections.map((section) => ({
-          ...section,
-          questions: section.questions.map((q) => ({ ...q, options: Array.isArray(q.options) ? (q.options as string[]) : [] })),
+          id: section.id,
+          name: section.name,
+          questions: section.questions.filter((q) => !q.taskId).map((q) => ({ ...q, options: toOptions(q.options) })),
+          tasks: section.tasks.map((task) => ({
+            ...task,
+            questions: task.questions.map((q) => ({ ...q, options: toOptions(q.options) })),
+          })),
         }))}
-        initialAnswers={assessment.answers.map((a) => ({ ...a, selectValues: Array.isArray(a.selectValues) ? (a.selectValues as string[]) : [] }))}
+        taskResponses={assessment.taskResponses.map((r) => ({
+          id: r.id,
+          taskId: r.taskId,
+          instance: r.instance,
+          label: r.label,
+          isComplete: r.isComplete,
+          tagValueIds: r.tags.map((t) => t.tagValueId),
+        }))}
+        tagTypes={tagTypes.map((t) => ({ id: t.id, name: t.name, allowMultiple: t.allowMultiple, values: t.values }))}
+        initialAnswers={assessment.answers.map((a) => ({
+          id: a.id,
+          questionId: a.questionId,
+          taskResponseId: a.taskResponseId,
+          assetId: a.assetId,
+          textValue: a.textValue,
+          numberValue: a.numberValue,
+          boolValue: a.boolValue,
+          conditionValue: a.conditionValue,
+          selectValues: toOptions(a.selectValues),
+          files: a.evidence.map((e) => ({ id: e.id, type: e.type })),
+        }))}
         status={assessment.status}
         readOnly={readOnly}
+        canComplete={canWrite && !isAssessmentLocked(assessment.status)}
+        canReopen={isManager && assessment.status === "COMPLETED"}
+        canRelease={isManager && assessment.status === "COMPLETED"}
       />
+    </div>
+  );
+}
+
+/** Every report issued for this assessment, newest first: the versions of its report document. */
+async function ReportHistory({ assessmentId, organizationId }: { assessmentId: string; organizationId: string }) {
+  const document = await prisma.document.findFirst({
+    where: { assessmentId, organizationId },
+    include: {
+      versions: { orderBy: { versionNumber: "desc" }, include: { uploadedBy: { select: { name: true } } } },
+    },
+  });
+  if (!document || document.versions.length === 0) return null;
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4">
+      <h3 className="text-sm font-semibold text-foreground">Reports issued</h3>
+      <ul className="mt-2 divide-y divide-border text-sm">
+        {document.versions.map((v) => (
+          <li key={v.id} className="flex items-center justify-between py-1.5">
+            <a href={`/api/v1/documents/${document.id}/download?version=${v.versionNumber}`} className="text-foreground hover:text-brand">
+              Version {v.versionNumber}
+            </a>
+            <span className="text-xs text-muted">
+              {formatDate(v.uploadedAt)} · {v.uploadedBy.name}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

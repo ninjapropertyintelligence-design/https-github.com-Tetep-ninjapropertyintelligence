@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getSessionContext, propertyScopeWhere } from "@/lib/session-context";
+import { getSessionContext, propertyScopeWhere, can } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
 import { Card, CardBody } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/Badge";
@@ -29,9 +29,16 @@ export default async function AssessmentsPage({ searchParams }: { searchParams: 
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Assessments</h1>
-        <p className="text-sm text-muted">{assessments.length} assessments{mineByDefault ? " assigned to you" : " in scope"}</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-foreground">Assessments</h1>
+          <p className="text-sm text-muted">{assessments.length} assessments{mineByDefault ? " assigned to you" : " in scope"}</p>
+        </div>
+        {can(ctx, "canManageAssessmentTemplates") ? (
+          <Link href="/assessments/templates" className="rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-foreground hover:bg-zinc-50">
+            Templates
+          </Link>
+        ) : null}
       </div>
 
       {assessments.length === 0 ? (
