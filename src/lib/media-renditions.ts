@@ -18,8 +18,13 @@ export type RenditionSize = keyof typeof RENDITION_SIZES;
 /** Past this the original is not decoded here; the caller serves it as is. */
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Derived keys hang a suffix off the original's key with a dot, not a `~`:
+ * Supabase Storage rejects any key containing `~` (HTTP 400), which made
+ * every rendition write fail in production.
+ */
 export function renditionKey(storageKey: string, size: RenditionSize): string {
-  return `${storageKey}~${size}.jpg`;
+  return `${storageKey}.${size}.jpg`;
 }
 
 /**
@@ -58,7 +63,7 @@ export function panoramaStripCount(sizeBytes: bigint | number | null): number {
 }
 
 export function stripKey(storageKey: string, index: number, count: number): string {
-  return `${storageKey}~strip-${index}-of-${count}.jpg`;
+  return `${storageKey}.strip-${index}-of-${count}.jpg`;
 }
 
 /** The URLs a viewer loads, top to bottom, for one panorama. */
@@ -103,7 +108,7 @@ export async function getOrMakePanoramaStrip(
     let strip = await encode(92);
     if (strip.byteLength > PROXY_LIMIT_BYTES) strip = await encode(85);
     if (strip.byteLength > PROXY_LIMIT_BYTES) strip = await encode(75);
-    await storage.writeBytes(key, strip);
+    await keep(key, strip);
     return strip;
   } catch {
     return null;
@@ -131,6 +136,17 @@ export async function makeRendition(bytes: Buffer, size: RenditionSize): Promise
   }
 }
 
+/** Stores a derived copy; false, with a log line, when storage refuses it. */
+async function keep(key: string, bytes: Buffer): Promise<boolean> {
+  try {
+    await getStorageProvider().writeBytes(key, bytes);
+    return true;
+  } catch (err) {
+    console.warn(`[media-renditions] could not store ${key}:`, err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
 /**
  * The stored rendition for one photo, made now if it does not exist yet.
  * Null when one cannot be made — too large to decode here, missing from
@@ -151,7 +167,9 @@ export async function getOrMakeRendition(
   const rendition = await makeRendition(original, size);
   if (!rendition) return null;
 
-  await storage.writeBytes(key, rendition);
+  // Keeping the copy only saves the next viewer the resize, so a failed write
+  // still serves this one rather than failing the image.
+  if (!(await keep(key, rendition))) return rendition;
   // Recorded where there is a column for it. A thumbnail the uploader
   // supplied is left in place; ours is still found by its derived key.
   await prisma.evidence.update({
