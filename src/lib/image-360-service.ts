@@ -86,7 +86,8 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
     capturedAt: row.captureDate,
     latitude: row.latitude,
     longitude: row.longitude,
-    imageUrl: `/api/v1/evidence/${row.id}/content`,
+    // The large rendition: the original is usually too big to serve to the viewer.
+    imageUrl: `/api/v1/evidence/${row.id}/content?size=large`,
   }));
 
   return {

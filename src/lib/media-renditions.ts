@@ -12,11 +12,19 @@ import { getStorageProvider } from "@/lib/storage";
  * prefix and retention can find them even when nothing recorded them.
  */
 
-export const RENDITION_SIZES = { small: 400, medium: 1600 } as const;
+/**
+ * `large` is for 360 panoramas: a camera's 11 MB equirectangular original is
+ * too big to serve from a function (Vercel caps a response at 4.5 MB), and
+ * 4096×2048 is still sharp inside the viewer.
+ */
+export const RENDITION_SIZES = { small: 400, medium: 1600, large: 4096 } as const;
 export type RenditionSize = keyof typeof RENDITION_SIZES;
 
 /** Past this the original is not decoded here; the caller serves it as is. */
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+
+/** A rendition must fit in one function response, with room to spare. */
+export const MAX_RENDITION_BYTES = 4 * 1024 * 1024;
 
 export function renditionKey(storageKey: string, size: RenditionSize): string {
   return `${storageKey}~${size}.jpg`;
@@ -37,12 +45,16 @@ export function allRenditionKeys(storageKey: string): string[] {
 export async function makeRendition(bytes: Buffer, size: RenditionSize): Promise<Buffer | null> {
   const { default: sharp } = await import("sharp");
   const edge = RENDITION_SIZES[size];
-  try {
-    return await sharp(bytes, { failOn: "error" })
+  const encode = (quality: number) =>
+    sharp(bytes, { failOn: "error" })
       .rotate()
       .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality: size === "small" ? 72 : 80, mozjpeg: true })
+      .jpeg({ quality, mozjpeg: true })
       .toBuffer();
+  try {
+    const first = await encode(size === "small" ? 72 : size === "medium" ? 80 : 78);
+    // A very detailed panorama can come out too big at the usual quality.
+    return first.byteLength <= MAX_RENDITION_BYTES ? first : await encode(60);
   } catch {
     return null;
   }
@@ -73,7 +85,7 @@ export async function getOrMakeRendition(
   // supplied is left in place; ours is still found by its derived key.
   await prisma.evidence.update({
     where: { id: evidence.id },
-    data: size === "medium" ? { previewKey: key } : evidence.thumbnailKey ? {} : { thumbnailKey: key },
+    data: size === "medium" ? { previewKey: key } : size === "large" || evidence.thumbnailKey ? {} : { thumbnailKey: key },
   });
   return rendition;
 }

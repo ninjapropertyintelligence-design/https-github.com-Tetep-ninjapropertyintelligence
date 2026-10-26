@@ -244,7 +244,8 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       id: row.id,
       label: panoramaLabel(row.storageKey, list.length),
       capturedAt: row.captureDate ? formatDateTime(row.captureDate) : null,
-      imageUrl: `/api/v1/evidence/${row.id}/content`,
+      imageUrl: `/api/v1/evidence/${row.id}/content?size=large`,
+      thumbnailUrl: `/api/v1/evidence/${row.id}/content?size=small`,
     });
     panoramasBySite.set(row.captureJobSiteId!, list);
   }
@@ -434,6 +435,10 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     />
                   ) : null}
 
+                  <DeliveredMatterportScans scans={matterportBySite.get(site.id) ?? []} />
+
+                  <Delivered360Views views={panoramasBySite.get(site.id) ?? []} />
+
                   {isVendor && site.status !== "ACCEPTED" && ["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status) ? (
                     <>
                       <VendorSiteImports
@@ -467,10 +472,6 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                         })),
                     )}
                   />
-
-                  <DeliveredMatterportScans scans={matterportBySite.get(site.id) ?? []} />
-
-                  <Delivered360Views views={panoramasBySite.get(site.id) ?? []} />
 
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}

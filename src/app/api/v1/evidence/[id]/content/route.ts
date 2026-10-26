@@ -38,7 +38,10 @@ type RouteParams = { params: Promise<{ id: string }> };
  * cloud read this way would exhaust it. 64 MB comfortably covers a
  * full-resolution 360 panorama, which is what needs same-origin bytes.
  */
-const MAX_PROXY_BYTES = 64 * 1024 * 1024;
+// Vercel refuses a function response over 4.5 MB, so anything bigger goes
+// straight to storage. An <img>, a <video> or a download follows the
+// redirect fine; a 360 viewer asks for ?size=large instead, which fits.
+const MAX_PROXY_BYTES = 4 * 1024 * 1024;
 
 export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
   const { id } = await params;
@@ -64,10 +67,13 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req
 
   const storage = getStorageProvider();
 
-  // ?size=small|medium serves a resized copy of a photo, made on first
+  // ?size=small|medium|large serves a resized copy of a photo, made on first
   // request. Anything that cannot be resized falls through to the original.
   const size = new URL(req.url).searchParams.get("size");
-  if ((size === "small" || size === "medium") && (evidence.type === "PHOTO" || evidence.type === "IMAGE_360" || evidence.type === "DRONE_IMAGE")) {
+  if (
+    (size === "small" || size === "medium" || size === "large") &&
+    (evidence.type === "PHOTO" || evidence.type === "IMAGE_360" || evidence.type === "DRONE_IMAGE")
+  ) {
     const rendition = await getOrMakeRendition(evidence, size);
     if (rendition) {
       return new NextResponse(new Uint8Array(rendition), {
@@ -82,7 +88,8 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req
   }
 
   if (evidence.sizeBytes !== null && Number(evidence.sizeBytes) > MAX_PROXY_BYTES) {
-    return NextResponse.redirect(await storage.getDownloadUrl(evidence.storageKey), 302);
+    // Local storage signs a path on this app; S3 signs an absolute URL.
+    return NextResponse.redirect(new URL(await storage.getDownloadUrl(evidence.storageKey), req.url), 302);
   }
 
   const bytes = await storage.readBytes(evidence.storageKey);

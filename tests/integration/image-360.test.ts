@@ -253,7 +253,9 @@ describe("reading 360 panoramas", () => {
     // the first time.
     const panorama = await createEvidence(ctxFor(entitledOrg.id), panoramaInput(entitledProperty.id, "north.jpg"));
     const { panoramas } = await getProperty360Data(ctxFor(entitledOrg.id), entitledProperty.id);
-    expect(panoramas[0].imageUrl).toBe(`/api/v1/evidence/${panorama.id}/content`);
+    // The large rendition, also from this origin: an 11 MB original is past
+    // what one function response may carry.
+    expect(panoramas[0].imageUrl).toBe(`/api/v1/evidence/${panorama.id}/content?size=large`);
     expect(panoramas[0].imageUrl).not.toMatch(/^https?:\/\//);
   });
 

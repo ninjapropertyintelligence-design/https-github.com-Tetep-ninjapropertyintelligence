@@ -13,6 +13,7 @@ export interface Delivered360View {
   label: string;
   capturedAt: string | null;
   imageUrl: string;
+  thumbnailUrl: string;
 }
 
 /**
@@ -31,24 +32,27 @@ export function Delivered360Views({ views }: { views: Delivered360View[] }) {
       <div className="h-80 overflow-hidden rounded-lg border border-border">
         <Photo360Viewer key={current.id} imageUrl={current.imageUrl} label={current.label} />
       </div>
-      {views.length > 1 ? (
-        <ul className="flex flex-wrap gap-2">
-          {views.map((v) => (
-            <li key={v.id}>
-              <button
-                type="button"
-                onClick={() => setSelected(v.id)}
-                className={`rounded-lg border px-2.5 py-1 text-xs ${
-                  v.id === current.id ? "border-brand text-brand" : "border-border text-muted hover:text-foreground"
-                }`}
-              >
+      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {views.map((v) => (
+          <li key={v.id}>
+            <button
+              type="button"
+              onClick={() => setSelected(v.id)}
+              aria-pressed={v.id === current.id}
+              className={`block w-full overflow-hidden rounded-lg border-2 text-left ${
+                v.id === current.id ? "border-brand" : "border-transparent hover:border-border"
+              }`}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element -- an authenticated API route, not a static asset */}
+              <img src={v.thumbnailUrl} alt="" loading="lazy" className="aspect-[2/1] w-full object-cover" />
+              <span className="block truncate px-1.5 py-1 text-xs text-muted">
                 {v.label}
                 {v.capturedAt ? ` · ${v.capturedAt}` : ""}
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
