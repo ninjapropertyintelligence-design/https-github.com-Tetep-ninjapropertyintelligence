@@ -11,13 +11,17 @@ import { getSitePhotoFindings } from "@/lib/ai/photo-analysis";
 import { parseStoredBox } from "@/lib/ai/bounding-box";
 import { prisma } from "@/lib/prisma";
 import { ShotPinEditor } from "@/components/capture/ShotPinEditor";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
 import { IssueJobButton } from "@/components/admin/VendorManager";
 import { CaptureJobMap } from "@/components/capture/CaptureJobMap";
 import { VendorSiteImports } from "@/components/capture/VendorSiteImports";
 import { ConditionScoreForm } from "@/components/capture/ConditionScoreForm";
 import { DeliveredDroneWork, type DeliveredDroneCapture } from "@/components/capture/DeliveredDroneWork";
+import { DeliveredMatterportScans, type DeliveredMatterportScan } from "@/components/capture/DeliveredMatterportScans";
+import { getMatterportProvider } from "@/lib/integrations/matterport-provider";
+import { Delivered360Views, type Delivered360View } from "@/components/capture/Delivered360Views";
+import { labelFor as panoramaLabel } from "@/lib/image-360-service";
 import { droneMapLayersFor } from "@/lib/drone-map-layers";
 import { getStorageProvider } from "@/lib/storage";
 import { captureReviewWhere } from "@/lib/tenant-scope";
@@ -196,6 +200,53 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     const list = droneBySite.get(capture.captureJobSiteId!) ?? [];
     list.push(entry);
     droneBySite.set(capture.captureJobSiteId!, list);
+  }
+
+  // Matterport scans delivered on each site. Same review filter as the drone
+  // work: the vendor and reviewers see a scan straight away, the customer
+  // once the site is approved.
+  const matterportProvider = getMatterportProvider();
+  const matterportLinks = await prisma.matterportPropertyLink.findMany({
+    where: { captureJobSiteId: { in: job.sites.map((s) => s.id) }, ...captureReviewWhere(ctx) },
+    orderBy: { linkedAt: "desc" },
+    include: { space: { select: { externalSpaceId: true, name: true } } },
+  });
+  const matterportBySite = new Map<string, DeliveredMatterportScan[]>();
+  for (const link of matterportLinks) {
+    const list = matterportBySite.get(link.captureJobSiteId!) ?? [];
+    list.push({
+      id: link.id,
+      externalSpaceId: link.space.externalSpaceId,
+      name: link.space.name,
+      operator: link.operator,
+      linkedAt: formatDateTime(link.linkedAt),
+      embedUrl: matterportProvider.getViewerConfig(link.space.externalSpaceId).embedUrl,
+    });
+    matterportBySite.set(link.captureJobSiteId!, list);
+  }
+
+  // 360° photos delivered on each site (Insta360 imports and uploads), under
+  // the same review filter, so the vendor can look around what they sent.
+  const panoramas = await prisma.evidence.findMany({
+    where: {
+      captureJobSiteId: { in: job.sites.map((s) => s.id) },
+      type: "IMAGE_360",
+      ...evidenceScopeWhere(ctx),
+    },
+    orderBy: [{ captureDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    select: { id: true, captureJobSiteId: true, storageKey: true, captureDate: true },
+    take: 500,
+  });
+  const panoramasBySite = new Map<string, Delivered360View[]>();
+  for (const row of panoramas) {
+    const list = panoramasBySite.get(row.captureJobSiteId!) ?? [];
+    list.push({
+      id: row.id,
+      label: panoramaLabel(row.storageKey, list.length),
+      capturedAt: row.captureDate ? formatDateTime(row.captureDate) : null,
+      imageUrl: `/api/v1/evidence/${row.id}/content`,
+    });
+    panoramasBySite.set(row.captureJobSiteId!, list);
   }
 
   const canPlacePins = can(ctx, "canManageCaptureJobs") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
@@ -416,6 +467,10 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                         })),
                     )}
                   />
+
+                  <DeliveredMatterportScans scans={matterportBySite.get(site.id) ?? []} />
+
+                  <Delivered360Views views={panoramasBySite.get(site.id) ?? []} />
 
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}
