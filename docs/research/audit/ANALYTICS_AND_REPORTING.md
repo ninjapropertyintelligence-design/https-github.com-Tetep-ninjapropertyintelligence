@@ -1,0 +1,9 @@
+# Analytics and reporting — verified displays and gaps
+
+**Partially Verified for counters; Not Verified for a reporting module.** No KPI chart or analytics dashboard was found in the inspected Client A routes. This is not evidence of product-wide absence. Verified displayed counts include organization/location/project pagination, map location totals, Site 1 media total, project status subsets, and one response's task/image progress. [ALL_CHARTS_AND_CALCULATIONS.md](ALL_CHARTS_AND_CALCULATIONS.md), [DASHBOARD_FEATURES.md](DASHBOARD_FEATURES.md)
+
+The response UI has a `Generate Report` control, but it was not used, so report format, content, calculation, delivery, and permissions remain unknown. Map Timeline and marker clusters are visible visualizations, but aggregation and time-boundary rules were not tested. Do not infer an AI analytics feature or portfolio comparison from an icon or marketing language.
+
+Independent app requirements must define each metric from a documented source-of-truth query, timezone, exclusion rules, rounding, drill-down, stale-data policy, and permission scope. Build report generation only in a synthetic/staging environment with explicit authorization and audit. First tests should reconcile displayed totals against known fixture rows and cross-tenant isolation.
+
+Separate public claim: IDS [lists](https://www.immersiondata.com/who-we-serve) exportable portfolio reporting among its offerings [P-IDS-04](evidence/PUBLIC_SOURCES.md). Its [technical article](https://www.immersiondata.com/resources/how-the-phygii-engine-works-a-technical-view-of-structured-property-intelligence) describes condition-by-type summaries, age filtering, threshold-based scope selection, and selective ML, while noting most current insight work is initiative-level rather than fully unified portfolio-wide [P-IDS-02](evidence/PUBLIC_SOURCES.md). None of these specific views, formulas, exports, or AI workflows was verified in this account.
