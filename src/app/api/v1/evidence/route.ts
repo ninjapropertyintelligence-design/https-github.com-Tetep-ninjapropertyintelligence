@@ -5,6 +5,7 @@ import { withApiHandler } from "@/lib/api-utils";
 import { evidenceScopeWhere } from "@/lib/tenant-scope";
 import { createEvidence } from "@/lib/evidence-service";
 import { z } from "zod";
+import { clientIdSchema } from "@/lib/client-id";
 
 const EVIDENCE_TYPES = [
   "PHOTO",
@@ -27,9 +28,11 @@ const createEvidenceSchema = z.object({
   assetId: z.string().nullish(),
   issueId: z.string().nullish(),
   assessmentId: z.string().nullish(),
+  assessmentAnswerId: z.string().nullish(),
   captureDate: z.coerce.date().nullish(),
   captureShotId: z.string().nullish(),
   repairStage: z.enum(["BEFORE", "AFTER"]).nullish(),
+  clientId: clientIdSchema.nullish(),
   latitude: z.number().nullish(),
   longitude: z.number().nullish(),
   metadata: z.record(z.string(), z.unknown()).default({}),

@@ -130,6 +130,7 @@ export const POST = withApiHandler(async (ctx, req) => {
       propertyType: input.propertyType,
       squareFootage: input.squareFootage ?? null,
       yearBuilt: input.yearBuilt ?? null,
+      heading: input.heading ?? null,
       updatedBy: ctx.userId,
     },
   });

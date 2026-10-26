@@ -3,6 +3,7 @@ import { ApiError } from "@/lib/api-error";
 import { writeAuditLog } from "@/lib/audit";
 import { getStorageProvider } from "@/lib/storage";
 import { SessionContext, canAccessProperty } from "@/lib/tenant-scope";
+import { allRenditionKeys } from "@/lib/media-renditions";
 import {
   DeletionRequestStatus,
   DeletionSurface,
@@ -399,7 +400,7 @@ async function collectStorageKeys(propertyIds: string[]) {
   const [evidence, documentVersions, droneImages, droneOutputs] = await Promise.all([
     prisma.evidence.findMany({
       where: { propertyId: { in: propertyIds } },
-      select: { storageKey: true, thumbnailKey: true },
+      select: { storageKey: true, thumbnailKey: true, previewKey: true },
     }),
     prisma.documentVersion.findMany({
       where: { document: { propertyId: { in: propertyIds } } },
@@ -415,17 +416,32 @@ async function collectStorageKeys(propertyIds: string[]) {
     }),
   ]);
 
+  // Renditions are made on first view and found by their derived key, so
+  // they are deleted whether or not a column recorded them — but only the
+  // ones that exist are listed, so the deletion record counts real objects,
+  // not every size a photo could have had.
+  const storage = getStorageProvider();
+  const candidates = [...new Set(evidence.flatMap((e) => allRenditionKeys(e.storageKey)))];
+  const renditions: string[] = [];
+  for (const key of candidates) {
+    if ((await storage.verifyUpload(key)).exists) renditions.push(key);
+  }
+
   // "Derived files" in spec §54's list: processing outputs (orthomosaics,
   // point clouds, meshes) and generated thumbnails — things produced from
   // the originals rather than uploaded.
   const derived = [
     ...droneOutputs.map((o) => o.storageKey),
     ...evidence.map((e) => e.thumbnailKey).filter((k): k is string => Boolean(k)),
+    ...evidence.map((e) => e.previewKey).filter((k): k is string => Boolean(k)),
+    ...renditions,
   ];
 
   const all = [
     ...evidence.map((e) => e.storageKey),
     ...evidence.map((e) => e.thumbnailKey).filter((k): k is string => Boolean(k)),
+    ...evidence.map((e) => e.previewKey).filter((k): k is string => Boolean(k)),
+    ...renditions,
     ...documentVersions.map((d) => d.storageKey),
     ...droneImages.map((i) => i.storageKey),
     ...droneOutputs.map((o) => o.storageKey),

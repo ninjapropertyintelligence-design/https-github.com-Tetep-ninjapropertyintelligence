@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
 import { canAccessProperty, captureReviewWhere } from "@/lib/session-context";
 import { getStorageProvider } from "@/lib/storage";
+import { getOrMakeRendition } from "@/lib/media-renditions";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -46,7 +47,7 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { 
     // Vendor work not yet accepted reads as absent to everyone but reviewers
     // and the vendor, the same as it does in every list.
     where: { id, organizationId: ctx.organizationId, ...captureReviewWhere(ctx) },
-    select: { id: true, storageKey: true, mimeType: true, sizeBytes: true, propertyId: true },
+    select: { id: true, type: true, storageKey: true, mimeType: true, sizeBytes: true, propertyId: true, thumbnailKey: true, previewKey: true },
   });
   // 404 rather than 403 for another organization's id: whether a given id
   // exists is itself information.
@@ -60,6 +61,23 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { 
   }
 
   const storage = getStorageProvider();
+
+  // ?size=small|medium serves a resized copy of a photo, made on first
+  // request. Anything that cannot be resized falls through to the original.
+  const size = new URL(req.url).searchParams.get("size");
+  if ((size === "small" || size === "medium") && (evidence.type === "PHOTO" || evidence.type === "IMAGE_360" || evidence.type === "DRONE_IMAGE")) {
+    const rendition = await getOrMakeRendition(evidence, size);
+    if (rendition) {
+      return new NextResponse(new Uint8Array(rendition), {
+        headers: {
+          "Content-Type": "image/jpeg",
+          "Content-Length": String(rendition.byteLength),
+          "Cache-Control": "private, max-age=86400",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
+  }
 
   if (evidence.sizeBytes !== null && Number(evidence.sizeBytes) > MAX_PROXY_BYTES) {
     return NextResponse.redirect(await storage.getDownloadUrl(evidence.storageKey), 302);
