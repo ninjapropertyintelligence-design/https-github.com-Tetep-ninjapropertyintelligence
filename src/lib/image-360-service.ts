@@ -55,7 +55,7 @@ export interface Property360Data {
  * generic label is deliberate: a key that does not match the pattern should
  * produce "360 panorama", not a slice of a UUID presented as a name.
  */
-function labelFor(storageKey: string, index: number): string {
+export function labelFor(storageKey: string, index: number): string {
   const basename = storageKey.split("/").pop() ?? storageKey;
   const withoutUuid = basename.replace(/^[0-9a-f-]{36}-/i, "");
   const name = withoutUuid === basename ? "" : withoutUuid;
