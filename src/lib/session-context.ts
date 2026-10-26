@@ -23,6 +23,7 @@ export {
   contextForCaptureJob,
   contextForCaptureEvidence,
   contextForDroneOutput,
+  contextForDroneImage,
 } from "@/lib/tenant-scope";
 
 export const ACTIVE_ORG_COOKIE = "activeOrgId";

@@ -250,6 +250,7 @@ export function Insta360ImportPanel({
                 cameraModel: c.meta?.model ?? null,
                 width: c.meta?.width ?? null,
                 height: c.meta?.height ?? null,
+                heading: c.meta?.heading ?? null,
               },
             })),
           }),

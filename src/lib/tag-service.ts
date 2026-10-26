@@ -269,6 +269,26 @@ export async function setEvidenceFlag(ctx: SessionContext, evidenceId: string, f
   });
 }
 
+/**
+ * Which way a 360 panorama faces: the compass direction of its centre, set by
+ * a person looking at it. Kept in the panorama's metadata next to whatever
+ * the camera recorded, and marked as set by hand.
+ */
+export async function setPanoramaHeading(ctx: SessionContext, evidenceId: string, heading: number) {
+  if (!hasPermission(ctx.role, "canUploadEvidence")) throw new ApiError(403, "Missing permission: canUploadEvidence");
+  if (!Number.isFinite(heading)) throw new ApiError(400, "Heading must be a number of degrees");
+  const evidence = await loadVisibleEvidence(ctx, evidenceId);
+  const row = await prisma.evidence.findUniqueOrThrow({ where: { id: evidence.id }, select: { type: true, metadata: true } });
+  if (row.type !== "IMAGE_360") throw new ApiError(400, "Only a 360 panorama has a heading");
+  const metadata = (row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata : {}) as Record<string, unknown>;
+  const normalised = ((heading % 360) + 360) % 360;
+  await prisma.evidence.update({
+    where: { id: evidence.id },
+    data: { metadata: { ...metadata, heading: normalised, headingSource: "manual" } },
+  });
+  return { id: evidence.id, heading: normalised };
+}
+
 /** Comments are open to anyone who can see the photo, read-only roles included: a note is not an edit. */
 export async function addEvidenceComment(ctx: SessionContext, evidenceId: string, body: string) {
   const evidence = await loadVisibleEvidence(ctx, evidenceId);

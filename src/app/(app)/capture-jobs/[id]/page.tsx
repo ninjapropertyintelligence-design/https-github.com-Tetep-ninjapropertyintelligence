@@ -21,7 +21,7 @@ import { DeliveredDroneWork, type DeliveredDroneCapture } from "@/components/cap
 import { DeliveredMatterportScans, type DeliveredMatterportScan } from "@/components/capture/DeliveredMatterportScans";
 import { getMatterportProvider } from "@/lib/integrations/matterport-provider";
 import { Delivered360Views, type Delivered360View } from "@/components/capture/Delivered360Views";
-import { labelFor as panoramaLabel } from "@/lib/image-360-service";
+import { headingOf, labelFor as panoramaLabel } from "@/lib/image-360-service";
 import { panoramaStripUrls } from "@/lib/media-renditions";
 import { droneMapLayersFor } from "@/lib/drone-map-layers";
 import { getStorageProvider } from "@/lib/storage";
@@ -170,7 +170,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       datasets: {
         include: {
           outputs: { orderBy: { createdAt: "asc" } },
-          images: { orderBy: { createdAt: "asc" }, take: 12, select: { id: true, storageKey: true } },
+          images: { orderBy: { createdAt: "asc" }, take: 60, select: { id: true } },
           _count: { select: { images: true } },
         },
       },
@@ -179,7 +179,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
   const droneBySite = new Map<string, DeliveredDroneCapture[]>();
   for (const capture of droneCaptures) {
     const outputs = capture.datasets.flatMap((d) => d.outputs);
-    const images = capture.datasets.flatMap((d) => d.images).slice(0, 12);
+    const images = capture.datasets.flatMap((d) => d.images).slice(0, 60);
     const imageCount = capture.datasets.reduce((n, d) => n + d._count.images, 0);
     if (outputs.length === 0 && imageCount === 0 && capture.status !== "PROCESSING") continue;
     const entry: DeliveredDroneCapture = {
@@ -196,7 +196,12 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
           preview: (o.metadata as { preview?: boolean } | null)?.preview === true,
         })),
       ),
-      images: await Promise.all(images.map(async (i) => ({ id: i.id, downloadUrl: await storage.getDownloadUrl(i.storageKey) }))),
+      images: images.map((i) => ({
+        id: i.id,
+        thumbnailUrl: `/api/v1/drone/images/${i.id}/content?size=small`,
+        previewUrl: `/api/v1/drone/images/${i.id}/content?size=medium`,
+        originalUrl: `/api/v1/drone/images/${i.id}/content`,
+      })),
     };
     const list = droneBySite.get(capture.captureJobSiteId!) ?? [];
     list.push(entry);
@@ -235,7 +240,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       ...evidenceScopeWhere(ctx),
     },
     orderBy: [{ captureDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-    select: { id: true, captureJobSiteId: true, storageKey: true, captureDate: true, sizeBytes: true },
+    select: { id: true, captureJobSiteId: true, storageKey: true, captureDate: true, sizeBytes: true, latitude: true, longitude: true, metadata: true },
     take: 500,
   });
   const panoramasBySite = new Map<string, Delivered360View[]>();
@@ -245,6 +250,10 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       id: row.id,
       label: panoramaLabel(row.storageKey, list.length),
       capturedAt: row.captureDate ? formatDateTime(row.captureDate) : null,
+      capturedAtIso: row.captureDate ? row.captureDate.toISOString() : null,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      heading: headingOf(row.metadata),
       imageUrls: panoramaStripUrls(row.id, row.sizeBytes),
       thumbnailUrl: `/api/v1/evidence/${row.id}/content?size=small`,
     });
@@ -436,9 +445,25 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     />
                   ) : null}
 
+                  <DeliveredDroneWork
+                    captures={droneBySite.get(site.id) ?? []}
+                    token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+                    canPrepareDeepZoom={isVendor || can(ctx, "canManageCaptureJobs")}
+                    mapLayers={droneMapLayersFor(
+                      droneCaptures
+                        .filter((c) => c.captureJobSiteId === site.id)
+                        .map((c) => ({
+                          id: c.id,
+                          capturedAt: c.capturedAt,
+                          createdAt: c.createdAt,
+                          outputs: c.datasets.flatMap((d) => d.outputs),
+                        })),
+                    )}
+                  />
+
                   <DeliveredMatterportScans scans={matterportBySite.get(site.id) ?? []} />
 
-                  <Delivered360Views views={panoramasBySite.get(site.id) ?? []} />
+                  <Delivered360Views views={panoramasBySite.get(site.id) ?? []} canSetNorth={isVendor || can(ctx, "canUploadEvidence")} />
 
                   {isVendor && site.status !== "ACCEPTED" && ["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status) ? (
                     <>
@@ -458,21 +483,6 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     </>
                   ) : null}
 
-                  <DeliveredDroneWork
-                    captures={droneBySite.get(site.id) ?? []}
-                    token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
-                    canPrepareDeepZoom={isVendor || can(ctx, "canManageCaptureJobs")}
-                    mapLayers={droneMapLayersFor(
-                      droneCaptures
-                        .filter((c) => c.captureJobSiteId === site.id)
-                        .map((c) => ({
-                          id: c.id,
-                          capturedAt: c.capturedAt,
-                          createdAt: c.createdAt,
-                          outputs: c.datasets.flatMap((d) => d.outputs),
-                        })),
-                    )}
-                  />
 
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}
