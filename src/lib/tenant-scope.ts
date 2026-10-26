@@ -332,6 +332,17 @@ export async function contextForCaptureEvidence(ctx: SessionContext, evidenceId:
  * Resolves the context to read one drone output with. For the platform team,
  * only an output delivered against a capture job — the work it reviews.
  */
+/** As contextForDroneOutput, for one raw drone photo. */
+export async function contextForDroneImage(ctx: SessionContext, imageId: string): Promise<SessionContext> {
+  if (!isPlatformOperator(ctx)) return ctx;
+  const image = await prisma.droneImage.findFirst({
+    where: { id: imageId, dataset: { capture: { captureJobSiteId: { not: null } } } },
+    select: { dataset: { select: { capture: { select: { property: { select: { organization: { select: { id: true, name: true } } } } } } } } },
+  });
+  if (!image) throw new ApiError(404, "Drone photo not found");
+  return platformActingContext(ctx, image.dataset.capture.property.organization);
+}
+
 export async function contextForDroneOutput(ctx: SessionContext, outputId: string): Promise<SessionContext> {
   if (!isPlatformOperator(ctx)) return ctx;
   const output = await prisma.droneOutput.findFirst({

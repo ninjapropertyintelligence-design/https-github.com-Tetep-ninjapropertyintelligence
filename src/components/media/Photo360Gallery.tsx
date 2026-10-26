@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Photo360Viewer } from "@/components/media/Photo360Viewer";
+import { Panorama360Walk } from "@/components/media/Panorama360Walk";
 import { Insta360ImportPanel, type ImportRoute } from "@/components/media/Insta360ImportPanel";
 
 /** Serialised across the server/client boundary — a Date does not survive it. */
@@ -13,6 +13,8 @@ export interface Panorama360Option {
   longitude: number | null;
   /** The panorama at full resolution: one URL, or its strips top to bottom. */
   imageUrls: string[];
+  /** Compass direction of the image's centre, when recorded or set. */
+  heading: number | null;
 }
 
 /**
@@ -76,7 +78,9 @@ export function Photo360Gallery({
 
       <div className="flex flex-col gap-4 lg:flex-row">
         <div className="h-[560px] min-w-0 flex-1">
-          {selected ? <Photo360Viewer imageUrls={selected.imageUrls} label={selected.label} /> : null}
+          {selected ? (
+            <Panorama360Walk panoramas={panoramas} selectedId={selected.id} onSelect={setSelectedId} canSetNorth={canImport} />
+          ) : null}
         </div>
 
         <ul className="w-full shrink-0 space-y-2 lg:w-[300px]">

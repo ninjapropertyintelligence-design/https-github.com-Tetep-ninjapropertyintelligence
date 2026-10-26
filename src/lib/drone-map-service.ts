@@ -39,6 +39,18 @@ export async function loadViewableOutput(ctx: SessionContext, outputId: string) 
   return output;
 }
 
+/** A raw drone photo, under the same scope and review rules as the outputs. */
+export async function loadViewableDroneImage(ctx: SessionContext, imageId: string) {
+  const image = await prisma.droneImage.findFirst({
+    where: {
+      id: imageId,
+      dataset: { capture: { AND: [{ property: propertyScopeWhere(ctx) }, captureReviewWhere(ctx)] } },
+    },
+  });
+  if (!image) throw new ApiError(404, "Drone photo not found");
+  return image;
+}
+
 function isGeoTiff(storageKey: string) {
   return /\.tiff?$/i.test(storageKey);
 }

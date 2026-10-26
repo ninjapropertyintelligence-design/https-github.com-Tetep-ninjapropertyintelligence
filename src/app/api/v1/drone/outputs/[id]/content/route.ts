@@ -7,8 +7,8 @@ import { getStorageProvider } from "@/lib/storage";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
-/** A map preview is a few MB; anything this large belongs in tiles, not here. */
-const MAX_PROXY_BYTES = 64 * 1024 * 1024;
+/** Vercel refuses a function response over 4.5 MB; bigger maps go by signed URL. */
+const MAX_PROXY_BYTES = 4 * 1024 * 1024;
 
 /**
  * GET /api/v1/drone/outputs/[id]/content — a drone map image from THIS origin.
@@ -24,7 +24,7 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req
   const output = await loadViewableOutput(ctx, id);
   if (!isBrowserImage(output.storageKey)) throw new ApiError(400, "Only map images are served here");
   if (output.sizeBytes !== null && Number(output.sizeBytes) > MAX_PROXY_BYTES) {
-    return NextResponse.redirect(await getStorageProvider().getDownloadUrl(output.storageKey), 302);
+    return NextResponse.redirect(new URL(await getStorageProvider().getDownloadUrl(output.storageKey), req.url), 302);
   }
   const bytes = await getStorageProvider().readBytes(output.storageKey);
   if (!bytes) throw new ApiError(404, "This map file is no longer present in storage");

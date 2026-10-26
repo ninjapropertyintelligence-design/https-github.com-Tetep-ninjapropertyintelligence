@@ -22,6 +22,8 @@ export interface PanoramaMetadata {
   model: string | null;
   /** From XMP `GPano:ProjectionType`, lower-cased, e.g. "equirectangular". */
   projection: string | null;
+  /** From XMP `GPano:PoseHeadingDegrees`: the compass direction of the image's centre. */
+  heading: number | null;
 }
 
 const EMPTY: PanoramaMetadata = {
@@ -33,6 +35,7 @@ const EMPTY: PanoramaMetadata = {
   make: null,
   model: null,
   projection: null,
+  heading: null,
 };
 
 /** How much of the file the importer reads. Generous: some cameras embed a large preview in APP segments. */
@@ -220,6 +223,12 @@ function readXmp(bytes: Uint8Array, meta: PanoramaMetadata) {
     xml.match(/GPano:ProjectionType\s*=\s*["']([^"']+)["']/)?.[1] ??
     xml.match(/<GPano:ProjectionType>([^<]+)</)?.[1];
   if (projection) meta.projection = projection.trim().toLowerCase();
+  const heading = Number(
+    xml.match(/GPano:PoseHeadingDegrees\s*=\s*["']([^"']+)["']/)?.[1] ??
+      xml.match(/<GPano:PoseHeadingDegrees>([^<]+)</)?.[1] ??
+      Number.NaN,
+  );
+  if (Number.isFinite(heading) && heading >= 0 && heading <= 360) meta.heading = heading;
 }
 
 // ---------------------------------------------------------------------------

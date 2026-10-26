@@ -136,6 +136,27 @@ export async function makeRendition(bytes: Buffer, size: RenditionSize): Promise
   }
 }
 
+/** Reads an original and resizes it; null when it is too big or not an image. */
+async function makeFromOriginal(storageKey: string, sizeBytes: bigint | number | null, size: RenditionSize): Promise<Buffer | null> {
+  if (sizeBytes !== null && Number(sizeBytes) > MAX_SOURCE_BYTES) return null;
+  const original = await getStorageProvider().readBytes(storageKey);
+  if (!original || original.byteLength > MAX_SOURCE_BYTES) return null;
+  return makeRendition(original, size);
+}
+
+/**
+ * A rendition for any stored image that has no thumbnail columns of its own,
+ * such as a raw drone photo: found by its derived key, made and kept if missing.
+ */
+export async function getOrMakeKeyRendition(storageKey: string, sizeBytes: bigint | number | null, size: RenditionSize): Promise<Buffer | null> {
+  const key = renditionKey(storageKey, size);
+  const existing = await getStorageProvider().readBytes(key);
+  if (existing) return existing;
+  const rendition = await makeFromOriginal(storageKey, sizeBytes, size);
+  if (rendition) await keep(key, rendition);
+  return rendition;
+}
+
 /** Stores a derived copy; false, with a log line, when storage refuses it. */
 async function keep(key: string, bytes: Buffer): Promise<boolean> {
   try {
@@ -156,15 +177,10 @@ export async function getOrMakeRendition(
   evidence: { id: string; storageKey: string; sizeBytes: bigint | number | null; thumbnailKey: string | null; previewKey: string | null },
   size: RenditionSize,
 ): Promise<Buffer | null> {
-  const storage = getStorageProvider();
   const key = renditionKey(evidence.storageKey, size);
-  const stored = await storage.readBytes(key);
-  if (stored) return stored;
-
-  if (evidence.sizeBytes !== null && Number(evidence.sizeBytes) > MAX_SOURCE_BYTES) return null;
-  const original = await storage.readBytes(evidence.storageKey);
-  if (!original || original.byteLength > MAX_SOURCE_BYTES) return null;
-  const rendition = await makeRendition(original, size);
+  const existing = await getStorageProvider().readBytes(key);
+  if (existing) return existing;
+  const rendition = await makeFromOriginal(evidence.storageKey, evidence.sizeBytes, size);
   if (!rendition) return null;
 
   // Keeping the copy only saves the next viewer the resize, so a failed write

@@ -17,7 +17,7 @@ export interface DeliveredDroneCapture {
   status: string;
   notes: string | null;
   outputs: Array<{ id: string; outputType: string; storageKey: string; downloadUrl: string; preview: boolean }>;
-  images: Array<{ id: string; downloadUrl: string }>;
+  images: Array<{ id: string; thumbnailUrl: string; previewUrl: string; originalUrl: string }>;
   imageCount: number;
 }
 
@@ -39,7 +39,9 @@ export function DeliveredDroneWork({
   canPrepareDeepZoom?: boolean;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ images: DeliveredDroneCapture["images"]; index: number } | null>(null);
   if (captures.length === 0) return null;
+  const current = viewing ? viewing.images[viewing.index] : null;
 
   return (
     <div className="mt-3 space-y-3 rounded-lg border border-border bg-background p-3">
@@ -87,20 +89,83 @@ export function DeliveredDroneWork({
             ) : null}
             {capture.imageCount > 0 ? (
               <div>
-                <p className="text-xs text-muted">{capture.imageCount} raw drone photos</p>
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  {capture.images.map((img) => (
-                    <a key={img.id} href={img.downloadUrl} target="_blank" rel="noopener noreferrer">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={img.downloadUrl} alt="Drone photo" className="h-16 w-16 rounded object-cover" />
-                    </a>
+                <p className="text-xs font-medium text-muted">
+                  HD images ({capture.imageCount})
+                  {capture.imageCount > capture.images.length ? ` · first ${capture.images.length} shown` : ""}
+                </p>
+                <ul className="mt-1.5 grid grid-cols-3 gap-2 sm:grid-cols-6">
+                  {capture.images.map((img, index) => (
+                    <li key={img.id}>
+                      <button
+                        type="button"
+                        onClick={() => setViewing({ images: capture.images, index })}
+                        className="block w-full overflow-hidden rounded-lg border border-border hover:border-brand"
+                        aria-label={`Open HD image ${index + 1}`}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element -- an authenticated API route */}
+                        <img src={img.thumbnailUrl} alt="" loading="lazy" className="aspect-[4/3] w-full object-cover" />
+                      </button>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
             ) : null}
           </div>
         );
       })}
+      {viewing && current ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="HD image"
+          className="fixed inset-0 z-50 flex flex-col bg-black/90 p-4"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setViewing(null);
+            if (e.key === "ArrowRight") setViewing((v) => v && { ...v, index: Math.min(v.images.length - 1, v.index + 1) });
+            if (e.key === "ArrowLeft") setViewing((v) => v && { ...v, index: Math.max(0, v.index - 1) });
+          }}
+          tabIndex={-1}
+          ref={(el) => el?.focus()}
+        >
+          <div className="flex items-center justify-between text-sm text-white">
+            <span>
+              HD image {viewing.index + 1} of {viewing.images.length}
+            </span>
+            <div className="flex items-center gap-3">
+              <a href={current.originalUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                Full resolution ↗
+              </a>
+              <button type="button" onClick={() => setViewing(null)} className="rounded-full bg-white/15 px-3 py-1 hover:bg-white/25">
+                Close
+              </button>
+            </div>
+          </div>
+          <div className="relative flex min-h-0 flex-1 items-center justify-center">
+            {viewing.index > 0 ? (
+              <button
+                type="button"
+                onClick={() => setViewing({ ...viewing, index: viewing.index - 1 })}
+                className="absolute left-2 rounded-full bg-white/80 px-3 py-2 text-lg"
+                aria-label="Previous HD image"
+              >
+                ‹
+              </button>
+            ) : null}
+            {/* eslint-disable-next-line @next/next/no-img-element -- an authenticated API route */}
+            <img key={current.id} src={current.previewUrl} alt="" className="max-h-full max-w-full object-contain" />
+            {viewing.index < viewing.images.length - 1 ? (
+              <button
+                type="button"
+                onClick={() => setViewing({ ...viewing, index: viewing.index + 1 })}
+                className="absolute right-2 rounded-full bg-white/80 px-3 py-2 text-lg"
+                aria-label="Next HD image"
+              >
+                ›
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
