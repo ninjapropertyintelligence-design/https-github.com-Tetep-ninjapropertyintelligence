@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { CaptureJobSiteStatus, CaptureJobStatus as JobStatus, IssueStatus, Prisma, Role } from "@/generated/prisma/client";
-import { Permission, hasPermission, isOrgWideRole } from "@/lib/permissions";
+import { Permission, hasPermission, isOrgWideRole, permissionsForRole } from "@/lib/permissions";
+import { ApiError } from "@/lib/api-error";
 
 /**
  * Pure tenant/scope authorization logic — no Next.js request context, no
@@ -91,6 +92,14 @@ export function propertyScopeWhere(ctx: SessionContext): Prisma.PropertyWhereInp
   const base: Prisma.PropertyWhereInput = { organizationId: ctx.organizationId };
 
   if (isOrgWideRole(ctx.role)) {
+    return base;
+  }
+
+  // The platform operator acting inside one customer organization to run its
+  // capture work (see `platformActingContext`). Org-wide within that one
+  // organization; the operator's own console context has no organization, so
+  // `base` matches nothing there.
+  if (ctx.role === Role.PLATFORM_ADMIN && ctx.isPlatformAdmin) {
     return base;
   }
 
@@ -245,4 +254,90 @@ export async function canAccessProperty(ctx: SessionContext, propertyId: string)
 export function sessionPredatesPasswordChange(authTime: number | undefined, passwordChangedAt: Date | null): boolean {
   if (!passwordChangedAt) return false;
   return typeof authTime !== "number" || authTime < passwordChangedAt.getTime();
+}
+
+/**
+ * True for the platform operator's own session — not support impersonating a
+ * customer, which is deliberately a read-only VIEWER of that customer.
+ */
+export function isPlatformOperator(ctx: SessionContext): boolean {
+  return ctx.isPlatformAdmin && ctx.impersonation === null;
+}
+
+/**
+ * The platform operator, acting inside one customer organization.
+ *
+ * The operator runs the vendor network: it orders capture work on a
+ * customer's sites, hands the vendor its login, and approves what comes back
+ * before the customer sees it. Its own session belongs to no organization, so
+ * every scoped query would match nothing; this returns a context bound to the
+ * one organization being worked on, with the PLATFORM_ADMIN role so the
+ * permission engine — not a special case at each call site — decides what it
+ * may do there.
+ */
+export function platformActingContext(
+  ctx: SessionContext,
+  organization: { id: string; name: string },
+): SessionContext {
+  if (!isPlatformOperator(ctx)) throw new ApiError(403, "Platform admin only");
+  return {
+    ...ctx,
+    organizationId: organization.id,
+    organizationName: organization.name,
+    membershipId: "",
+    role: Role.PLATFORM_ADMIN,
+    vendorId: null,
+    grants: [],
+    permissions: permissionsForRole(Role.PLATFORM_ADMIN),
+    // The customer's MFA policy governs its own members, not the operator.
+    mfaRequired: false,
+  };
+}
+
+/**
+ * Resolves the context to act on one capture job with.
+ *
+ * For a customer or a vendor, their own session. For the platform operator,
+ * a context inside the organization that owns the job — found by id alone,
+ * because the operator's work spans every customer.
+ */
+export async function contextForCaptureJob(ctx: SessionContext, jobId: string): Promise<SessionContext> {
+  if (!isPlatformOperator(ctx)) return ctx;
+  const job = await prisma.captureJob.findUnique({
+    where: { id: jobId },
+    select: { organization: { select: { id: true, name: true } } },
+  });
+  if (!job) throw new ApiError(404, "Capture job not found");
+  return platformActingContext(ctx, job.organization);
+}
+
+/**
+ * Resolves the context to read one evidence file with.
+ *
+ * The platform team reviews vendor deliveries, so for it this binds to the
+ * organization of a file delivered against a capture job — and only such a
+ * file. A customer's own photos and documents stay theirs.
+ */
+export async function contextForCaptureEvidence(ctx: SessionContext, evidenceId: string): Promise<SessionContext> {
+  if (!isPlatformOperator(ctx)) return ctx;
+  const evidence = await prisma.evidence.findFirst({
+    where: { id: evidenceId, captureJobSiteId: { not: null } },
+    select: { organization: { select: { id: true, name: true } } },
+  });
+  if (!evidence) throw new ApiError(404, "Evidence not found");
+  return platformActingContext(ctx, evidence.organization);
+}
+
+/**
+ * Resolves the context to read one drone output with. For the platform team,
+ * only an output delivered against a capture job — the work it reviews.
+ */
+export async function contextForDroneOutput(ctx: SessionContext, outputId: string): Promise<SessionContext> {
+  if (!isPlatformOperator(ctx)) return ctx;
+  const output = await prisma.droneOutput.findFirst({
+    where: { id: outputId, dataset: { capture: { captureJobSiteId: { not: null } } } },
+    select: { dataset: { select: { capture: { select: { property: { select: { organization: { select: { id: true, name: true } } } } } } } } },
+  });
+  if (!output) throw new ApiError(404, "Drone output not found");
+  return platformActingContext(ctx, output.dataset.capture.property.organization);
 }

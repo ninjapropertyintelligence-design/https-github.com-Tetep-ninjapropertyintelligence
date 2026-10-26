@@ -14,8 +14,9 @@ import { hasPermission } from "@/lib/permissions";
 import { recordAssetConditionChange } from "@/lib/asset-condition";
 import { createDroneCapture, createDroneDataset } from "@/lib/drone-service";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
-import { notifyCaptureReviewers, notifyVendorUsers } from "@/lib/notifications";
+import { notifyCaptureReviewers, notifyPropertyStakeholders, notifyVendorUsers } from "@/lib/notifications";
 import { distanceMeters } from "@/lib/media/panorama-metadata";
+import { writeAuditLog } from "@/lib/audit";
 
 /**
  * Capture jobs — work ordered from a subcontractor.
@@ -66,7 +67,19 @@ export interface CreateCaptureJobInput {
  * Creates a DRAFT job. Draft deliberately, not issued: a job being assembled
  * must not appear in a vendor's queue as work they already owe.
  */
+/**
+ * Capture work is ordered by the platform operator, which runs the vendor
+ * network, not by the customer. Enforced here as well as on the routes so
+ * no caller can reach it without the permission.
+ */
+function requireCaptureManager(ctx: SessionContext) {
+  if (!hasPermission(ctx.role, "canManageCaptureJobs")) {
+    throw new ApiError(403, "Capture jobs are set up by the platform team");
+  }
+}
+
 export async function createCaptureJob(ctx: SessionContext, input: CreateCaptureJobInput) {
+  requireCaptureManager(ctx);
   if (input.propertyIds.length === 0) throw new ApiError(400, "A capture job needs at least one site");
   if (input.deliverables.length === 0) {
     throw new ApiError(400, "A capture job needs at least one deliverable");
@@ -214,8 +227,9 @@ export async function listCaptureJobs(ctx: SessionContext) {
 
 /** Moves a DRAFT job to ISSUED, which is also what grants the vendor access. */
 export async function issueCaptureJob(ctx: SessionContext, jobId: string) {
+  if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot issue a job");
+  requireCaptureManager(ctx);
   const job = await getCaptureJob(ctx, jobId);
-  if (ctx.role === Role.VENDOR) throw new ApiError(403, "Only the ordering organization can issue a job");
   if (job.status !== CaptureJobStatus.DRAFT) {
     throw new ApiError(409, `This job is ${job.status.toLowerCase()} and cannot be issued again`);
   }
@@ -300,8 +314,8 @@ export const MAX_SHOT_DISTANCE_FROM_SITE_METERS = 2000;
 /**
  * Places (or clears) the pins for a site's shot positions.
  *
- * Staff only: where the positions are is part of what the ordering
- * organization specifies, not something the vendor being measured against it
+ * Platform team only: where the positions are is part of what the job
+ * specifies, not something the vendor being measured against it
  * gets to move. Pins are checked against the site's own location so a
  * swapped latitude/longitude, or a pin dropped on the wrong store, is refused
  * rather than silently matching every photo to nothing.
@@ -312,7 +326,8 @@ export async function setShotLocations(
   siteId: string,
   locations: Array<{ shotId: string; latitude: number | null; longitude: number | null }>,
 ) {
-  if (ctx.role === Role.VENDOR) throw new ApiError(403, "Only the ordering organization can place shot positions");
+  if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot place shot positions");
+  requireCaptureManager(ctx);
   const { job, site } = await siteForAction(ctx, jobId, siteId);
   if (job.status === CaptureJobStatus.ACCEPTED || job.status === CaptureJobStatus.CANCELLED) {
     throw new ApiError(409, `This job is ${job.status.toLowerCase()} and can no longer be changed`);
@@ -538,7 +553,12 @@ export async function submitCaptureSite(ctx: SessionContext, jobId: string, site
   return submitted;
 }
 
-/** Acceptance or rejection by the ordering organization. */
+/**
+ * Acceptance or rejection by the platform team.
+ *
+ * Acceptance is the moment the vendor's work reaches the customer: until
+ * then `captureReviewWhere` hides it from everyone in the organization.
+ */
 export async function reviewCaptureSite(
   ctx: SessionContext,
   jobId: string,
@@ -547,10 +567,10 @@ export async function reviewCaptureSite(
 ) {
   if (ctx.role === Role.VENDOR) throw new ApiError(403, "A vendor cannot review its own submission");
   // Acceptance publishes the vendor's work to everyone on the property (see
-  // `captureReviewWhere`), so it is an admin decision, not something any
-  // member who can open the job may do.
+  // `captureReviewWhere`), so it is the platform team's quality gate, not
+  // something any member who can open the job may do.
   if (!hasPermission(ctx.role, "canReviewCaptures")) {
-    throw new ApiError(403, "Only an organization admin can accept or send back capture work");
+    throw new ApiError(403, "Only the platform team can accept or send back capture work");
   }
   const { job, site } = await siteForAction(ctx, jobId, siteId);
   if (site.status !== CaptureJobSiteStatus.SUBMITTED) {
@@ -559,6 +579,16 @@ export async function reviewCaptureSite(
   if (!decision.accept && !decision.reason?.trim()) {
     // A rejection with no reason is a site the vendor will resubmit unchanged.
     throw new ApiError(400, "A rejection needs a reason the vendor can act on");
+  }
+
+  if (decision.accept) {
+    // Drone files a vendor uploaded by hand have no processing step to finish
+    // them; approval is what makes the capture complete. A DroneDeploy import
+    // finishes itself when its layers are copied in.
+    await prisma.droneCapture.updateMany({
+      where: { captureJobSiteId: siteId, droneDeployImport: null, status: { in: ["CREATED", "UPLOADING", "PROCESSING"] } },
+      data: { status: "READY" },
+    });
   }
 
   const updated = await prisma.captureJobSite.update({
@@ -592,6 +622,22 @@ export async function reviewCaptureSite(
   // The reason is carried in the body, not just the fact of rejection: the
   // reason IS the instruction, and this notification is the only place most
   // vendors will read it.
+  // The customer learns of the work only now, when there is something it can
+  // see: the owner, the admins, and the managers responsible for the site.
+  if (decision.accept) {
+    try {
+      await notifyPropertyStakeholders({
+        propertyId: site.propertyId,
+        type: NotificationType.CAPTURE_ACCEPTED,
+        title: `New capture available: ${site.property.name}`,
+        body: `Approved capture from "${job.title}" is now on the property.`,
+        link: `/properties/${site.propertyId}`,
+      });
+    } catch {
+      // Best-effort: the review decision is recorded.
+    }
+  }
+
   if (job.vendorId) {
     try {
       await notifyVendorUsers({
@@ -642,8 +688,16 @@ export async function resolveDroneTargetForSite(
     throw new ApiError(409, `This job is ${job.status.toLowerCase()} and no longer accepts uploads`);
   }
 
+  // Only this job site's own capture. Any in-flight capture on the property
+  // could be the customer's own or a DroneDeploy import; filing the vendor's
+  // files there would skip review and leave them off the job.
   const existing = await prisma.droneCapture.findFirst({
-    where: { propertyId: site.propertyId, status: { in: ["CREATED", "UPLOADING", "PROCESSING"] } },
+    where: {
+      propertyId: site.propertyId,
+      captureJobSiteId: site.id,
+      droneDeployImport: null,
+      status: { in: ["CREATED", "UPLOADING", "PROCESSING"] },
+    },
     orderBy: { createdAt: "desc" },
     include: { datasets: { orderBy: { createdAt: "desc" }, take: 1 } },
   });
@@ -655,4 +709,63 @@ export async function resolveDroneTargetForSite(
   const capture = existing ?? (await createDroneCapture(ctx, site.propertyId, { capturedAt: new Date() }));
   const dataset = await createDroneDataset(ctx, capture.id);
   return { captureId: capture.id, datasetId: dataset.id };
+}
+
+/**
+ * Adds an asset to a job site, so it can be rated.
+ *
+ * A job that asks for condition scores on a site with no assets listed could
+ * otherwise never be finished: the vendor would have nothing to score. The
+ * vendor (on its own open job) or the platform team may add one; it is
+ * recorded with who added it and from which job.
+ */
+export async function addSiteAsset(
+  ctx: SessionContext,
+  jobId: string,
+  siteId: string,
+  input: { name: string; assetType: string; manufacturer?: string | null; model?: string | null; serialNumber?: string | null },
+) {
+  const isVendor = ctx.role === Role.VENDOR;
+  if (!isVendor && !hasPermission(ctx.role, "canManageCaptureJobs")) {
+    throw new ApiError(403, "Only the vendor on this job or the platform team can add assets here");
+  }
+  const { job, site } = await siteForAction(ctx, jobId, siteId);
+  if (isVendor && (!OPEN_STATUSES.includes(job.status) || site.status === CaptureJobSiteStatus.ACCEPTED)) {
+    throw new ApiError(409, "This site is no longer accepting work");
+  }
+  const name = input.name.trim();
+  const assetType = input.assetType.trim();
+  if (!name || !assetType) throw new ApiError(400, "Give the asset a name and a type");
+
+  const asset = await prisma.asset.create({
+    data: {
+      organizationId: ctx.organizationId,
+      propertyId: site.propertyId,
+      name,
+      assetType,
+      manufacturer: input.manufacturer?.trim() || null,
+      model: input.model?.trim() || null,
+      serialNumber: input.serialNumber?.trim() || null,
+      updatedBy: ctx.userId,
+    },
+    select: { id: true, name: true },
+  });
+  await Promise.all([
+    emitEvent({
+      organizationId: ctx.organizationId,
+      propertyId: site.propertyId,
+      type: EVENT_TYPES.ASSET_CREATED,
+      actorUserId: ctx.userId,
+      payload: { assetId: asset.id, name: asset.name, captureJobId: job.id },
+    }),
+    writeAuditLog({
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.userId,
+      action: "asset.created",
+      entityType: "Asset",
+      entityId: asset.id,
+      metadata: { captureJobId: job.id, captureJobSiteId: site.id, byVendor: isVendor },
+    }),
+  ]);
+  return asset;
 }

@@ -29,6 +29,7 @@ export type ObservabilityEvent =
   | "analytics.record_failed"
   | "drone.processing_job"
   | "geocoding.request"
+  | "mapbox.api_call"
   | "ai.tool_call"
   | "ai.provider_call"
   | "ai.photo_analysis_job"

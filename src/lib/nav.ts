@@ -16,6 +16,10 @@ export type { NavItem, NavSection, NavIconKey } from "@/lib/nav-shared";
 export function getNavItems(ctx: SessionContext): NavItem[] {
   if (ctx.isPlatformAdmin && !ctx.organizationId) {
     return [
+      // The platform team runs the vendor network: it orders capture work on
+      // customers' sites and approves it before the customer sees it.
+      { label: "Capture Jobs", href: "/admin/capture-jobs", section: "Manage", icon: "capture" },
+      { label: "Vendors", href: "/admin/vendors", section: "Manage", icon: "vendor" },
       { label: "Platform Administration", href: "/admin", section: "Administration", icon: "platform" },
       { label: "Security", href: "/settings/security", section: "Administration", icon: "shield" },
       { label: "Notifications", href: "/settings/notifications", section: "Administration", icon: "bell" },
@@ -44,6 +48,10 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   if (can(ctx, "canPerformCapture")) {
     items.push({ label: "Capture Jobs", href: "/capture-jobs", section: "Manage", icon: "capture" });
   }
+  // A vendor company's own DroneDeploy and Matterport accounts.
+  if (ctx.vendorId && can(ctx, "canPerformCapture")) {
+    items.push({ label: "Connections", href: "/settings/connections", section: "Manage", icon: "webhook" });
+  }
   if (can(ctx, "canViewFinancialExposure")) {
     items.push({ label: "Reports", href: "/reports", section: "Insights", icon: "report" });
     items.push({ label: "Cost to Serve", href: "/reports/cogs", section: "Insights", icon: "cost" });
@@ -53,6 +61,12 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
   }
   if (can(ctx, "canManageTeam") || can(ctx, "canManageBilling")) {
     items.push({ label: "Administration", href: "/settings", section: "Administration", icon: "settings" });
+  }
+  if (can(ctx, "canManageTeam")) {
+    items.push({ label: "Team", href: "/settings/team", section: "Administration", icon: "team" });
+  }
+  if (can(ctx, "canViewTeamActivity")) {
+    items.push({ label: "Activity", href: "/settings/activity", section: "Administration", icon: "activity" });
   }
   // Every role can manage its own second factor, so this is not permission-gated.
   items.push({ label: "Security", href: "/settings/security", section: "Administration", icon: "shield" });

@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
-import { ApiError, requirePermission, withApiHandler } from "@/lib/api-utils";
+import { requirePermission, withApiHandler } from "@/lib/api-utils";
 import { propertyScopeWhere } from "@/lib/session-context";
 import { getLatestHealthSnapshots } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
 import { createPropertySchema } from "@/lib/validation";
-import { writeAuditLog } from "@/lib/audit";
-import { emitEvent, EVENT_TYPES } from "@/lib/events";
-import { resolvePropertyCoordinates } from "@/lib/geocoding-service";
+import { createProperty } from "@/lib/property-service";
 
 // GET /api/v1/properties?region=&type=&status=&healthBand=&search=&page=&pageSize=
 export const GET = withApiHandler(async (ctx, req) => {
@@ -79,87 +77,7 @@ export const GET = withApiHandler(async (ctx, req) => {
 // POST /api/v1/properties
 export const POST = withApiHandler(async (ctx, req) => {
   requirePermission(ctx, "canManageProperties");
-  const body = await req.json();
-  const input = createPropertySchema.parse(body);
-
-  // Portfolio/region must belong to the caller's organization — never trust
-  // client-supplied IDs blindly, even ones that "look like" valid CUIDs.
-  const portfolio = await prisma.portfolio.findFirst({
-    where: { id: input.portfolioId, organizationId: ctx.organizationId },
-  });
-  if (!portfolio) throw new ApiError(400, "Invalid portfolioId for this organization");
-
-  if (input.regionId) {
-    const region = await prisma.region.findFirst({
-      where: { id: input.regionId, portfolioId: input.portfolioId },
-    });
-    if (!region) throw new ApiError(400, "Invalid regionId for this portfolio");
-  }
-
-  // Geocode the address when the caller didn't supply coordinates, so the
-  // property actually shows up on the Portfolio Map (spec §11). Never
-  // fatal — see resolvePropertyCoordinates.
-  const coordinates = await resolvePropertyCoordinates({
-    explicitLatitude: input.latitude,
-    explicitLongitude: input.longitude,
-    address: {
-      addressLine1: input.addressLine1,
-      city: input.city,
-      state: input.state,
-      postalCode: input.postalCode,
-      country: input.country,
-    },
-    organizationId: ctx.organizationId,
-  });
-
-  const property = await prisma.property.create({
-    data: {
-      organizationId: ctx.organizationId,
-      portfolioId: input.portfolioId,
-      regionId: input.regionId ?? null,
-      name: input.name,
-      customerPropertyId: input.customerPropertyId ?? null,
-      addressLine1: input.addressLine1,
-      addressLine2: input.addressLine2 ?? null,
-      city: input.city,
-      state: input.state,
-      postalCode: input.postalCode,
-      country: input.country,
-      latitude: coordinates.latitude,
-      longitude: coordinates.longitude,
-      propertyType: input.propertyType,
-      squareFootage: input.squareFootage ?? null,
-      yearBuilt: input.yearBuilt ?? null,
-      updatedBy: ctx.userId,
-    },
-  });
-
-  await Promise.all([
-    emitEvent({
-      organizationId: ctx.organizationId,
-      propertyId: property.id,
-      type: EVENT_TYPES.PROPERTY_CREATED,
-      actorUserId: ctx.userId,
-      payload: { name: property.name },
-    }),
-    writeAuditLog({
-      organizationId: ctx.organizationId,
-      actorUserId: ctx.userId,
-      action: "property.created",
-      entityType: "Property",
-      entityId: property.id,
-      // Records how the coordinates were obtained, so a geocoder's
-      // low-confidence guess is never mistaken for a surveyed position.
-      metadata: {
-        coordinateSource: coordinates.geocodeConfidence
-          ? "geocoded"
-          : coordinates.latitude !== null
-            ? "explicit"
-            : "none",
-        geocodeConfidence: coordinates.geocodeConfidence,
-      },
-    }),
-  ]);
-
+  const input = createPropertySchema.parse(await req.json());
+  const property = await createProperty(ctx, input);
   return NextResponse.json(property, { status: 201 });
 });

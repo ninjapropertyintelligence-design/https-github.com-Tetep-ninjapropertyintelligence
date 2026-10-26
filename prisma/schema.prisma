@@ -984,8 +984,38 @@ model Vendor {
   memberships Membership[]
   captureJobs CaptureJob[]
   invitations Invitation[]
+  connections VendorConnection[]
 
   @@index([organizationId])
+}
+
+enum VendorConnectionProvider {
+  DRONEDEPLOY
+  MATTERPORT
+}
+
+/// A vendor company's own account with a capture provider, so its people can
+/// pick a flight or a scan from it on a job instead of downloading and
+/// re-uploading. One per vendor and provider.
+model VendorConnection {
+  id           String                   @id @default(cuid())
+  vendorId     String
+  provider     VendorConnectionProvider
+  /// AES-256-GCM, see lib/integrations/crypto.ts. Never returned to a client.
+  /// DroneDeploy: the API key. Matterport: JSON {tokenId, tokenSecret}.
+  secretEnc    String
+  /// The account name the provider reported when the credentials were checked.
+  accountLabel String?
+  status       String                   @default("CONNECTED") // CONNECTED | ERROR
+  errorMessage String?
+  connectedById String?
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+
+  vendor             Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  droneDeployImports DroneDeployImport[]
+
+  @@unique([vendorId, provider])
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,16 +1495,21 @@ model DroneDeployImport {
   matchDistanceMeters Float?
   captureId      String?                 @unique
   errorMessage   String?
+  /// Set when a vendor picked this map from its own DroneDeploy account for a
+  /// capture job: the import runs on the vendor's key, not the customer's.
+  vendorConnectionId String?
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
 
-  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  property     Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
-  capture      DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
-  exports      DroneDeployExportImport[]
+  organization     Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property         Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  capture          DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  vendorConnection VendorConnection?         @relation(fields: [vendorConnectionId], references: [id], onDelete: SetNull)
+  exports          DroneDeployExportImport[]
 
   @@unique([organizationId, externalPlanId])
   @@index([organizationId, status])
+  @@index([vendorConnectionId, status])
 }
 
 enum DroneDeployExportStatus {
