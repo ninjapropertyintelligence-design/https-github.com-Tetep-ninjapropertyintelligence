@@ -22,6 +22,7 @@ import { DeliveredMatterportScans, type DeliveredMatterportScan } from "@/compon
 import { getMatterportProvider } from "@/lib/integrations/matterport-provider";
 import { Delivered360Views, type Delivered360View } from "@/components/capture/Delivered360Views";
 import { labelFor as panoramaLabel } from "@/lib/image-360-service";
+import { panoramaStripUrls } from "@/lib/media-renditions";
 import { droneMapLayersFor } from "@/lib/drone-map-layers";
 import { getStorageProvider } from "@/lib/storage";
 import { captureReviewWhere } from "@/lib/tenant-scope";
@@ -234,7 +235,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       ...evidenceScopeWhere(ctx),
     },
     orderBy: [{ captureDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-    select: { id: true, captureJobSiteId: true, storageKey: true, captureDate: true },
+    select: { id: true, captureJobSiteId: true, storageKey: true, captureDate: true, sizeBytes: true },
     take: 500,
   });
   const panoramasBySite = new Map<string, Delivered360View[]>();
@@ -244,7 +245,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
       id: row.id,
       label: panoramaLabel(row.storageKey, list.length),
       capturedAt: row.captureDate ? formatDateTime(row.captureDate) : null,
-      imageUrl: `/api/v1/evidence/${row.id}/content?size=large`,
+      imageUrls: panoramaStripUrls(row.id, row.sizeBytes),
       thumbnailUrl: `/api/v1/evidence/${row.id}/content?size=small`,
     });
     panoramasBySite.set(row.captureJobSiteId!, list);

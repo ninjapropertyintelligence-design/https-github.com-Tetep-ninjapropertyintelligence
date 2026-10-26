@@ -12,7 +12,7 @@ export interface Delivered360View {
   id: string;
   label: string;
   capturedAt: string | null;
-  imageUrl: string;
+  imageUrls: string[];
   thumbnailUrl: string;
 }
 
@@ -30,7 +30,7 @@ export function Delivered360Views({ views }: { views: Delivered360View[] }) {
     <div className="mt-3 space-y-3 rounded-lg border border-border bg-background p-3">
       <p className="text-xs font-semibold uppercase tracking-wide text-muted">360° views delivered ({views.length})</p>
       <div className="h-80 overflow-hidden rounded-lg border border-border">
-        <Photo360Viewer key={current.id} imageUrl={current.imageUrl} label={current.label} />
+        <Photo360Viewer key={current.id} imageUrls={current.imageUrls} label={current.label} />
       </div>
       <ul className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {views.map((v) => (

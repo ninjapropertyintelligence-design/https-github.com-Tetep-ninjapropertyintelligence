@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
 import { canAccessProperty, captureReviewWhere, contextForCaptureEvidence } from "@/lib/session-context";
 import { getStorageProvider } from "@/lib/storage";
-import { getOrMakeRendition } from "@/lib/media-renditions";
+import { getOrMakePanoramaStrip, getOrMakeRendition } from "@/lib/media-renditions";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -40,7 +40,7 @@ type RouteParams = { params: Promise<{ id: string }> };
  */
 // Vercel refuses a function response over 4.5 MB, so anything bigger goes
 // straight to storage. An <img>, a <video> or a download follows the
-// redirect fine; a 360 viewer asks for ?size=large instead, which fits.
+// redirect fine; a 360 viewer asks for the panorama in strips instead.
 const MAX_PROXY_BYTES = 4 * 1024 * 1024;
 
 export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
@@ -67,13 +67,26 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req
 
   const storage = getStorageProvider();
 
-  // ?size=small|medium|large serves a resized copy of a photo, made on first
+  // ?strip=k&of=n serves one full-resolution band of a panorama too big to
+  // send whole; the 360 viewer stitches the bands back together.
+  const search = new URL(req.url).searchParams;
+  if (evidence.type === "IMAGE_360" && search.has("strip")) {
+    const strip = await getOrMakePanoramaStrip(evidence, Number(search.get("strip")), Number(search.get("of")));
+    if (!strip) throw new ApiError(404, "That part of the panorama is not available");
+    return new NextResponse(new Uint8Array(strip), {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Content-Length": String(strip.byteLength),
+        "Cache-Control": "private, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  // ?size=small|medium serves a resized copy of a photo, made on first
   // request. Anything that cannot be resized falls through to the original.
-  const size = new URL(req.url).searchParams.get("size");
-  if (
-    (size === "small" || size === "medium" || size === "large") &&
-    (evidence.type === "PHOTO" || evidence.type === "IMAGE_360" || evidence.type === "DRONE_IMAGE")
-  ) {
+  const size = search.get("size");
+  if ((size === "small" || size === "medium") && (evidence.type === "PHOTO" || evidence.type === "IMAGE_360" || evidence.type === "DRONE_IMAGE")) {
     const rendition = await getOrMakeRendition(evidence, size);
     if (rendition) {
       return new NextResponse(new Uint8Array(rendition), {

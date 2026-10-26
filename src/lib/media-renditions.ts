@@ -12,27 +12,102 @@ import { getStorageProvider } from "@/lib/storage";
  * prefix and retention can find them even when nothing recorded them.
  */
 
-/**
- * `large` is for 360 panoramas: a camera's 11 MB equirectangular original is
- * too big to serve from a function (Vercel caps a response at 4.5 MB), and
- * 4096×2048 is still sharp inside the viewer.
- */
-export const RENDITION_SIZES = { small: 400, medium: 1600, large: 4096 } as const;
+export const RENDITION_SIZES = { small: 400, medium: 1600 } as const;
 export type RenditionSize = keyof typeof RENDITION_SIZES;
 
 /** Past this the original is not decoded here; the caller serves it as is. */
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 
-/** A rendition must fit in one function response, with room to spare. */
-export const MAX_RENDITION_BYTES = 4 * 1024 * 1024;
-
 export function renditionKey(storageKey: string, size: RenditionSize): string {
   return `${storageKey}~${size}.jpg`;
 }
 
-/** Every rendition key an original can have, for deletion. */
-export function allRenditionKeys(storageKey: string): string[] {
-  return (Object.keys(RENDITION_SIZES) as RenditionSize[]).map((size) => renditionKey(storageKey, size));
+/**
+ * Every rendition key an original can have, for deletion. Pass a panorama's
+ * size to include its strips, whose count follows from it.
+ */
+export function allRenditionKeys(storageKey: string, panoramaBytes?: bigint | number | null): string[] {
+  const keys = (Object.keys(RENDITION_SIZES) as RenditionSize[]).map((size) => renditionKey(storageKey, size));
+  const strips = panoramaBytes == null ? 0 : panoramaStripCount(panoramaBytes);
+  for (let index = 0; index < strips; index++) keys.push(stripKey(storageKey, index, strips));
+  return keys;
+}
+
+// ---------------------------------------------------------------------------
+// Full-resolution panorama strips
+// ---------------------------------------------------------------------------
+
+/**
+ * A 360 viewer needs the panorama's bytes from this origin (WebGL refuses a
+ * cross-origin texture), and one function response may carry at most 4.5 MB.
+ * So a panorama bigger than that is served as horizontal strips at its full
+ * resolution, which the viewer stitches back into the whole image: nothing
+ * is scaled down. The count is derived from the original's size alone, so
+ * every caller, and deletion, arrives at the same keys.
+ */
+const STRIP_TARGET_BYTES = 2.5 * 1024 * 1024;
+const PROXY_LIMIT_BYTES = 4 * 1024 * 1024;
+const MAX_STRIPS = 16;
+
+/** How many strips a panorama is served as; 1 means the original fits whole. */
+export function panoramaStripCount(sizeBytes: bigint | number | null): number {
+  if (sizeBytes === null) return 1;
+  const bytes = Number(sizeBytes);
+  if (bytes <= PROXY_LIMIT_BYTES) return 1;
+  return Math.min(MAX_STRIPS, Math.ceil(bytes / STRIP_TARGET_BYTES));
+}
+
+export function stripKey(storageKey: string, index: number, count: number): string {
+  return `${storageKey}~strip-${index}-of-${count}.jpg`;
+}
+
+/** The URLs a viewer loads, top to bottom, for one panorama. */
+export function panoramaStripUrls(evidenceId: string, sizeBytes: bigint | number | null): string[] {
+  const count = panoramaStripCount(sizeBytes);
+  if (count === 1) return [`/api/v1/evidence/${evidenceId}/content`];
+  return Array.from({ length: count }, (_, index) => `/api/v1/evidence/${evidenceId}/content?strip=${index}&of=${count}`);
+}
+
+/**
+ * Band `index` of `count` across the full width of the original, at its own
+ * resolution. JPEG at quality 92, which is visually indistinguishable from a
+ * camera's own JPEG; only a band that would not fit one response is encoded
+ * lower. Null when the original cannot be read or decoded.
+ */
+export async function getOrMakePanoramaStrip(
+  evidence: { storageKey: string; sizeBytes: bigint | number | null },
+  index: number,
+  count: number,
+): Promise<Buffer | null> {
+  if (!Number.isInteger(index) || index < 0 || index >= count || count !== panoramaStripCount(evidence.sizeBytes)) return null;
+  const storage = getStorageProvider();
+  const key = stripKey(evidence.storageKey, index, count);
+  const stored = await storage.readBytes(key);
+  if (stored) return stored;
+
+  const original = await storage.readBytes(evidence.storageKey);
+  if (!original || original.byteLength > MAX_SOURCE_BYTES) return null;
+  const { default: sharp } = await import("sharp");
+  try {
+    const { width, height } = await sharp(original).metadata();
+    if (!width || !height) return null;
+    const band = Math.ceil(height / count);
+    const top = band * index;
+    const bandHeight = Math.min(band, height - top);
+    if (bandHeight <= 0) return null;
+    const encode = (quality: number) =>
+      sharp(original, { failOn: "error" })
+        .extract({ left: 0, top, width, height: bandHeight })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer();
+    let strip = await encode(92);
+    if (strip.byteLength > PROXY_LIMIT_BYTES) strip = await encode(85);
+    if (strip.byteLength > PROXY_LIMIT_BYTES) strip = await encode(75);
+    await storage.writeBytes(key, strip);
+    return strip;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -45,16 +120,12 @@ export function allRenditionKeys(storageKey: string): string[] {
 export async function makeRendition(bytes: Buffer, size: RenditionSize): Promise<Buffer | null> {
   const { default: sharp } = await import("sharp");
   const edge = RENDITION_SIZES[size];
-  const encode = (quality: number) =>
-    sharp(bytes, { failOn: "error" })
+  try {
+    return await sharp(bytes, { failOn: "error" })
       .rotate()
       .resize({ width: edge, height: edge, fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality, mozjpeg: true })
+      .jpeg({ quality: size === "small" ? 72 : 80, mozjpeg: true })
       .toBuffer();
-  try {
-    const first = await encode(size === "small" ? 72 : size === "medium" ? 80 : 78);
-    // A very detailed panorama can come out too big at the usual quality.
-    return first.byteLength <= MAX_RENDITION_BYTES ? first : await encode(60);
   } catch {
     return null;
   }
@@ -85,7 +156,7 @@ export async function getOrMakeRendition(
   // supplied is left in place; ours is still found by its derived key.
   await prisma.evidence.update({
     where: { id: evidence.id },
-    data: size === "medium" ? { previewKey: key } : size === "large" || evidence.thumbnailKey ? {} : { thumbnailKey: key },
+    data: size === "medium" ? { previewKey: key } : evidence.thumbnailKey ? {} : { thumbnailKey: key },
   });
   return rendition;
 }
