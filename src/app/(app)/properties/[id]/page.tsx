@@ -41,6 +41,8 @@ import { getPropertyMedia } from "@/lib/media-gallery";
 import { getVocabulary } from "@/lib/tag-service";
 import { myCollections } from "@/lib/collection-service";
 import { MediaGallery } from "@/components/media/MediaGallery";
+import { AssetFormToggle } from "@/components/asset/AssetForm";
+import { assetFormOptions } from "@/lib/asset-form-options";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -117,7 +119,7 @@ async function TabContent({
   const canViewAI = ctx.permissions.includes("canViewAI");
   switch (tab) {
     case "assets":
-      return <AssetsTab propertyId={propertyId} />;
+      return <AssetsTab propertyId={propertyId} ctx={ctx} />;
     case "issues":
       return <IssuesTab propertyId={propertyId} />;
     case "assessments":
@@ -204,12 +206,30 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
   );
 }
 
-async function AssetsTab({ propertyId }: { propertyId: string }) {
-  const assets = await prisma.asset.findMany({ where: { propertyId }, orderBy: { healthScore: "asc" } });
+async function AssetsTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
+  const canManage = can(ctx, "canManageAssets");
+  const [assets, options] = await Promise.all([
+    prisma.asset.findMany({ where: { propertyId }, orderBy: { healthScore: "asc" }, include: { area: { select: { name: true } } } }),
+    canManage ? assetFormOptions(ctx.organizationId, propertyId) : null,
+  ]);
+  const adder = options ? (
+    <Card>
+      <CardBody>
+        <AssetFormToggle propertyId={propertyId} options={options} label="+ Add asset" />
+      </CardBody>
+    </Card>
+  ) : null;
   if (assets.length === 0) {
-    return <EmptyState title="No assets recorded yet" description="Add assets to start tracking condition, cost, and history for this property." />;
+    return (
+      <div className="space-y-4">
+        {adder}
+        <EmptyState title="No assets recorded yet" description="Add assets to start tracking condition, cost, and history for this property." />
+      </div>
+    );
   }
   return (
+    <div className="space-y-4">
+    {adder}
     <Card>
       <CardBody className="p-0">
         <table className="w-full text-sm">
@@ -232,7 +252,10 @@ async function AssetsTab({ propertyId }: { propertyId: string }) {
                   </Link>
                   {a.serialNumber ? <p className="text-xs text-muted">SN: {a.serialNumber}</p> : null}
                 </td>
-                <td className="px-3 py-3 text-muted">{a.assetType}</td>
+                <td className="px-3 py-3 text-muted">
+                  {a.assetType}
+                  {a.area ? <p className="text-xs">{a.area.name}</p> : null}
+                </td>
                 <td className="px-3 py-3 tabular-nums">{a.criticalityScore}</td>
                 <td className="px-3 py-3 tabular-nums">{a.conditionScore ?? "—"}</td>
                 <td className="px-3 py-3 tabular-nums">{a.healthScore ?? "—"}</td>
@@ -243,6 +266,7 @@ async function AssetsTab({ propertyId }: { propertyId: string }) {
         </table>
       </CardBody>
     </Card>
+    </div>
   );
 }
 

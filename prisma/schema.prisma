@@ -813,6 +813,10 @@ model Asset {
   manufacturer    String?
   model           String?
   serialNumber    String?
+  /// Who services this asset, e.g. the fryer company. Optional; the store tells us.
+  serviceVendorId String?
+  /// When it was last inspected, e.g. the date on a suppression system's tag.
+  lastInspectedAt DateTime?
 
   installedAt             DateTime?
   expectedUsefulLifeYears Int?
@@ -838,6 +842,7 @@ model Asset {
   floor    Floor?          @relation(fields: [floorId], references: [id], onDelete: SetNull)
   area     Area?           @relation(fields: [areaId], references: [id], onDelete: SetNull)
   system   BuildingSystem? @relation(fields: [systemId], references: [id], onDelete: SetNull)
+  serviceVendor     Vendor?          @relation("AssetServiceVendor", fields: [serviceVendorId], references: [id], onDelete: SetNull)
 
   conditionHistory     AssetConditionHistory[]
   issues               Issue[]
@@ -1013,6 +1018,7 @@ model Vendor {
   updatedAt      DateTime @updatedAt
 
   issues      Issue[]
+  servicedAssets Asset[]         @relation("AssetServiceVendor")
   memberships Membership[]
   captureJobs CaptureJob[]
   invitations Invitation[]
