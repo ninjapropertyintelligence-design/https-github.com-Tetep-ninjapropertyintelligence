@@ -41,6 +41,8 @@ export const createAssetSchema = z.object({
   criticalityScore: z.number().int().min(1).max(5).default(3),
   replacementCost: z.number().int().nonnegative().nullish(),
   conditionScore: z.number().min(0).max(100).nullish(),
+  serviceVendorId: z.string().nullish(),
+  lastInspectedAt: z.coerce.date().nullish(),
 });
 
 export const updateAssetSchema = createAssetSchema.partial().extend({

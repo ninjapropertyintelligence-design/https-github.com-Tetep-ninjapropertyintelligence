@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { ApiError, requirePermission, withApiHandler } from "@/lib/api-utils";
 import { propertyScopeWhere } from "@/lib/session-context";
 import { updateAssetSchema } from "@/lib/validation";
+import { assertAssetRefs } from "@/lib/asset-refs";
 import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recalculatePropertyHealth } from "@/lib/scoring";
@@ -44,6 +45,7 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
   if (input.version !== existing.version) {
     throw new ApiError(409, "Asset was modified by someone else — reload and retry");
   }
+  await assertAssetRefs(ctx.organizationId, existing.propertyId, input);
 
   const updated = await prisma.asset.update({
     where: { id: existing.id },
@@ -64,6 +66,8 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
       ...(input.areaId !== undefined ? { areaId: input.areaId } : {}),
       ...(input.systemId !== undefined ? { systemId: input.systemId } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
+      ...(input.serviceVendorId !== undefined ? { serviceVendorId: input.serviceVendorId } : {}),
+      ...(input.lastInspectedAt !== undefined ? { lastInspectedAt: input.lastInspectedAt } : {}),
       updatedBy: ctx.userId,
       version: { increment: 1 },
     },

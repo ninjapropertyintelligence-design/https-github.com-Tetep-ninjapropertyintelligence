@@ -8,6 +8,17 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { formatCents, formatDate } from "@/lib/format";
 import { ConditionUpdateForm } from "@/components/asset/ConditionUpdateForm";
 import { recordProductEvent } from "@/lib/analytics";
+import { AssetFormToggle } from "@/components/asset/AssetForm";
+import { assetFormOptions } from "@/lib/asset-form-options";
+
+function Detail({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <div>
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="text-foreground">{value || "—"}</dd>
+    </div>
+  );
+}
 
 export default async function AssetDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -16,7 +27,7 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
 
   const asset = await prisma.asset.findFirst({
     where: { AND: [{ id }, { property: propertyScopeWhere(ctx) }] },
-    include: { property: { select: { id: true, name: true } }, system: true, conditionHistory: { orderBy: { changedAt: "desc" }, take: 20, include: { changedBy: { select: { name: true } } } } },
+    include: { property: { select: { id: true, name: true } }, system: true, area: { select: { name: true } }, serviceVendor: { select: { name: true, contactPhone: true, contactEmail: true } }, conditionHistory: { orderBy: { changedAt: "desc" }, take: 20, include: { changedBy: { select: { name: true } } } } },
   });
   if (!asset) notFound();
 
@@ -25,6 +36,8 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
   // failures. Awaited but never able to throw, and flagged automatically
   // when the viewer is support impersonating.
   await recordProductEvent(ctx, "asset.viewed");
+
+  const formOptions = can(ctx, "canManageAssets") ? await assetFormOptions(ctx.organizationId, asset.property.id) : null;
 
   const [openIssues, documents] = await Promise.all([
     prisma.issue.findMany({ where: { assetId: asset.id, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } } }),
@@ -47,6 +60,48 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
         <StatTile label="Criticality" value={`${asset.criticalityScore}/5`} tone={asset.criticalityScore >= 4 ? "warning" : "default"} />
         <StatTile label="Replacement Cost" value={asset.replacementCost ? formatCents(asset.replacementCost) : "—"} />
       </div>
+
+      <Card>
+        <CardHeader title="Asset details" subtitle="Data plate, location, service contact and last inspection" />
+        <CardBody className="space-y-4">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm md:grid-cols-4">
+            <Detail label="Section" value={asset.area?.name} />
+            <Detail label="Make" value={asset.manufacturer} />
+            <Detail label="Model" value={asset.model} />
+            <Detail label="Serial number" value={asset.serialNumber} />
+            <Detail
+              label="Service contact"
+              value={
+                asset.serviceVendor
+                  ? [asset.serviceVendor.name, asset.serviceVendor.contactPhone, asset.serviceVendor.contactEmail].filter(Boolean).join(" · ")
+                  : null
+              }
+            />
+            <Detail label="Last inspected" value={asset.lastInspectedAt ? formatDate(asset.lastInspectedAt) : null} />
+          </dl>
+          {formOptions ? (
+            <AssetFormToggle
+              label="Edit details"
+              propertyId={asset.property.id}
+              options={formOptions}
+              asset={{
+                id: asset.id,
+                version: asset.version,
+                values: {
+                  name: asset.name,
+                  assetType: asset.assetType,
+                  areaId: asset.areaId ?? "",
+                  manufacturer: asset.manufacturer ?? "",
+                  model: asset.model ?? "",
+                  serialNumber: asset.serialNumber ?? "",
+                  serviceVendorId: asset.serviceVendorId ?? "",
+                  lastInspectedAt: asset.lastInspectedAt ? asset.lastInspectedAt.toISOString().slice(0, 10) : "",
+                },
+              }}
+            />
+          ) : null}
+        </CardBody>
+      </Card>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

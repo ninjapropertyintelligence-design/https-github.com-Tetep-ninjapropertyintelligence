@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { ApiError, requirePermission, withApiHandler } from "@/lib/api-utils";
 import { propertyScopeWhere } from "@/lib/session-context";
 import { createAssetSchema } from "@/lib/validation";
+import { assertAssetRefs } from "@/lib/asset-refs";
 import { writeAuditLog } from "@/lib/audit";
 import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { recalculatePropertyHealth } from "@/lib/scoring";
@@ -59,6 +60,7 @@ export const POST = withApiHandler(async (ctx, req) => {
     where: { AND: [{ id: input.propertyId }, propertyScopeWhere(ctx)] },
   });
   if (!property) throw new ApiError(400, "Invalid propertyId, or you don't have access to it");
+  await assertAssetRefs(ctx.organizationId, input.propertyId, input);
 
   if (input.customerAssetId) {
     const dup = await prisma.asset.findFirst({
@@ -87,6 +89,8 @@ export const POST = withApiHandler(async (ctx, req) => {
       replacementCost: input.replacementCost ?? null,
       conditionScore: input.conditionScore ?? null,
       healthScore: input.conditionScore ?? null,
+      serviceVendorId: input.serviceVendorId ?? null,
+      lastInspectedAt: input.lastInspectedAt ?? null,
       updatedBy: ctx.userId,
     },
   });
