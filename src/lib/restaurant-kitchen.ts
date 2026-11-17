@@ -159,6 +159,16 @@ export const KITCHEN_ZONES: KitchenZone[] = [
         criticality: 3,
       },
       {
+        assetType: "Portable Fire Extinguishers",
+        function: "Safety",
+        checkpoints: [
+          "Inspection tag current: photograph it so the date is tracked",
+          "Pressure gauge in the green; pin and seal intact",
+          "Mounted, visible and unobstructed; K-class extinguisher near the fryers",
+        ],
+        criticality: 5,
+      },
+      {
         assetType: "Exhaust Hood, Baffle Filters & Ansul System",
         function: "Safety",
         checkpoints: [

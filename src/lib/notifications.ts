@@ -47,16 +47,22 @@ async function membershipsToNotifyForProperty(propertyId: string) {
   return { organizationId: property.organizationId, userIds: [...userIds] };
 }
 
+/**
+ * Returns how many people it was delivered to. Zero means nobody is
+ * responsible for the property, which a caller that must not lose the notice
+ * (an expiry reminder) needs to know, and one that does not can ignore.
+ */
 export async function notifyPropertyStakeholders(params: {
   propertyId: string;
   type: NotificationType;
   title: string;
   body?: string;
   link?: string;
-}) {
+}): Promise<number> {
   const result = await membershipsToNotifyForProperty(params.propertyId);
-  if (!result || result.userIds.length === 0) return;
+  if (!result || result.userIds.length === 0) return 0;
   await deliver(result.organizationId, result.userIds, params);
+  return result.userIds.length;
 }
 
 /**

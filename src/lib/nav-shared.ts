@@ -40,7 +40,9 @@ export type NavIconKey =
   | "storage"
   | "usage"
   | "rules"
-  | "platform";
+  | "platform"
+  | "contractor"
+  | "expiry";
 
 export interface NavItem {
   label: string;

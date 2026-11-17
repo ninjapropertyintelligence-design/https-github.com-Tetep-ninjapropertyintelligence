@@ -4,6 +4,10 @@ import { getPortfolioDashboard } from "@/lib/dashboard";
 import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { healthBandFor } from "@/lib/scoring-categories";
 import { searchDocumentChunks } from "@/lib/document-extraction";
+import { ApiError } from "@/lib/api-error";
+import { listExpiries, type ExpiryView } from "@/lib/expiry-service";
+import { listContractors, whoToCall } from "@/lib/contractor-service";
+import { isoDay } from "@/lib/expiry-rules";
 
 /**
  * AI TOOL GATEWAY — approved backend functions (spec §24-§27).
@@ -20,6 +24,25 @@ import { searchDocumentChunks } from "@/lib/document-extraction";
  */
 
 type Ref = { type: string; id: string };
+
+function expiryForAi(i: ExpiryView) {
+  return {
+    kind: i.kind,
+    label: i.label,
+    property: i.property.name,
+    propertyId: i.propertyId,
+    asset: i.asset?.name ?? null,
+    assetId: i.assetId,
+    expiresOn: isoDay(i.expiresAt),
+    daysLeft: i.daysLeft,
+    countdown: i.countdown,
+    status: i.status,
+    /** A date a model read off a photo that nobody has checked yet. */
+    readByAiNotChecked: i.needsReview,
+    servicedBy: i.servicedBy,
+    contractor: i.asset?.serviceVendor?.name ?? null,
+  };
+}
 
 export function makeAiTools(ctx: SessionContext) {
   const refs: Ref[] = [];
@@ -183,6 +206,75 @@ export function makeAiTools(ctx: SessionContext) {
       });
       assessments.forEach((a) => trackRef("Assessment", a.id));
       return { count: assessments.length, assessments };
+    },
+
+    /**
+     * What is expiring or has expired: fire extinguisher tags, hood
+     * certificates, permits, warranties. Dates and day counts are the
+     * platform's own, never the model's.
+     */
+    async getExpirations(args: { propertyId?: string; withinDays?: number; includeInactive?: boolean }) {
+      try {
+        const items = await listExpiries(ctx, {
+          propertyId: args.propertyId,
+          withinDays: typeof args.withinDays === "number" ? args.withinDays : undefined,
+          status: args.includeInactive ? "ALL" : undefined,
+        });
+        items.forEach((i) => trackRef(i.asset ? "Asset" : "Property", i.asset?.id ?? i.propertyId));
+        return { count: items.length, items: items.slice(0, 100).map(expiryForAi) };
+      } catch (err) {
+        if (err instanceof ApiError) return { found: false as const, reason: err.message };
+        throw err;
+      }
+    },
+
+    /** The contractors to call, with their numbers, optionally for one store or one trade. */
+    async getContractors(args: { propertyId?: string; trade?: string }) {
+      try {
+        const contractors = await listContractors(ctx, { propertyId: args.propertyId, trade: args.trade });
+        return {
+          count: contractors.length,
+          contractors: contractors.slice(0, 100).map((c) => ({
+            id: c.id,
+            name: c.name,
+            trade: c.trade,
+            contactName: c.contactName,
+            phone: c.contactPhone,
+            afterHoursPhone: c.emergencyPhone,
+            email: c.contactEmail,
+            servesEveryStore: c.servesAllProperties,
+            stores: c.properties.map((p) => p.property.name),
+            notes: c.notes,
+          })),
+        };
+      } catch (err) {
+        if (err instanceof ApiError) return { found: false as const, reason: err.message };
+        throw err;
+      }
+    },
+
+    /** Who to call when one piece of equipment breaks: its own contractor first, then the store's others. */
+    async getWhoToCall(args: { assetId: string }) {
+      try {
+        const { assigned, others } = await whoToCall(ctx, args.assetId);
+        trackRef("Asset", args.assetId);
+        const brief = (v: NonNullable<typeof assigned>) => ({
+          name: v.name,
+          trade: v.trade,
+          contactName: v.contactName,
+          phone: v.contactPhone,
+          afterHoursPhone: v.emergencyPhone,
+          email: v.contactEmail,
+        });
+        return {
+          found: true as const,
+          assignedContractor: assigned ? brief(assigned) : null,
+          otherContractorsAtThisStore: others.slice(0, 10).map(brief),
+        };
+      } catch (err) {
+        if (err instanceof ApiError) return { found: false as const, reason: err.message };
+        throw err;
+      }
     },
 
     async getCapitalExposure(args: { propertyId?: string }) {
@@ -351,6 +443,13 @@ export function scopeToolsToProperty(toolset: AiToolset, propertyId: string) {
     },
     getIssues: (args: { severity?: string; status?: string }) => toolset.getIssues({ ...args, propertyId }),
     getAssessments: (args: { status?: string }) => toolset.getAssessments({ ...args, propertyId }),
+    getExpirations: (args: { withinDays?: number; includeInactive?: boolean }) => toolset.getExpirations({ ...args, propertyId }),
+    getContractors: (args: { trade?: string }) => toolset.getContractors({ ...args, propertyId }),
+    getWhoToCall: async (args: { assetId: string }) => {
+      // The asset must be on this property, as for getAsset.
+      const onProperty = await prisma.asset.count({ where: { id: args.assetId, propertyId } });
+      return onProperty > 0 ? toolset.getWhoToCall(args) : { found: false as const };
+    },
     getCapitalExposure: () => toolset.getCapitalExposure({ propertyId }),
     getDocuments: (args: { assetId?: string; documentType?: string }) => toolset.getDocuments({ ...args, propertyId }),
     getEvidence: (args: { assetId?: string; issueId?: string }) => toolset.getEvidence({ ...args, propertyId }),

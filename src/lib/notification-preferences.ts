@@ -15,7 +15,7 @@ export interface NotificationTypeInfo {
   type: NotificationType;
   label: string;
   description: string;
-  group: "Capture work" | "Repairs" | "Issues" | "Assessments" | "Processing and reports" | "Team";
+  group: "Capture work" | "Repairs" | "Issues" | "Expirations" | "Assessments" | "Processing and reports" | "Team";
 }
 
 /** Every notification type, in the order the settings page shows them. */
@@ -67,6 +67,18 @@ export const NOTIFICATION_CATALOG: NotificationTypeInfo[] = [
     label: "Issue or repair assigned to you",
     description: "Someone assigned an issue to you, or sent your company to repair one.",
     group: "Issues",
+  },
+  {
+    type: "EXPIRY_UPCOMING",
+    label: "Inspection or certificate expiring soon",
+    description: "A fire extinguisher tag, hood certificate, permit or similar at a store you look after is coming up for renewal.",
+    group: "Expirations",
+  },
+  {
+    type: "EXPIRY_OVERDUE",
+    label: "Inspection or certificate expired",
+    description: "Something at a store you look after has passed its expiry date and has not been renewed.",
+    group: "Expirations",
   },
   {
     type: "ASSESSMENT_DUE",
