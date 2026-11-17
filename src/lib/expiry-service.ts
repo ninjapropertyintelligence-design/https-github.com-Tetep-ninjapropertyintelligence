@@ -94,6 +94,11 @@ function requireManager(ctx: SessionContext) {
   if (!hasPermission(ctx.role, "canManageAssets")) throw new ApiError(403, "Missing permission: canManageAssets");
 }
 
+/** For callers outside this module that must check access before doing their own lookups. */
+export function assertMayReadExpiries(ctx: SessionContext) {
+  requireReader(ctx);
+}
+
 /**
  * Who may add a record from a photo: managers, and inspectors and technicians
  * who are out photographing tags. A contractor's own login is not for this.

@@ -48,7 +48,7 @@ export interface AssetLocation {
 }
 
 /** Where a pin opens: the tour's own URL with Matterport's position parameter. */
-function pinUrl(tourUrl: string | null, sweepId: string): string | null {
+export function pinUrl(tourUrl: string | null, sweepId: string): string | null {
   if (!tourUrl) return null;
   return `${tourUrl}${tourUrl.includes("?") ? "&" : "?"}ss=${encodeURIComponent(sweepId)}`;
 }

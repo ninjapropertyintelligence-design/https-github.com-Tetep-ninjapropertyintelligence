@@ -41,6 +41,9 @@ import { myCollections } from "@/lib/collection-service";
 import { MediaGallery } from "@/components/media/MediaGallery";
 import { AddKitchenEquipmentButton } from "@/components/kitchen/AddKitchenEquipmentButton";
 import { KITCHEN_ZONES, findKitchenEquipment } from "@/lib/restaurant-kitchen";
+import { listExpiries } from "@/lib/expiry-service";
+import { pinUrl } from "@/lib/asset-location-service";
+import { StoreExpirationsPanel } from "@/components/expiry/StoreExpirationsPanel";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -492,13 +495,26 @@ async function SiteMapTab({
 
 async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const status = await getPropertyInteriorStatus(ctx, propertyId);
+  // Expirations and pins are for people who manage or view the portfolio; a
+  // contractor's login reaches this tab only to deliver capture work.
+  const mayRead = can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio");
+  const expirations = mayRead ? await listExpiries(ctx, { propertyId }) : [];
+  const embedUrl = status.link?.viewerConfig?.embedUrl ?? null;
+  const pins = (status.link?.references ?? [])
+    .filter((r) => r.asset && r.sweepId)
+    .map((r) => ({ id: r.id, label: r.label, asset: r.asset as { id: string; name: string }, url: pinUrl(embedUrl, r.sweepId as string) }));
   return (
-    <InteriorManager
-      propertyId={propertyId}
-      data={status as unknown as InteriorStatusData}
-      canManageIntegrations={can(ctx, "canManageIntegrations")}
-      canPerformCapture={can(ctx, "canPerformCapture")}
-    />
+    <div className="space-y-4">
+      <InteriorManager
+        propertyId={propertyId}
+        data={status as unknown as InteriorStatusData}
+        canManageIntegrations={can(ctx, "canManageIntegrations")}
+        canPerformCapture={can(ctx, "canPerformCapture")}
+      />
+      {mayRead && (status.link || expirations.length > 0) ? (
+        <StoreExpirationsPanel propertyId={propertyId} expirations={expirations} pins={pins} canReport />
+      ) : null}
+    </div>
   );
 }
 
@@ -625,6 +641,12 @@ async function ReportsTab({ propertyId, propertyName }: { propertyId: string; pr
           </a>
           <a href={`/api/v1/reports/property-condition?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Property Condition Report (CSV)
+          </a>
+          <a href={`/api/v1/reports/compliance?propertyId=${propertyId}&format=pdf`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+            Compliance and Insurance Record (PDF)
+          </a>
+          <a href={`/api/v1/reports/compliance?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+            Expiration Register (CSV)
           </a>
           <a href={`/api/v1/reports/capital-exposure?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Capital Exposure Report (CSV)

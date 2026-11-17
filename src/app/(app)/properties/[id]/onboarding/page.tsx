@@ -24,6 +24,8 @@ export default async function PropertyOnboardingPage({ params }: { params: Promi
     interior: `/properties/${id}?tab=interior`,
     exterior: `/properties/${id}?tab=exterior`,
     assets: `/properties/${id}?tab=assets`,
+    contractors: `/contractors`,
+    expirations: `/expirations?propertyId=${id}`,
     assessment: `/properties/${id}?tab=assessments`,
     issues: `/properties/${id}?tab=issues`,
     documents: `/properties/${id}?tab=documents`,

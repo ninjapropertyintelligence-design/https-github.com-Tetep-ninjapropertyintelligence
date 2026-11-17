@@ -43,6 +43,22 @@ export default async function ExpirationsPage({ searchParams }: { searchParams: 
         <StatTile label="Read by AI, to check" value={toCheck} tone={toCheck > 0 ? "warning" : "default"} sublabel="Dates read from photos" />
       </div>
 
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <a
+          href={`/api/v1/reports/compliance?format=csv${propertyId ? `&propertyId=${propertyId}` : ""}`}
+          className="rounded-lg border border-border px-3 py-1.5 hover:bg-zinc-50"
+        >
+          Download register (CSV)
+        </a>
+        {propertyId ? (
+          <a href={`/api/v1/reports/compliance?propertyId=${propertyId}&format=pdf`} className="rounded-lg border border-border px-3 py-1.5 hover:bg-zinc-50">
+            Insurance record for this store (PDF)
+          </a>
+        ) : (
+          <span className="text-xs text-muted">Choose a store to get its full insurance record as a PDF.</span>
+        )}
+      </div>
+
       <form className="flex flex-wrap gap-2" action="/expirations">
         <select name="propertyId" defaultValue={propertyId ?? ""} className="rounded-lg border border-border px-3 py-1.5 text-sm">
           <option value="">All stores</option>

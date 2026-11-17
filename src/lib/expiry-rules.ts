@@ -155,3 +155,25 @@ export function parseCalendarDate(value: string): Date | null {
 export function isoDay(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
+
+export type ComplianceStatus = "Current" | "Due soon" | "Expired";
+
+/** The status a record shows to an outsider: expired, due within 60 days, or current. */
+export function complianceStatusFor(daysLeft: number): ComplianceStatus {
+  if (daysLeft < 0) return "Expired";
+  return daysLeft <= 60 ? "Due soon" : "Current";
+}
+
+/**
+ * How a date came to be on record, in words a reader outside the company can
+ * rely on. A date a model read off a photo and nobody has checked is said to
+ * be exactly that, never presented as verified.
+ */
+export function evidenceBasis(params: { source: "MANUAL" | "AI_PHOTO"; needsReview: boolean; hasPhoto: boolean }): string {
+  if (params.source === "AI_PHOTO") {
+    return params.needsReview
+      ? "Read from a photo by software; not yet confirmed by a person"
+      : "Read from a photo by software; confirmed by a person";
+  }
+  return params.hasPhoto ? "Entered by a person; photo of the tag on file" : "Entered by a person";
+}

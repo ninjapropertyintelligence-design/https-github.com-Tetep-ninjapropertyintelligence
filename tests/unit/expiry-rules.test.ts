@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   calendarDay,
+  complianceStatusFor,
   countdownLabel,
   dateFromParts,
   daysUntil,
+  evidenceBasis,
   nextReminder,
   parseCalendarDate,
   urgencyFor,
@@ -96,5 +98,17 @@ describe("parseCalendarDate", () => {
     expect(parseCalendarDate("2026-02-30")).toBeNull();
     expect(parseCalendarDate("12/14/2026")).toBeNull();
     expect(parseCalendarDate("")).toBeNull();
+  });
+});
+
+describe("what an outsider is told", () => {
+  it("buckets a date as current, due soon or expired", () => {
+    expect([-1, 0, 60, 61].map(complianceStatusFor)).toEqual(["Expired", "Due soon", "Due soon", "Current"]);
+  });
+  it("never presents a date nobody has checked as verified", () => {
+    expect(evidenceBasis({ source: "AI_PHOTO", needsReview: true, hasPhoto: true })).toBe("Read from a photo by software; not yet confirmed by a person");
+    expect(evidenceBasis({ source: "AI_PHOTO", needsReview: false, hasPhoto: true })).toBe("Read from a photo by software; confirmed by a person");
+    expect(evidenceBasis({ source: "MANUAL", needsReview: false, hasPhoto: true })).toBe("Entered by a person; photo of the tag on file");
+    expect(evidenceBasis({ source: "MANUAL", needsReview: false, hasPhoto: false })).toBe("Entered by a person");
   });
 });

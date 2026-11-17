@@ -9,6 +9,7 @@ export default async function ReportsPage() {
 
   const reports = [
     { title: "Portfolio Capital Exposure Report", description: "Health, risk, and CapEx by property, org-wide (or filtered to your scope).", href: "/api/v1/reports/capital-exposure?format=csv" },
+    { title: "Portfolio Expiration Register", description: "Every tracked inspection, certificate and permit across your stores, with status and how each date was recorded. For insurers and auditors.", href: "/api/v1/reports/compliance?format=csv" },
     { title: "Portfolio Property Condition Report", description: "Every asset's condition, criticality, and replacement cost across your scope.", href: "/api/v1/reports/property-condition?format=csv" },
   ];
 
