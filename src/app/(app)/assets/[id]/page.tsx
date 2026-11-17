@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { formatCents, formatDate } from "@/lib/format";
 import { ConditionUpdateForm } from "@/components/asset/ConditionUpdateForm";
 import { recordProductEvent } from "@/lib/analytics";
+import { findKitchenEquipment } from "@/lib/restaurant-kitchen";
 
 export default async function AssetDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -16,7 +17,7 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
 
   const asset = await prisma.asset.findFirst({
     where: { AND: [{ id }, { property: propertyScopeWhere(ctx) }] },
-    include: { property: { select: { id: true, name: true } }, system: true, conditionHistory: { orderBy: { changedAt: "desc" }, take: 20, include: { changedBy: { select: { name: true } } } } },
+    include: { property: { select: { id: true, name: true } }, area: { select: { name: true } }, system: true, conditionHistory: { orderBy: { changedAt: "desc" }, take: 20, include: { changedBy: { select: { name: true } } } } },
   });
   if (!asset) notFound();
 
@@ -30,6 +31,8 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
     prisma.issue.findMany({ where: { assetId: asset.id, status: { in: ["OPEN", "TRIAGED", "ASSIGNED", "IN_PROGRESS"] } } }),
     prisma.document.findMany({ where: { assetId: asset.id } }),
   ]);
+
+  const kitchen = findKitchenEquipment(asset.assetType);
 
   return (
     <div className="space-y-6">
@@ -47,6 +50,20 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
         <StatTile label="Criticality" value={`${asset.criticalityScore}/5`} tone={asset.criticalityScore >= 4 ? "warning" : "default"} />
         <StatTile label="Replacement Cost" value={asset.replacementCost ? formatCents(asset.replacementCost) : "—"} />
       </div>
+
+      {kitchen ? (
+        <Card>
+          <CardHeader title="Audit checkpoints" subtitle={`${asset.area?.name ?? kitchen.zone} · ${kitchen.item.function}`} />
+          <CardBody>
+            <ul className="list-disc space-y-1 pl-5 text-sm text-foreground">
+              {kitchen.item.checkpoints.map((c) => (
+                <li key={c}>{c}</li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs text-muted">Scored 1 Pass, 2 Needs Attention, 3 Critical Fail in the Restaurant Kitchen Audit.</p>
+          </CardBody>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

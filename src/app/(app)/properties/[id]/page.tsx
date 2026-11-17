@@ -39,6 +39,8 @@ import { getPropertyMedia } from "@/lib/media-gallery";
 import { getVocabulary } from "@/lib/tag-service";
 import { myCollections } from "@/lib/collection-service";
 import { MediaGallery } from "@/components/media/MediaGallery";
+import { AddKitchenEquipmentButton } from "@/components/kitchen/AddKitchenEquipmentButton";
+import { KITCHEN_ZONES, findKitchenEquipment } from "@/lib/restaurant-kitchen";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -115,7 +117,7 @@ async function TabContent({
   const canViewAI = ctx.permissions.includes("canViewAI");
   switch (tab) {
     case "assets":
-      return <AssetsTab propertyId={propertyId} />;
+      return <AssetsTab propertyId={propertyId} canManageAssets={can(ctx, "canManageAssets")} />;
     case "issues":
       return <IssuesTab propertyId={propertyId} />;
     case "assessments":
@@ -202,45 +204,87 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
   );
 }
 
-async function AssetsTab({ propertyId }: { propertyId: string }) {
-  const assets = await prisma.asset.findMany({ where: { propertyId }, orderBy: { healthScore: "asc" } });
+async function AssetsTab({ propertyId, canManageAssets }: { propertyId: string; canManageAssets: boolean }) {
+  const assets = await prisma.asset.findMany({
+    where: { propertyId },
+    orderBy: { healthScore: "asc" },
+    include: { area: { select: { name: true } } },
+  });
+  const hasKitchen = assets.some((a) => findKitchenEquipment(a.assetType));
+  const kitchenAction = canManageAssets ? <AddKitchenEquipmentButton propertyId={propertyId} hasKitchen={hasKitchen} /> : null;
+
   if (assets.length === 0) {
-    return <EmptyState title="No assets recorded yet" description="Add assets to start tracking condition, cost, and history for this property." />;
+    return (
+      <div className="space-y-3">
+        <EmptyState title="No assets recorded yet" description="Add assets to start tracking condition, cost, and history for this property." />
+        {kitchenAction ? (
+          <div className="flex flex-wrap items-center gap-3">
+            {kitchenAction}
+            <span className="text-xs text-muted">For a restaurant: lists every piece of kitchen equipment, zone by zone.</span>
+          </div>
+        ) : null}
+      </div>
+    );
   }
+
+  // Kitchen zones first, in walk-through order; then any other area; then
+  // assets with no area at all.
+  const zoneOrder = new Map(KITCHEN_ZONES.map((z, i) => [z.name, i]));
+  const groups = new Map<string, typeof assets>();
+  for (const a of assets) {
+    const key = a.area?.name ?? "";
+    groups.set(key, [...(groups.get(key) ?? []), a]);
+  }
+  const groupNames = [...groups.keys()].sort((x, y) => {
+    const rank = (n: string) => (n === "" ? Number.MAX_SAFE_INTEGER : (zoneOrder.get(n) ?? KITCHEN_ZONES.length));
+    return rank(x) - rank(y) || x.localeCompare(y);
+  });
+  const showGroups = groupNames.length > 1 || groupNames[0] !== "";
+
   return (
-    <Card>
-      <CardBody className="p-0">
-        <table className="w-full text-sm">
-          <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-            <tr>
-              <th className="px-5 py-2.5 font-medium">Asset</th>
-              <th className="px-3 py-2.5 font-medium">Type</th>
-              <th className="px-3 py-2.5 font-medium">Criticality</th>
-              <th className="px-3 py-2.5 font-medium">Condition</th>
-              <th className="px-3 py-2.5 font-medium">Health</th>
-              <th className="px-5 py-2.5 text-right font-medium">Replacement Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {assets.map((a) => (
-              <tr key={a.id} className="border-b border-border last:border-0 hover:bg-zinc-50">
-                <td className="px-5 py-3">
-                  <Link href={`/assets/${a.id}`} className="font-medium text-foreground hover:text-brand">
-                    {a.name}
-                  </Link>
-                  {a.serialNumber ? <p className="text-xs text-muted">SN: {a.serialNumber}</p> : null}
-                </td>
-                <td className="px-3 py-3 text-muted">{a.assetType}</td>
-                <td className="px-3 py-3 tabular-nums">{a.criticalityScore}</td>
-                <td className="px-3 py-3 tabular-nums">{a.conditionScore ?? "—"}</td>
-                <td className="px-3 py-3 tabular-nums">{a.healthScore ?? "—"}</td>
-                <td className="px-5 py-3 text-right tabular-nums">{a.replacementCost ? formatCents(a.replacementCost) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </CardBody>
-    </Card>
+    <div className="space-y-3">
+      {kitchenAction ? <div className="flex justify-end">{kitchenAction}</div> : null}
+      {groupNames.map((groupName) => (
+        <Card key={groupName || "none"}>
+          {showGroups ? <CardHeader title={groupName || "No area"} subtitle={`${groups.get(groupName)!.length} assets`} /> : null}
+          <CardBody className="p-0">
+            <table className="w-full text-sm">
+              <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+                <tr>
+                  <th className="px-5 py-2.5 font-medium">Asset</th>
+                  <th className="px-3 py-2.5 font-medium">Type</th>
+                  <th className="px-3 py-2.5 font-medium">Criticality</th>
+                  <th className="px-3 py-2.5 font-medium">Condition</th>
+                  <th className="px-3 py-2.5 font-medium">Health</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Replacement Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.get(groupName)!.map((a) => {
+                  const kitchen = findKitchenEquipment(a.assetType);
+                  return (
+                    <tr key={a.id} className="border-b border-border last:border-0 hover:bg-zinc-50">
+                      <td className="px-5 py-3">
+                        <Link href={`/assets/${a.id}`} className="font-medium text-foreground hover:text-brand">
+                          {a.name}
+                        </Link>
+                        {a.serialNumber ? <p className="text-xs text-muted">SN: {a.serialNumber}</p> : null}
+                        {kitchen ? <p className="text-xs text-muted">{kitchen.item.function} · {kitchen.item.checkpoints.length} checkpoints</p> : null}
+                      </td>
+                      <td className="px-3 py-3 text-muted">{a.assetType}</td>
+                      <td className="px-3 py-3 tabular-nums">{a.criticalityScore}</td>
+                      <td className="px-3 py-3 tabular-nums">{a.conditionScore ?? "—"}</td>
+                      <td className="px-3 py-3 tabular-nums">{a.healthScore ?? "—"}</td>
+                      <td className="px-5 py-3 text-right tabular-nums">{a.replacementCost ? formatCents(a.replacementCost) : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
+      ))}
+    </div>
   );
 }
 

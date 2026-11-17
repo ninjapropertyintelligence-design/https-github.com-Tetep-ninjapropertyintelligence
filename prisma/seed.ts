@@ -5,6 +5,8 @@ import { recalculatePropertyHealth } from "../src/lib/scoring";
 import { DEFAULT_CATEGORY_WEIGHTS } from "../src/lib/scoring-categories";
 import { getStorageProvider } from "../src/lib/storage";
 import { STANDARD_TAG_TYPES } from "../src/lib/tag-service";
+import { installKitchenAuditTemplate, writeKitchenEquipment } from "../src/lib/kitchen-service";
+import type { SessionContext } from "../src/lib/tenant-scope";
 import {
   renderOrthomosaic,
   renderRoofDetail,
@@ -870,6 +872,38 @@ async function main() {
       },
     });
     console.log(`  Created capture job "${job.title}" (1 site, 6 shot positions, issued to ${vendor.name})`);
+  }
+
+  console.log("Seeding a demo restaurant with its kitchen equipment...");
+  {
+    let restaurant = await prisma.property.findFirst({ where: { organizationId: org.id, customerPropertyId: "REST-0054" } });
+    if (!restaurant) {
+      restaurant = await prisma.property.create({
+        data: {
+          organizationId: org.id,
+          portfolioId: portfolio.id,
+          regionId: midwest.id,
+          name: "Demo Grill & Bar",
+          customerPropertyId: "REST-0054",
+          addressLine1: "1200 Main St",
+          city: "Overland Park",
+          state: "KS",
+          postalCode: "66210",
+          latitude: 38.9822,
+          longitude: -94.6708,
+          propertyType: "Restaurant",
+          squareFootage: 7500,
+          isDemoData: true,
+        },
+      });
+    }
+    const { created } = await writeKitchenEquipment(org.id, restaurant.id, owner.id);
+    if (created.length > 0) await recalculatePropertyHealth(restaurant.id);
+    // The template service checks the caller's role, so it runs as the
+    // demo owner; nothing else in the context is read.
+    const ownerCtx = { userId: owner.id, organizationId: org.id, role: "OWNER" } as SessionContext;
+    await installKitchenAuditTemplate(ownerCtx);
+    console.log(`  ${restaurant.name}: ${created.length} kitchen assets added; Restaurant Kitchen Audit template ready`);
   }
 
   console.log("\nSeed complete. Demo login credentials (password: 'password123'):");
