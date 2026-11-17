@@ -4,7 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/Button";
 import { apiRequest } from "@/components/settings/api-request";
-import { EMBED_KIND_LABELS, embedUrlProblem, opensInNewTab } from "@/lib/embed-url";
+import { EMBED_KIND_LABELS, embedFrameSrc, embedUrlProblem, opensInNewTab } from "@/lib/embed-url";
 
 type Kind = keyof typeof EMBED_KIND_LABELS;
 
@@ -105,8 +105,8 @@ export function SpatialEmbeds({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-foreground">3D embeds</h3>
-          <p className="text-xs text-muted">Hosted tours, point clouds and models for this site.</p>
+          <h3 className="text-sm font-semibold text-foreground">Embeds</h3>
+          <p className="text-xs text-muted">Hosted tours, point clouds, models, videos and other viewers for this site.</p>
         </div>
         {canManage && !adding ? (
           <Button
@@ -219,7 +219,7 @@ export function SpatialEmbeds({
               go fullscreen, but cannot navigate this app or open forms here. */}
           <iframe
             key={open.key}
-            src={open.url}
+            src={embedFrameSrc(open.kind, open.url)}
             title={open.name}
             className="h-[560px] w-full bg-black"
             sandbox="allow-scripts allow-same-origin allow-popups allow-fullscreen"
@@ -296,7 +296,13 @@ function EmbedForm({
           required
           type="url"
           defaultValue={initial?.url ?? ""}
-          placeholder={kind === "MATTERPORT" ? "https://my.matterport.com/show/?m=…" : "https://…"}
+          placeholder={
+            kind === "MATTERPORT"
+              ? "https://my.matterport.com/show/?m=…"
+              : kind === "VIDEO"
+                ? "https://www.youtube.com/watch?v=… or https://vimeo.com/…"
+                : "https://…"
+          }
           className={INPUT}
         />
       </label>

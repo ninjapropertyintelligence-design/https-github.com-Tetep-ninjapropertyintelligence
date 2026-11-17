@@ -1,15 +1,16 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
+import { can } from "@/lib/session-context";
 
 /**
  * Audit log viewer (spec §21, §48). Platform admins see across all
- * organizations; org Owners see only their own organization's trail. Never
- * exposed to any other role.
+ * organizations; the roles with canViewTeamActivity (Owner, Portfolio Admin)
+ * see only their own organization's trail. Never exposed to any other role.
  */
 export const GET = withApiHandler(async (ctx, req) => {
-  if (!ctx.isPlatformAdmin && ctx.role !== "OWNER") {
-    throw new ApiError(403, "Only Owners and Platform Admins may view audit logs");
+  if (!ctx.isPlatformAdmin && !can(ctx, "canViewTeamActivity")) {
+    throw new ApiError(403, "Only Owners, Portfolio Admins and Platform Admins may view audit logs");
   }
 
   const url = new URL(req.url);

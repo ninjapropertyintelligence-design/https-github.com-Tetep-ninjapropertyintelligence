@@ -168,6 +168,7 @@ describe("classifyPanorama", () => {
     make: null,
     model: null,
     projection: null,
+    heading: null,
     ...m,
   });
 

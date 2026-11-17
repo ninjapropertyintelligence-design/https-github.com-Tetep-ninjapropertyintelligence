@@ -20,6 +20,8 @@ import { DocumentSearchBox } from "@/components/property/DocumentSearchBox";
 import { AskAiInline } from "@/components/ai/AskAiInline";
 import { InteriorManager, InteriorStatusData } from "@/components/interior/InteriorManager";
 import { ExteriorManager, DroneCaptureData, MarkerData } from "@/components/exterior/ExteriorManager";
+import { DroneMapViewer } from "@/components/drone/DroneMapViewer";
+import { droneMapLayersFor } from "@/lib/drone-map-layers";
 import { SiteMap } from "@/components/property/SiteMap";
 import { Photo360Gallery } from "@/components/media/Photo360Gallery";
 import { NearbyProperties } from "@/components/property/NearbyProperties";
@@ -456,6 +458,7 @@ async function SiteMapTab({
         lastCaptureAt={data.lastCaptureAt ? data.lastCaptureAt.toISOString() : null}
         totalMedia={data.totalMedia}
         layers={data.layers}
+        canAnnotate={can(ctx, "canManageProperties")}
         overlays={overlays.map((o) => ({
           id: o.id,
           kind: o.kind,
@@ -559,17 +562,34 @@ async function ExteriorTab({
       take: 200,
     }),
   ]);
+  const mapLayers = droneMapLayersFor(
+    captures.map((c) => ({
+      id: c.id,
+      capturedAt: c.capturedAt,
+      createdAt: c.createdAt,
+      outputs: c.datasets.flatMap((d) => d.outputs),
+    })),
+  );
   return (
-    <ExteriorManager
-      propertyId={propertyId}
-      captures={captures as unknown as DroneCaptureData[]}
-      selectedCaptureId={selectedCaptureId}
-      markers={markers as unknown as MarkerData[]}
-      canPerformCapture={can(ctx, "canPerformCapture")}
-      canManageAssets={can(ctx, "canManageAssets")}
-      assets={assets}
-      issues={issues}
-    />
+    <div className="space-y-4">
+      {mapLayers.length > 0 ? (
+        <DroneMapViewer
+          token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+          layers={mapLayers}
+          canPrepareDeepZoom={can(ctx, "canPerformCapture")}
+        />
+      ) : null}
+      <ExteriorManager
+        propertyId={propertyId}
+        captures={captures as unknown as DroneCaptureData[]}
+        selectedCaptureId={selectedCaptureId}
+        markers={markers as unknown as MarkerData[]}
+        canPerformCapture={can(ctx, "canPerformCapture")}
+        canManageAssets={can(ctx, "canManageAssets")}
+        assets={assets}
+        issues={issues}
+      />
+    </div>
   );
 }
 

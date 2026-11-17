@@ -6,6 +6,10 @@
       "schedule": "0 6 * * *"
     },
     {
+      "path": "/api/v1/cron/dronedeploy",
+      "schedule": "30 6 * * *"
+    },
+    {
       "path": "/api/v1/cron/expiry-reminders",
       "schedule": "0 13 * * *"
     }

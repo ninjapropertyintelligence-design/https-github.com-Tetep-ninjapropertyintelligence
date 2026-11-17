@@ -84,3 +84,33 @@ describe("Phase 2 integration permissions", () => {
     expect(hasPermission(Role.VENDOR, "canManageIntegrations")).toBe(false);
   });
 });
+
+describe("platform-run capture work", () => {
+  const customerRoles = Object.values(Role).filter((r) => r !== Role.PLATFORM_ADMIN);
+
+  it("lets only the platform team set up and approve capture jobs", () => {
+    expect(hasPermission(Role.PLATFORM_ADMIN, "canManageCaptureJobs")).toBe(true);
+    expect(hasPermission(Role.PLATFORM_ADMIN, "canReviewCaptures")).toBe(true);
+    for (const role of customerRoles) {
+      expect(hasPermission(role, "canManageCaptureJobs"), `${role} must not set up capture jobs`).toBe(false);
+      expect(hasPermission(role, "canReviewCaptures"), `${role} must not approve capture work`).toBe(false);
+    }
+  });
+});
+
+describe("team activity", () => {
+  it("is visible to the Owner and Portfolio Admins, and nobody else in the organization", () => {
+    expect(hasPermission(Role.OWNER, "canViewTeamActivity")).toBe(true);
+    expect(hasPermission(Role.PORTFOLIO_ADMIN, "canViewTeamActivity")).toBe(true);
+    for (const role of [
+      Role.REGIONAL_MANAGER,
+      Role.FACILITIES_MANAGER,
+      Role.INSPECTOR,
+      Role.TECHNICIAN,
+      Role.VENDOR,
+      Role.VIEWER,
+    ]) {
+      expect(hasPermission(role, "canViewTeamActivity"), `${role} must not see team activity`).toBe(false);
+    }
+  });
+});

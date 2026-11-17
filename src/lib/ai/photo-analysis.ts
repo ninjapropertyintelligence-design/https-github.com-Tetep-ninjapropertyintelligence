@@ -615,7 +615,8 @@ export async function reviewAIFinding(
  * so the reviewer sees exactly what Confirm will do before pressing it.
  */
 export async function getSitePhotoFindings(ctx: SessionContext, siteId: string) {
-  if (!hasPermission(ctx.role, "canUploadEvidence")) return [];
+  // Reviewers (the platform team) read the photos they are approving.
+  if (!hasPermission(ctx.role, "canUploadEvidence") && !hasPermission(ctx.role, "canReviewCaptures")) return [];
   const [rows, rules] = await Promise.all([
     prisma.evidence.findMany({
       where: {

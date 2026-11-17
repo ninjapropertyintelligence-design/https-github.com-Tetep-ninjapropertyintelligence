@@ -26,16 +26,23 @@ export const PERMISSIONS = [
   "canPerformCapture",
   "canManageDroneJobs",
   "canManageVendors",
-  // Accepting or sending back a subcontractor's capture. Narrower than
-  // canPerformCapture on purpose: acceptance is what publishes vendor work to
-  // everyone else on the property, so it belongs to the organization's admins,
-  // not to everyone who can see the job.
+  // Ordering capture work from a subcontractor: creating a capture job,
+  // placing its route, and issuing it to the vendor. The platform operator
+  // runs the vendor network, so this is never a customer's to hold.
+  "canManageCaptureJobs",
+  // Accepting or sending back a subcontractor's capture. Acceptance is what
+  // publishes vendor work to everyone on the property, so it is the platform
+  // operator's quality gate, not something a customer role does.
   "canReviewCaptures",
   // Checking a finished repair's proof and accepting it, or sending it back.
   // Wider than capture review on purpose: the managers who look after a
   // building are the ones who know whether the leak is actually fixed.
   "canVerifyRepairs",
   "canViewAuditLogs",
+  // Who is on the team and what they have been doing: last sign-in, last
+  // activity, and the per-person activity log. Narrower than canViewAuditLogs,
+  // which also opens retention, storage and deletion settings.
+  "canViewTeamActivity",
   "canManageFeatureFlags",
   "canAccessPlatformAdmin",
   // Spec §45 "Require authorized support role": impersonating a customer is
@@ -51,7 +58,12 @@ const ALL: Permission[] = [...PERMISSIONS];
  * Capabilities that belong to the platform operator, never to a customer —
  * no org role may hold one, however senior.
  */
-export const PLATFORM_ONLY_PERMISSIONS: Permission[] = ["canAccessPlatformAdmin", "canImpersonate"];
+export const PLATFORM_ONLY_PERMISSIONS: Permission[] = [
+  "canAccessPlatformAdmin",
+  "canImpersonate",
+  "canManageCaptureJobs",
+  "canReviewCaptures",
+];
 
 // Roles that are implicitly organization-wide: every property in the org is
 // in scope without needing explicit AccessGrant rows.
@@ -69,9 +81,16 @@ export const SCOPED_ROLES: Role[] = [
 ];
 
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
-  [Role.PLATFORM_ADMIN]: ["canAccessPlatformAdmin", "canViewAuditLogs", "canManageFeatureFlags", "canImpersonate"],
+  [Role.PLATFORM_ADMIN]: [
+    "canAccessPlatformAdmin",
+    "canViewAuditLogs",
+    "canManageFeatureFlags",
+    "canImpersonate",
+    "canManageCaptureJobs",
+    "canReviewCaptures",
+  ],
 
-  // Everything except the two platform-side capabilities. Spelled out as a
+  // Everything except the platform-side capabilities. Spelled out as a
   // list rather than "ALL minus one" so adding a platform permission to
   // PERMISSIONS can never silently grant it to every customer's Owner —
   // which is exactly what adding `canImpersonate` did on the first pass.
@@ -94,8 +113,8 @@ const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "canPerformCapture",
     "canManageDroneJobs",
     "canManageVendors",
-    "canReviewCaptures",
     "canVerifyRepairs",
+    "canViewTeamActivity",
   ],
 
   [Role.REGIONAL_MANAGER]: [

@@ -169,6 +169,27 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
       <path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a1 1 0 01-1 1A15 15 0 014 5a1 1 0 011-1z" strokeLinejoin="round" />
     </>
   ),
+  team: (
+    <>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20c.6-3.4 3.2-5.5 6.5-5.5s5.9 2.1 6.5 5.5" strokeLinecap="round" />
+      <path d="M16 4.6a3.5 3.5 0 010 6.8M18.5 14.8c1.7.8 2.7 2.6 3 5.2" strokeLinecap="round" />
+    </>
+  ),
+  vendor: (
+    <>
+      <path d="M3 8h12v9H3z" strokeLinejoin="round" />
+      <path d="M15 11h3.5L21 14v3h-6" strokeLinejoin="round" />
+      <circle cx="7" cy="18.5" r="1.8" />
+      <circle cx="17.5" cy="18.5" r="1.8" />
+    </>
+  ),
+  activity: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" strokeLinecap="round" strokeLinejoin="round" />
+    </>
+  ),
 };
 
 export function NavIcon({ icon, className = "h-[18px] w-[18px]" }: { icon: NavIconKey; className?: string }) {

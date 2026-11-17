@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ApiError, withApiHandler } from "@/lib/api-utils";
-import { canAccessProperty, captureReviewWhere } from "@/lib/session-context";
+import { canAccessProperty, captureReviewWhere, contextForCaptureEvidence } from "@/lib/session-context";
 import { getStorageProvider } from "@/lib/storage";
-import { getOrMakeRendition } from "@/lib/media-renditions";
+import { getOrMakePanoramaStrip, getOrMakeRendition } from "@/lib/media-renditions";
 
 type RouteParams = { params: Promise<{ id: string }> };
 
@@ -38,10 +38,15 @@ type RouteParams = { params: Promise<{ id: string }> };
  * cloud read this way would exhaust it. 64 MB comfortably covers a
  * full-resolution 360 panorama, which is what needs same-origin bytes.
  */
-const MAX_PROXY_BYTES = 64 * 1024 * 1024;
+// Vercel refuses a function response over 4.5 MB, so anything bigger goes
+// straight to storage. An <img>, a <video> or a download follows the
+// redirect fine; a 360 viewer asks for the panorama in strips instead.
+const MAX_PROXY_BYTES = 4 * 1024 * 1024;
 
-export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
+export const GET = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
   const { id } = await params;
+  // The platform team reviewing a vendor's delivery reads it in that customer's organization.
+  const ctx = await contextForCaptureEvidence(session, id);
 
   const evidence = await prisma.evidence.findFirst({
     // Vendor work not yet accepted reads as absent to everyone but reviewers
@@ -62,9 +67,25 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { 
 
   const storage = getStorageProvider();
 
+  // ?strip=k&of=n serves one full-resolution band of a panorama too big to
+  // send whole; the 360 viewer stitches the bands back together.
+  const search = new URL(req.url).searchParams;
+  if (evidence.type === "IMAGE_360" && search.has("strip")) {
+    const strip = await getOrMakePanoramaStrip(evidence, Number(search.get("strip")), Number(search.get("of")));
+    if (!strip) throw new ApiError(404, "That part of the panorama is not available");
+    return new NextResponse(new Uint8Array(strip), {
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Content-Length": String(strip.byteLength),
+        "Cache-Control": "private, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
   // ?size=small|medium serves a resized copy of a photo, made on first
   // request. Anything that cannot be resized falls through to the original.
-  const size = new URL(req.url).searchParams.get("size");
+  const size = search.get("size");
   if ((size === "small" || size === "medium") && (evidence.type === "PHOTO" || evidence.type === "IMAGE_360" || evidence.type === "DRONE_IMAGE")) {
     const rendition = await getOrMakeRendition(evidence, size);
     if (rendition) {
@@ -80,7 +101,8 @@ export const GET = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { 
   }
 
   if (evidence.sizeBytes !== null && Number(evidence.sizeBytes) > MAX_PROXY_BYTES) {
-    return NextResponse.redirect(await storage.getDownloadUrl(evidence.storageKey), 302);
+    // Local storage signs a path on this app; S3 signs an absolute URL.
+    return NextResponse.redirect(new URL(await storage.getDownloadUrl(evidence.storageKey), req.url), 302);
   }
 
   const bytes = await storage.readBytes(evidence.storageKey);

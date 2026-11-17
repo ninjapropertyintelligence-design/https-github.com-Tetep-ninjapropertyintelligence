@@ -422,6 +422,7 @@ model User {
   collections            Collection[]             @relation("CollectionCreatedBy")
   collectedItems         CollectionItem[]         @relation("CollectionItemAddedBy")
   createdEmbeds          SpatialEmbed[]           @relation("SpatialEmbedCreatedBy")
+  createdAnnotations     SiteAnnotation[]         @relation("SiteAnnotationCreatedBy")
   flaggedEvidence        Evidence[]               @relation("EvidenceFlaggedBy")
   evidenceComments       EvidenceComment[]
   createdProjects        Project[]                @relation("ProjectCreatedBy")
@@ -616,6 +617,7 @@ model Organization {
   overlays             PropertyOverlay[]
   collections          Collection[]
   spatialEmbeds        SpatialEmbed[]
+  siteAnnotations      SiteAnnotation[]
   tagTypes             TagType[]
   tagValues            TagValue[]
 
@@ -711,6 +713,7 @@ model Property {
   projects        Project[]
   overlays        PropertyOverlay[]
   spatialEmbeds   SpatialEmbed[]
+  siteAnnotations SiteAnnotation[]
   tagValues       TagValue[]
   vendors         VendorProperty[]
   expiryItems     ExpiryItem[]
@@ -1036,6 +1039,7 @@ model Vendor {
   memberships   Membership[]
   captureJobs   CaptureJob[]
   invitations   Invitation[]
+  connections   VendorConnection[]
   properties    VendorProperty[]
   serviceAssets Asset[]          @relation("AssetServiceVendor")
 
@@ -1122,6 +1126,35 @@ model ExpiryItem {
   @@index([organizationId, status, expiresAt])
   @@index([propertyId])
   @@index([assetId])
+}
+
+enum VendorConnectionProvider {
+  DRONEDEPLOY
+  MATTERPORT
+}
+
+/// A vendor company's own account with a capture provider, so its people can
+/// pick a flight or a scan from it on a job instead of downloading and
+/// re-uploading. One per vendor and provider.
+model VendorConnection {
+  id           String                   @id @default(cuid())
+  vendorId     String
+  provider     VendorConnectionProvider
+  /// AES-256-GCM, see lib/integrations/crypto.ts. Never returned to a client.
+  /// DroneDeploy: the API key. Matterport: JSON {tokenId, tokenSecret}.
+  secretEnc    String
+  /// The account name the provider reported when the credentials were checked.
+  accountLabel String?
+  status       String                   @default("CONNECTED") // CONNECTED | ERROR
+  errorMessage String?
+  connectedById String?
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+
+  vendor             Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  droneDeployImports DroneDeployImport[]
+
+  @@unique([vendorId, provider])
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,6 +1262,8 @@ enum SpatialEmbedKind {
   POINT_CLOUD
   /// A BIM model viewer, e.g. Autodesk's. Opens in its own tab.
   BIM
+  /// A hosted video (YouTube, Vimeo or any https player link).
+  VIDEO
   OTHER
 }
 
@@ -1253,6 +1288,43 @@ model SpatialEmbed {
   property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
   floor        Floor?       @relation(fields: [floorId], references: [id], onDelete: SetNull)
   createdBy    User?        @relation("SpatialEmbedCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([propertyId])
+}
+
+// ---------------------------------------------------------------------------
+// Points and areas of interest
+// ---------------------------------------------------------------------------
+
+enum SiteAnnotationKind {
+  /// A labelled pin: "roof hatch", "gas shut-off".
+  POINT
+  /// A labelled polygon: "staging area", "re-roofed 2024".
+  AREA
+}
+
+/// Something a person marked on the site map. Drawn by hand, so unlike
+/// captured media its position is a person's statement, not a GPS reading.
+model SiteAnnotation {
+  id             String             @id @default(cuid())
+  organizationId String
+  propertyId     String
+  kind           SiteAnnotationKind
+  title          String
+  description    String?
+  color          String             @default("#16a34a")
+  /// The pin, for a POINT.
+  latitude       Float?
+  longitude      Float?
+  /// The ring for an AREA: [[longitude, latitude], ...], not closed.
+  polygon        Json?
+  createdById    String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("SiteAnnotationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([propertyId])
 }
@@ -2031,16 +2103,21 @@ model DroneDeployImport {
   matchDistanceMeters Float?
   captureId      String?                 @unique
   errorMessage   String?
+  /// Set when a vendor picked this map from its own DroneDeploy account for a
+  /// capture job: the import runs on the vendor's key, not the customer's.
+  vendorConnectionId String?
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
 
-  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  property     Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
-  capture      DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
-  exports      DroneDeployExportImport[]
+  organization     Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property         Property?                 @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  capture          DroneCapture?             @relation(fields: [captureId], references: [id], onDelete: SetNull)
+  vendorConnection VendorConnection?         @relation(fields: [vendorConnectionId], references: [id], onDelete: SetNull)
+  exports          DroneDeployExportImport[]
 
   @@unique([organizationId, externalPlanId])
   @@index([organizationId, status])
+  @@index([vendorConnectionId, status])
 }
 
 enum DroneDeployExportStatus {

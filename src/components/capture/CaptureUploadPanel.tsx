@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
+import { DroneMapUploader } from "@/components/capture/DroneMapUploader";
 
 /**
  * The subcontractor's upload surface, on the job itself.
@@ -20,7 +21,12 @@ import { Insta360ImportPanel } from "@/components/media/Insta360ImportPanel";
 const KINDS = [
   { key: "IMAGE_360", label: "360° panoramas", hint: "Equirectangular JPEGs from a 360 camera" },
   { key: "PHOTOS", label: "Photos", hint: "Ordinary site photos and defect evidence" },
-  { key: "DRONE_IMAGERY", label: "Drone imagery", hint: "Raw flight images, straight off the card" },
+  { key: "DRONE_IMAGERY", label: "Drone imagery (raw photos)", hint: "Raw flight images, straight off the card" },
+  {
+    key: "DRONE_MAP",
+    label: "Finished drone map / 3D (DroneDeploy export)",
+    hint: "Maps, elevation, point clouds and 3D models exported from DroneDeploy or another mapping tool",
+  },
   {
     key: "MATTERPORT",
     label: "Matterport space",
@@ -95,6 +101,7 @@ export function CaptureUploadPanel({
   const [shotId, setShotId] = useState<string>(() => shots.find((s) => !s.captured)?.id ?? "");
   const [files, setFiles] = useState<FileState[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [spaceRef, setSpaceRef] = useState("");
@@ -204,10 +211,13 @@ export function CaptureUploadPanel({
               const index = start + i + offset;
               mark(index, { status: "uploading" });
               try {
+                // A stalled connection fails the file instead of leaving the
+                // panel busy, and its controls disabled, forever.
                 const put = await fetch(signed[i + offset].url, {
                   method: "PUT",
                   body: file,
                   headers: { "Content-Type": file.type || "application/octet-stream" },
+                  signal: AbortSignal.timeout(Math.max(120_000, (file.size / (256 * 1024)) * 1000)),
                 });
                 if (!put.ok) throw new Error(`storage refused the file (HTTP ${put.status})`);
                 mark(index, { status: "uploaded" });
@@ -314,21 +324,61 @@ export function CaptureUploadPanel({
               {busy ? "Linking…" : "Link space"}
             </button>
           </>
-        ) : kind === "IMAGE_360" ? null : (
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            disabled={busy}
-            accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
-            onChange={(e) => {
-              const chosen = Array.from(e.target.files ?? []);
-              if (chosen.length > 0) upload(chosen);
+        ) : kind === "IMAGE_360" || kind === "DRONE_MAP" ? null : (
+          // Our own button opening a hidden input, and a drop zone: the
+          // browser's native file control is small, styled differently on
+          // every browser, and was reported not opening a picker at all.
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
             }}
-            className="max-w-full text-sm text-foreground file:mr-2 file:rounded-lg file:border file:border-border file:bg-surface file:px-2.5 file:py-1.5 file:text-sm file:text-foreground"
-          />
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragging(false);
+              const chosen = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/") || /\.(jpe?g|png|tiff?|heic)$/i.test(f.name));
+              if (chosen.length > 0 && !busy) upload(chosen);
+            }}
+            className={`flex flex-1 flex-wrap items-center gap-2 rounded-lg border border-dashed px-3 py-1.5 ${
+              dragging ? "border-brand bg-surface" : "border-border"
+            }`}
+          >
+            {/* A label wrapping the input, not a button calling .click() on a
+                display:none input: some phone browsers (older iOS Safari in
+                particular) will not open a picker for a hidden input. The
+                input stays in the page, visually hidden, and the label's tap
+                opens it natively everywhere. */}
+            <label
+              aria-disabled={busy}
+              className={`cursor-pointer rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90 ${
+                busy ? "pointer-events-none opacity-50" : ""
+              }`}
+            >
+              {busy ? "Uploading…" : kind === "DRONE_IMAGERY" ? "Choose drone photos" : "Choose photos"}
+              <input
+                ref={inputRef}
+                type="file"
+                multiple
+                disabled={busy}
+                className="sr-only"
+                accept={kind === "DRONE_IMAGERY" ? ".jpg,.jpeg,.png,.tif,.tiff" : "image/*"}
+                onChange={(e) => {
+                  const chosen = Array.from(e.target.files ?? []);
+                  if (chosen.length > 0) upload(chosen);
+                }}
+              />
+            </label>
+            <span className="text-xs text-muted">or drop them here</span>
+          </div>
         )}
       </div>
+
+      {kind === "DRONE_MAP" ? (
+        <div className="mt-2">
+          <DroneMapUploader jobId={jobId} siteId={siteId} />
+        </div>
+      ) : null}
 
       {kind === "IMAGE_360" ? (
         // 360s go through the importer: it reads each file's date and GPS,

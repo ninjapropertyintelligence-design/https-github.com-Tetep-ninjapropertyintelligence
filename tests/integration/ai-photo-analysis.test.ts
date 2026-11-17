@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { asPlatform } from "../helpers/platform";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import { createCaptureJob, issueCaptureJob, outstandingDeliverables, getCaptureJob } from "@/lib/capture-job-service";
@@ -123,13 +124,13 @@ beforeEach(async () => {
   await prisma.defectRule.deleteMany({ where: { organizationId: org.id } });
   await prisma.assetConditionHistory.deleteMany({ where: { assetId: asset.id } });
   await prisma.asset.update({ where: { id: asset.id }, data: { conditionScore: 90 } });
-  const job = await createCaptureJob(staffCtx(), {
+  const job = await createCaptureJob(asPlatform(staffCtx()), {
     title: `AI sweep ${suffix}`,
     vendorId: vendor.id,
     propertyIds: [site.id],
     deliverables: ["PHOTOS", "CONDITION_SCORES"],
   });
-  await issueCaptureJob(staffCtx(), job.id);
+  await issueCaptureJob(asPlatform(staffCtx()), job.id);
 });
 
 afterEach(() => __setAIProviderForTest(null));
@@ -420,11 +421,14 @@ describe("a person confirms", () => {
     expect(await prisma.issue.count({ where: { organizationId: org.id } })).toBe(1);
   });
 
-  it("lets staff confirm a vendor's finding, but never another vendor user", async () => {
+  it("lets staff confirm a vendor's finding once the work is approved, but never another vendor user", async () => {
     __setAIProviderForTest(fakeProvider(RUSTY_RTU));
     const photo = await vendorPhoto({ assetId: asset.id });
     const finding = await analyzeEvidencePhoto(vendorCtx(), photo.id);
     await expect(reviewAIFinding(otherVendorCtx(), finding.id, { decision: "confirm" })).rejects.toMatchObject({ status: 404 });
+    // The customer does not see a vendor's photo until the platform team approves the site.
+    await expect(reviewAIFinding(staffCtx(), finding.id, { decision: "confirm" })).rejects.toMatchObject({ status: 404 });
+    await prisma.captureJobSite.update({ where: { id: photo.captureJobSiteId! }, data: { status: "ACCEPTED" } });
     const reviewed = await reviewAIFinding(staffCtx(), finding.id, { decision: "confirm" });
     expect(reviewed.reviewedById).toBe(staff.id);
   });

@@ -11,6 +11,8 @@ import { emitEvent, EVENT_TYPES } from "@/lib/events";
 import { writeAuditLog } from "@/lib/audit";
 import { recalculatePropertyHealth } from "@/lib/scoring";
 import { logEvent } from "@/lib/observability";
+import { mapboxTilingConfig } from "@/lib/integrations/mapbox-tiling";
+import { startTilingForOutput } from "@/lib/drone-map-service";
 
 /**
  * DRONEDEPLOY AUTO-IMPORT.
@@ -254,7 +256,13 @@ function unmatchedReason(match: PropertyMatch, radiusMeters: number): string | n
 async function fileImport(
   importId: string,
   propertyId: string,
-  how: { matchedBy: "GPS" | "MANUAL"; distanceMeters: number | null; actorUserId: string | null },
+  how: {
+    matchedBy: "GPS" | "MANUAL" | "VENDOR";
+    distanceMeters: number | null;
+    actorUserId: string | null;
+    /** A vendor's delivery: the capture is held for review against this job site. */
+    captureJobSiteId?: string | null;
+  },
 ) {
   const imp = await prisma.droneDeployImport.findUnique({ where: { id: importId } });
   if (!imp) throw new ApiError(404, "Import not found");
@@ -272,6 +280,7 @@ async function fileImport(
         capturedById: how.actorUserId,
         capturedAt: imp.planCreatedAt,
         status: "PROCESSING",
+        captureJobSiteId: how.captureJobSiteId ?? null,
         notes: `Imported from DroneDeploy${imp.planName ? `: ${imp.planName}` : ""}`,
         datasets: { create: { provider: "DRONEDEPLOY", externalJobId: imp.externalPlanId } },
       },
@@ -439,7 +448,8 @@ export async function runDroneDeployImportForOrganization(organizationId: string
   // 3-4. Advance everything in flight.
   const budget = { copies: MAX_COPIES_PER_RUN };
   const inFlight = await prisma.droneDeployImport.findMany({
-    where: { organizationId, status: "IMPORTING" },
+    // A vendor's map runs on the vendor's key — see runVendorDroneDeployImports.
+    where: { organizationId, status: "IMPORTING", vendorConnectionId: null },
     orderBy: { createdAt: "asc" },
     include: { exports: true, capture: { include: { datasets: { select: { id: true }, take: 1 } } } },
   });
@@ -586,6 +596,13 @@ async function advanceImport(
         data: { status: "IMPORTED", droneOutputId: output.id, errorMessage: null },
       });
       result.exportsImported++;
+      // Deep zoom for the map, where Mapbox tiling is set up. Never allowed to
+      // fail the import: the map is in storage either way.
+      if (exp.outputType === "ORTHOMOSAIC" && mapboxTilingConfig() && /\.tiff?$/i.test(output.storageKey)) {
+        await startTilingForOutput(output.id).catch((err) =>
+          logEvent("mapbox.api_call", { ok: false, errorMessage: err instanceof Error ? err.message : String(err) }),
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const attempts = exp.attempts + 1;
@@ -765,4 +782,119 @@ export async function runDueDroneDeployImports(): Promise<DroneDeployRunResult[]
     }
   }
   return results;
+}
+
+// ---------------------------------------------------------------------------
+// Vendor-owned DroneDeploy accounts
+// ---------------------------------------------------------------------------
+
+/**
+ * Files a map a vendor picked from its own DroneDeploy account onto a capture
+ * job site. The import is recorded in the customer's organization (where the
+ * capture belongs) but tied to the vendor's connection, so every later call
+ * to DroneDeploy for it uses the vendor's key. The capture is tagged with the
+ * job site, which holds it from the customer until the platform team
+ * approves the site — exactly like an upload.
+ */
+export async function fileVendorDroneDeployMap(params: {
+  organizationId: string;
+  vendorConnectionId: string;
+  plan: DroneDeployPlan;
+  propertyId: string;
+  captureJobSiteId: string;
+  actorUserId: string;
+}) {
+  const { plan } = params;
+  let imp = await prisma.droneDeployImport.findUnique({
+    where: { organizationId_externalPlanId: { organizationId: params.organizationId, externalPlanId: plan.id } },
+  });
+  if (imp?.captureId) throw new ApiError(409, "This flight has already been imported");
+  if (!imp) {
+    try {
+      imp = await prisma.droneDeployImport.create({
+        data: {
+          organizationId: params.organizationId,
+          externalPlanId: plan.id,
+          planName: plan.name,
+          planCreatedAt: plan.createdAt,
+          latitude: plan.latitude,
+          longitude: plan.longitude,
+          status: "UNMATCHED",
+          vendorConnectionId: params.vendorConnectionId,
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        throw new ApiError(409, "This flight is already being imported");
+      }
+      throw err;
+    }
+  } else {
+    imp = await prisma.droneDeployImport.update({
+      where: { id: imp.id },
+      data: { vendorConnectionId: params.vendorConnectionId },
+    });
+  }
+  const capture = await fileImport(imp.id, params.propertyId, {
+    matchedBy: "VENDOR",
+    distanceMeters: null,
+    actorUserId: params.actorUserId,
+    captureJobSiteId: params.captureJobSiteId,
+  });
+  if (!capture) throw new ApiError(409, "This flight has already been imported");
+  return prisma.droneDeployImport.findUniqueOrThrow({ where: { id: imp.id }, include: { exports: true } });
+}
+
+/**
+ * Advances vendor imports — requesting exports, then copying finished ones
+ * into storage — on each vendor's own key. Called by the scheduled pass for
+ * everything, and straight after a vendor picks a map (or asks for progress)
+ * for just theirs, so a job does not wait for the next scheduled pass.
+ */
+export async function runVendorDroneDeployImports(filter: { importIds?: string[] } = {}) {
+  const result: DroneDeployRunResult = {
+    organizationId: "vendor",
+    newMaps: 0,
+    autoMatched: 0,
+    unmatched: 0,
+    skippedUndated: 0,
+    exportsRequested: 0,
+    exportsImported: 0,
+    exportsFailed: 0,
+    capturesCompleted: 0,
+  };
+  const inFlight = await prisma.droneDeployImport.findMany({
+    where: {
+      status: "IMPORTING",
+      vendorConnectionId: { not: null },
+      ...(filter.importIds ? { id: { in: filter.importIds } } : {}),
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      exports: true,
+      capture: { include: { datasets: { select: { id: true }, take: 1 } } },
+      vendorConnection: { select: { id: true, secretEnc: true } },
+    },
+  });
+  const budget = { copies: MAX_COPIES_PER_RUN };
+  const clients = new Map<string, DroneDeployClient>();
+  for (const imp of inFlight) {
+    if (!imp.vendorConnection) continue;
+    let client = clients.get(imp.vendorConnection.id);
+    if (!client) {
+      client = new DroneDeployClient(decryptSecret(imp.vendorConnection.secretEnc));
+      clients.set(imp.vendorConnection.id, client);
+    }
+    try {
+      await advanceImport(client, imp, budget, result);
+    } catch (err) {
+      // One vendor's failure must not stop another's.
+      logEvent("dronedeploy.import_run", {
+        ok: false,
+        organizationId: imp.organizationId,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return result;
 }

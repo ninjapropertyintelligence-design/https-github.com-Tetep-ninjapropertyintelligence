@@ -15,7 +15,8 @@ export const EMBED_KIND_LABELS: Record<SpatialEmbedKind, string> = {
   MATTERPORT: "Matterport tour",
   POINT_CLOUD: "Point cloud",
   BIM: "BIM model",
-  OTHER: "3D viewer",
+  VIDEO: "Video",
+  OTHER: "Custom embed",
 };
 
 /** Autodesk and most BIM viewers refuse to be framed, so they open in their own tab. */
@@ -46,4 +47,38 @@ export function embedUrlProblem(kind: SpatialEmbedKind, raw: string): string | n
  */
 export function matterportShowUrl(modelId: string): string | null {
   return /^[A-Za-z0-9]{5,40}$/.test(modelId) ? `https://my.matterport.com/show/?m=${modelId}` : null;
+}
+
+/**
+ * What to put in the iframe for an embed. A video's share link (YouTube
+ * watch/short/youtu.be, Vimeo) is turned into the provider's player URL,
+ * since the page a person copies refuses to be framed; anything else is used
+ * as given.
+ */
+export function embedFrameSrc(kind: SpatialEmbedKind, raw: string): string {
+  if (kind !== "VIDEO") return raw;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return raw;
+  }
+  const host = url.hostname.replace(/^www\./, "").replace(/^m\./, "");
+  const id = (value: string | null | undefined) => (value && /^[A-Za-z0-9_-]{6,20}$/.test(value) ? value : null);
+  if (host === "youtube.com" || host === "youtube-nocookie.com") {
+    const videoId =
+      url.pathname === "/watch"
+        ? id(url.searchParams.get("v"))
+        : id(url.pathname.match(/^\/(?:shorts|embed|live)\/([^/]+)/)?.[1]);
+    if (videoId) return `https://www.youtube-nocookie.com/embed/${videoId}`;
+  }
+  if (host === "youtu.be") {
+    const videoId = id(url.pathname.slice(1));
+    if (videoId) return `https://www.youtube-nocookie.com/embed/${videoId}`;
+  }
+  if (host === "vimeo.com") {
+    const videoId = url.pathname.match(/^\/(\d{4,12})/)?.[1];
+    if (videoId) return `https://player.vimeo.com/video/${videoId}`;
+  }
+  return raw;
 }

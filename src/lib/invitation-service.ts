@@ -110,6 +110,38 @@ const PUBLIC_SELECT = {
 
 export async function createInvitation(ctx: SessionContext, input: CreateInvitationInput) {
   requireTeamManager(ctx);
+  const { invitation, emailSent } = await insertInvitation(ctx, input);
+  return { invitation, emailSent };
+}
+
+/**
+ * The platform team giving a vendor's person their login.
+ *
+ * The platform runs the vendor network, so it invites vendors into the
+ * customer organization whose sites they will capture — and only vendors: it
+ * never hands out a customer role. The accept link is returned as well as
+ * emailed, so the team can pass it on directly when email is not the channel
+ * the vendor uses. It is the vendor's credential until they set a password,
+ * so it is returned once, to the operator who created it, and never stored.
+ */
+export async function createVendorInvitationAsPlatform(
+  ctx: SessionContext,
+  input: { email: string; name?: string | null; vendorId: string },
+) {
+  if (ctx.role !== Role.PLATFORM_ADMIN || !ctx.isPlatformAdmin || !ctx.organizationId) {
+    throw new ApiError(403, "Platform admin only");
+  }
+  const { invitation, emailSent, token } = await insertInvitation(ctx, {
+    email: input.email,
+    name: input.name,
+    role: Role.VENDOR,
+    vendorId: input.vendorId,
+    grants: [],
+  });
+  return { invitation, emailSent, acceptUrl: acceptUrl(token) };
+}
+
+async function insertInvitation(ctx: SessionContext, input: CreateInvitationInput) {
   const email = input.email.toLowerCase().trim();
 
   const { vendorId, grants } = await resolveMembershipShape(ctx, input);
@@ -167,7 +199,7 @@ export async function createInvitation(ctx: SessionContext, input: CreateInvitat
     organizationId: ctx.organizationId,
     inviterName: ctx.userName,
   });
-  return { invitation, emailSent };
+  return { invitation, emailSent, token };
 }
 
 /** Invitations still waiting on the invitee, newest first. */

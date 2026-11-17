@@ -95,11 +95,23 @@ describe("delivery", () => {
   });
 
   it("applies each recipient's own choice when one notification goes to several", async () => {
-    await setEmailPreferences(alice.id, [{ type: "CAPTURE_SUBMITTED", email: false }]);
-    await notifyCaptureReviewers({ organizationId: org.id, type: "CAPTURE_SUBMITTED", title: "Capture ready for review" });
+    // Capture review is the platform team's, so both reviewers here are
+    // platform admins. Other platform admins in a shared test database get
+    // the notice too; only these two are asserted on.
+    await prisma.user.updateMany({ where: { id: { in: [alice.id, bob.id] } }, data: { isPlatformAdmin: true } });
+    try {
+      await setEmailPreferences(alice.id, [{ type: "CAPTURE_SUBMITTED", email: false }]);
+      await notifyCaptureReviewers({ organizationId: org.id, type: "CAPTURE_SUBMITTED", title: "Capture ready for review" });
 
-    expect(sent.map((m) => m.to)).toEqual([bob.email]);
-    expect(await prisma.notification.count({ where: { organizationId: org.id, type: "CAPTURE_SUBMITTED" } })).toBe(2);
+      expect(sent.map((m) => m.to).filter((to) => to === alice.email || to === bob.email)).toEqual([bob.email]);
+      expect(
+        await prisma.notification.count({
+          where: { organizationId: org.id, type: "CAPTURE_SUBMITTED", userId: { in: [alice.id, bob.id] } },
+        }),
+      ).toBe(2);
+    } finally {
+      await prisma.user.updateMany({ where: { id: { in: [alice.id, bob.id] } }, data: { isPlatformAdmin: false } });
+    }
   });
 
   it("tells the recipient where to change it", async () => {

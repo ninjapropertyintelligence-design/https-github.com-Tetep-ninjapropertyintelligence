@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/session-context";
 import { prisma } from "@/lib/prisma";
@@ -31,6 +32,8 @@ export default async function AdminPage() {
     }),
     getIntegrationsOverview(),
   ]);
+  // Vendor work the customer cannot see until the platform team approves it.
+  const awaitingApproval = await prisma.captureJobSite.count({ where: { status: "SUBMITTED" } });
 
   return (
     <div className="space-y-6">
@@ -38,6 +41,20 @@ export default async function AdminPage() {
         <h1 className="text-xl font-semibold text-foreground">Platform Administration</h1>
         <p className="text-sm text-muted">Is the system healthy and are customers operating normally?</p>
       </div>
+
+      <Link
+        href="/admin/capture-jobs"
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-5 py-4 text-sm transition hover:opacity-90 ${
+          awaitingApproval > 0 ? "border-blue-200 bg-blue-50 text-blue-800" : "border-border bg-surface text-muted"
+        }`}
+      >
+        <span>
+          {awaitingApproval > 0
+            ? `${awaitingApproval} capture ${awaitingApproval === 1 ? "site is" : "sites are"} waiting for your approval`
+            : "No vendor captures waiting for approval"}
+        </span>
+        <span className="font-medium">Capture Jobs →</span>
+      </Link>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         <StatTile label="Organizations" value={orgCount} />

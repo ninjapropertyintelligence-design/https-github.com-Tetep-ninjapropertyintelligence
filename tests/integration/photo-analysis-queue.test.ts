@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { asPlatform } from "../helpers/platform";
 import { prisma } from "@/lib/prisma";
 import { Role } from "@/generated/prisma/client";
 import { createCaptureJob, issueCaptureJob } from "@/lib/capture-job-service";
@@ -130,13 +131,13 @@ beforeEach(async () => {
   await prisma.captureJob.deleteMany({ where: { organizationId: org.id } });
   await prisma.evidence.deleteMany({ where: { organizationId: org.id } });
   await prisma.organization.update({ where: { id: org.id }, data: { autoAnalyzePhotos: true } });
-  const job = await createCaptureJob(staffCtx(), {
+  const job = await createCaptureJob(asPlatform(staffCtx()), {
     title: `Sweep ${suffix}`,
     vendorId: vendor.id,
     propertyIds: [site.id, otherSite.id],
     deliverables: ["PHOTOS", "CONDITION_SCORES"],
   });
-  await issueCaptureJob(staffCtx(), job.id);
+  await issueCaptureJob(asPlatform(staffCtx()), job.id);
 });
 
 afterEach(() => __setAIProviderForTest(null));

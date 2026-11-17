@@ -5,6 +5,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { ApiError } from "@/lib/api-error";
 import { presignS3Url, type S3SignerConfig } from "@/lib/s3-signer";
 
 /**
@@ -485,6 +486,16 @@ export function getStorageProvider(): StorageProvider {
   if (provider) return provider;
   const kind = process.env.STORAGE_PROVIDER ?? "local";
   if (kind === "local") {
+    // Vercel's functions have a read-only, per-instance filesystem, so local
+    // storage there fails every upload with an unhelpful 500. Said plainly
+    // instead, to whoever is trying to upload, with what to change.
+    if (process.env.VERCEL) {
+      throw new ApiError(
+        503,
+        "File storage is not set up on this server, so uploads cannot be saved. " +
+          'Set STORAGE_PROVIDER to "s3" with a storage bucket in the hosting settings.',
+      );
+    }
     provider = new LocalStorageProvider();
   } else if (kind === "s3") {
     provider = new S3StorageProvider(readS3ConfigFromEnv());

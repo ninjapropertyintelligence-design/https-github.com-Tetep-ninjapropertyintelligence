@@ -5,7 +5,7 @@ import { useState } from "react";
 
 /**
  * The two ends of a site's lifecycle: the vendor submitting it, and the
- * ordering organization accepting or sending it back.
+ * platform team approving or sending it back.
  *
  * Submit is deliberately not disabled when deliverables are outstanding. The
  * server refuses and names what is missing, and a vendor who can press the
@@ -27,7 +27,7 @@ export function CaptureSiteActions({
   jobStatus: string;
   missingCount: number;
   isVendor: boolean;
-  /** Only organization admins may accept or send back; others are told who will. */
+  /** Only the platform team may approve or send back; others are told who will. */
   canReview: boolean;
 }) {
   const router = useRouter();
@@ -92,7 +92,7 @@ export function CaptureSiteActions({
         ) : null}
 
         {!isVendor && !canReview && status === "SUBMITTED" ? (
-          <span className="text-sm text-muted">Delivered — waiting on an admin to review.</span>
+          <span className="text-sm text-muted">Delivered — waiting on the platform team to approve.</span>
         ) : null}
 
         {!isVendor && canReview && status === "SUBMITTED" ? (

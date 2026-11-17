@@ -41,6 +41,9 @@ export type NavIconKey =
   | "usage"
   | "rules"
   | "platform"
+  | "team"
+  | "vendor"
+  | "activity"
   | "contractor"
   | "expiry";
 

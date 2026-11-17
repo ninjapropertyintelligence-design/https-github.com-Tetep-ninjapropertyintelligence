@@ -201,7 +201,7 @@ export function OperationsDashboard({
           that is a to-do rather than a status. */}
       <Card>
         <CardHeader
-          title={canReview ? "Waiting on you" : "Submitted, awaiting review"}
+          title={canReview ? "Waiting on you" : "Submitted, awaiting platform approval"}
           subtitle={canReview ? "Oldest submission first" : undefined}
         />
         <CardBody className="p-0">

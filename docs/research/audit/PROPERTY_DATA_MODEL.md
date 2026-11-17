@@ -1,0 +1,16 @@
+# Property hierarchy — observation versus independent model
+
+**Target data model not verified.** The following are UI-level relationships, not Phygii table names, keys, cardinalities, or API schemas. See [PAGE_MAP.md](PAGE_MAP.md), [DASHBOARD_FEATURES.md](DASHBOARD_FEATURES.md), and [evidence ledger](evidence/OBSERVATIONS.md).
+
+| Concept | Authenticated-dashboard evidence | Independent design decision / unknown |
+| --- | --- | --- |
+| Organization | Global directory, Client A context, scoped navigation. | Tenant root and membership model proposed; target tenancy rules unknown. |
+| Location/property | Site 1/Site 2/Site 3 records, address, map coordinates/heading, project and media associations. | `locations` record with tenant FK and geospatial point; target internal hierarchy unknown. |
+| Building | No building record or building navigation verified in this account. | Optional explicit `buildings` table only after product requirements; do not infer it from marketing. |
+| Level/floor | Media and 3D entries have Level labels (Ground, Level 1, Aerial, Roof, etc.). [E-DT-01, E-MEDIA-02, E-RASTER-01](evidence/OBSERVATIONS.md) | Level may be taxonomy text rather than separate entity; design normalized levels only if needed for spatial linking. |
+| Area/room | Media Info displayed Area Exterior/Interior; media filters expose Area. [E-MEDIA-02](evidence/OBSERVATIONS.md) | A structured room/area registry is **not verified**. Consider location-scoped area taxonomy in the new app. |
+| Asset/system | Assignment section named MEP Assets & Utilities and image categories are visible in historical UI notes. [DASHBOARD_FEATURES.md](DASHBOARD_FEATURES.md) | No asset registry, asset key, systems graph, maintenance history, or room-to-asset relation verified. Do not populate guessed target attributes. |
+| Project/document/response | Linked project, document versions, assignment tree, response progress observed. | New product can model these with separate tenant-scoped tables; exact target joins/rules unknown. |
+| Spatial asset | Three 3D embeds, native 360 images, raster overlays observed. [E-DT-01–04, E-MEDIA-01–02, E-RASTER-01](evidence/OBSERVATIONS.md) | Proposed polymorphic `spatial_assets` metadata and provider adapter; target schema unknown. |
+
+IDS [publicly describes](https://www.immersiondata.com/resources/how-the-phygii-engine-works-a-technical-view-of-structured-property-intelligence) a Location → Building → Areas → Assets → Systems hierarchy [P-IDS-01](evidence/PUBLIC_SOURCES.md). That is a vendor-published conceptual model; the accessible dashboard only verifies the UI concepts above, not its internal tables. A detailed **proposed** Supabase/Postgres model is in [DATA_MODEL_PROPOSAL.md](DATA_MODEL_PROPOSAL.md). It should add provider-neutral spatial-asset metadata and optional location/level/area foreign keys only after defining cardinality and permissions. Use tenant-scoped RLS on exposed tables, private object storage where appropriate, and targeted indexes based on real query plans. Those are independent design requirements, not target facts ([Supabase RLS](https://supabase.com/docs/guides/database/postgres/row-level-security), [Storage access control](https://supabase.com/docs/guides/storage/security/access-control)).

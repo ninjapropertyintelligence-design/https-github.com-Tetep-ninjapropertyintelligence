@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { can, getSessionContext } from "@/lib/session-context";
+import { can, contextForCaptureJob, getSessionContext, isPlatformOperator } from "@/lib/session-context";
 import { getCaptureJob, outstandingDeliverables } from "@/lib/capture-job-service";
 import { ApiError } from "@/lib/api-error";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
@@ -11,8 +11,22 @@ import { getSitePhotoFindings } from "@/lib/ai/photo-analysis";
 import { parseStoredBox } from "@/lib/ai/bounding-box";
 import { prisma } from "@/lib/prisma";
 import { ShotPinEditor } from "@/components/capture/ShotPinEditor";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { Role } from "@/generated/prisma/client";
+import { IssueJobButton } from "@/components/admin/VendorManager";
+import { CaptureJobMap } from "@/components/capture/CaptureJobMap";
+import { VendorSiteImports } from "@/components/capture/VendorSiteImports";
+import { ConditionScoreForm } from "@/components/capture/ConditionScoreForm";
+import { DeliveredDroneWork, type DeliveredDroneCapture } from "@/components/capture/DeliveredDroneWork";
+import { DeliveredMatterportScans, type DeliveredMatterportScan } from "@/components/capture/DeliveredMatterportScans";
+import { getMatterportProvider } from "@/lib/integrations/matterport-provider";
+import { Delivered360Views, type Delivered360View } from "@/components/capture/Delivered360Views";
+import { headingOf, labelFor as panoramaLabel } from "@/lib/image-360-service";
+import { panoramaStripUrls } from "@/lib/media-renditions";
+import { droneMapLayersFor } from "@/lib/drone-map-layers";
+import { getStorageProvider } from "@/lib/storage";
+import { captureReviewWhere } from "@/lib/tenant-scope";
+import { evidenceScopeWhere } from "@/lib/tenant-scope";
 
 /**
  * Matches the palette the rest of the app uses for status: Tailwind's own
@@ -29,11 +43,18 @@ const SITE_STATUS_STYLE: Record<string, string> = {
 };
 
 export default async function CaptureJobDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const ctx = await getSessionContext();
-  if (!ctx) redirect("/login");
-  if (!ctx.organizationId || !can(ctx, "canPerformCapture")) redirect("/dashboard");
-
+  const session = await getSessionContext();
+  if (!session) redirect("/login");
   const { id } = await params;
+
+  // The platform team opens any customer's job: bound to that customer here.
+  const isPlatform = isPlatformOperator(session);
+  const ctx = await contextForCaptureJob(session, id).catch((err) => {
+    if (err instanceof ApiError && err.status === 404) notFound();
+    throw err;
+  });
+  if (!ctx.organizationId || (!isPlatform && !can(ctx, "canPerformCapture"))) redirect("/dashboard");
+
   const job = await getCaptureJob(ctx, id).catch((err) => {
     if (err instanceof ApiError && err.status === 404) notFound();
     throw err;
@@ -111,22 +132,146 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
     );
   }
 
+  // Which of the vendor's own accounts are connected, for the pickers on each site.
+  const vendorConnections =
+    isVendor && ctx.vendorId
+      ? await prisma.vendorConnection.findMany({ where: { vendorId: ctx.vendorId }, select: { provider: true } })
+      : [];
+  const connected = {
+    DRONEDEPLOY: vendorConnections.some((c) => c.provider === "DRONEDEPLOY"),
+    MATTERPORT: vendorConnections.some((c) => c.provider === "MATTERPORT"),
+  };
+
   const autoAnalyze = isVendor
     ? ((await prisma.organization.findUnique({ where: { id: ctx.organizationId }, select: { autoAnalyzePhotos: true } }))
         ?.autoAnalyzePhotos ?? false)
     : false;
-  const canPlacePins =
-    !isVendor && can(ctx, "canManageProperties") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
+  // Where the delivered photos were actually taken, for the job map. Scoped
+  // like every other read, so the customer sees them only once approved.
+  const locatedPhotos = await prisma.evidence.findMany({
+    where: {
+      captureJobSiteId: { in: job.sites.map((s) => s.id) },
+      latitude: { not: null },
+      longitude: { not: null },
+      ...evidenceScopeWhere(ctx),
+    },
+    select: { id: true, captureJobSiteId: true, latitude: true, longitude: true },
+    take: 2000,
+  });
+
+  // Drone work delivered on each site — map, layers, raw photos — so it can be
+  // judged here before approval. Read through the review filter like
+  // everything else, so the customer sees it only once approved.
+  const storage = getStorageProvider();
+  const droneCaptures = await prisma.droneCapture.findMany({
+    where: { captureJobSiteId: { in: job.sites.map((s) => s.id) }, ...captureReviewWhere(ctx) },
+    orderBy: { createdAt: "desc" },
+    include: {
+      datasets: {
+        include: {
+          outputs: { orderBy: { createdAt: "asc" } },
+          images: { orderBy: { createdAt: "asc" }, take: 60, select: { id: true } },
+          _count: { select: { images: true } },
+        },
+      },
+    },
+  });
+  const droneBySite = new Map<string, DeliveredDroneCapture[]>();
+  for (const capture of droneCaptures) {
+    const outputs = capture.datasets.flatMap((d) => d.outputs);
+    const images = capture.datasets.flatMap((d) => d.images).slice(0, 60);
+    const imageCount = capture.datasets.reduce((n, d) => n + d._count.images, 0);
+    if (outputs.length === 0 && imageCount === 0 && capture.status !== "PROCESSING") continue;
+    const entry: DeliveredDroneCapture = {
+      id: capture.id,
+      status: capture.status,
+      notes: capture.notes,
+      imageCount,
+      outputs: await Promise.all(
+        outputs.map(async (o) => ({
+          id: o.id,
+          outputType: o.outputType,
+          storageKey: o.storageKey,
+          downloadUrl: await storage.getDownloadUrl(o.storageKey),
+          preview: (o.metadata as { preview?: boolean } | null)?.preview === true,
+        })),
+      ),
+      images: images.map((i) => ({
+        id: i.id,
+        thumbnailUrl: `/api/v1/drone/images/${i.id}/content?size=small`,
+        previewUrl: `/api/v1/drone/images/${i.id}/content?size=medium`,
+        originalUrl: `/api/v1/drone/images/${i.id}/content`,
+      })),
+    };
+    const list = droneBySite.get(capture.captureJobSiteId!) ?? [];
+    list.push(entry);
+    droneBySite.set(capture.captureJobSiteId!, list);
+  }
+
+  // Matterport scans delivered on each site. Same review filter as the drone
+  // work: the vendor and reviewers see a scan straight away, the customer
+  // once the site is approved.
+  const matterportProvider = getMatterportProvider();
+  const matterportLinks = await prisma.matterportPropertyLink.findMany({
+    where: { captureJobSiteId: { in: job.sites.map((s) => s.id) }, ...captureReviewWhere(ctx) },
+    orderBy: { linkedAt: "desc" },
+    include: { space: { select: { externalSpaceId: true, name: true } } },
+  });
+  const matterportBySite = new Map<string, DeliveredMatterportScan[]>();
+  for (const link of matterportLinks) {
+    const list = matterportBySite.get(link.captureJobSiteId!) ?? [];
+    list.push({
+      id: link.id,
+      externalSpaceId: link.space.externalSpaceId,
+      name: link.space.name,
+      operator: link.operator,
+      linkedAt: formatDateTime(link.linkedAt),
+      embedUrl: matterportProvider.getViewerConfig(link.space.externalSpaceId).embedUrl,
+    });
+    matterportBySite.set(link.captureJobSiteId!, list);
+  }
+
+  // 360° photos delivered on each site (Insta360 imports and uploads), under
+  // the same review filter, so the vendor can look around what they sent.
+  const panoramas = await prisma.evidence.findMany({
+    where: {
+      captureJobSiteId: { in: job.sites.map((s) => s.id) },
+      type: "IMAGE_360",
+      ...evidenceScopeWhere(ctx),
+    },
+    orderBy: [{ captureDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+    select: { id: true, captureJobSiteId: true, storageKey: true, captureDate: true, sizeBytes: true, latitude: true, longitude: true, metadata: true },
+    take: 500,
+  });
+  const panoramasBySite = new Map<string, Delivered360View[]>();
+  for (const row of panoramas) {
+    const list = panoramasBySite.get(row.captureJobSiteId!) ?? [];
+    list.push({
+      id: row.id,
+      label: panoramaLabel(row.storageKey, list.length),
+      capturedAt: row.captureDate ? formatDateTime(row.captureDate) : null,
+      capturedAtIso: row.captureDate ? row.captureDate.toISOString() : null,
+      latitude: row.latitude,
+      longitude: row.longitude,
+      heading: headingOf(row.metadata),
+      imageUrls: panoramaStripUrls(row.id, row.sizeBytes),
+      thumbnailUrl: `/api/v1/evidence/${row.id}/content?size=small`,
+    });
+    panoramasBySite.set(row.captureJobSiteId!, list);
+  }
+
+  const canPlacePins = can(ctx, "canManageCaptureJobs") && job.status !== "ACCEPTED" && job.status !== "CANCELLED";
   const canReview = can(ctx, "canReviewCaptures");
 
   return (
     <div className="space-y-5">
       <div>
-        <Link href="/capture-jobs" className="text-sm text-muted hover:text-foreground">
+        <Link href={isPlatform ? "/admin/capture-jobs" : "/capture-jobs"} className="text-sm text-muted hover:text-foreground">
           ← Capture Jobs
         </Link>
         <h1 className="mt-1 text-2xl font-semibold text-foreground">{job.title}</h1>
         <p className="mt-1 text-sm text-muted">
+          {isPlatform ? `${ctx.organizationName} · ` : ""}
           {job.vendor?.name ?? "No vendor assigned"} · {job.status.toLowerCase()}
           {job.dueDate ? ` · due ${formatDate(job.dueDate)}` : " · no due date"}
         </p>
@@ -136,6 +281,32 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
           </p>
         ) : null}
       </div>
+
+      {job.status === "DRAFT" && can(ctx, "canManageCaptureJobs") ? (
+        <IssueJobButton jobId={job.id} hasVendor={job.vendorId !== null} />
+      ) : null}
+
+      <CaptureJobMap
+        token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+        sites={job.sites.map((site) => ({
+          id: site.id,
+          name: site.property.name,
+          status: site.status,
+          latitude: site.property.latitude,
+          longitude: site.property.longitude,
+          shots: site.shots.map((shot) => ({
+            id: shot.id,
+            label: shot.label,
+            sequence: shot.sequence,
+            captured: shot._count.evidence > 0,
+            latitude: shot.latitude,
+            longitude: shot.longitude,
+          })),
+          photos: locatedPhotos
+            .filter((p) => p.captureJobSiteId === site.id)
+            .map((p) => ({ id: p.id, latitude: p.latitude!, longitude: p.longitude! })),
+        }))}
+      />
 
       <Card>
         <CardHeader title={`Sites (${job.sites.length})`} />
@@ -147,12 +318,17 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                 <li key={site.id} className="border-b border-border px-5 py-4 last:border-0">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <Link
-                        href={`/properties/${site.propertyId}`}
-                        className="font-medium text-foreground hover:text-brand"
-                      >
-                        {site.property.name}
-                      </Link>
+                      {isPlatform ? (
+                        // The property pages are the customer's; the platform team works from the job.
+                        <p className="font-medium text-foreground">{site.property.name}</p>
+                      ) : (
+                        <Link
+                          href={`/properties/${site.propertyId}`}
+                          className="font-medium text-foreground hover:text-brand"
+                        >
+                          {site.property.name}
+                        </Link>
+                      )}
                       <p className="mt-0.5 text-xs text-muted">
                         {site.property.addressLine1}, {site.property.city} {site.property.state}
                       </p>
@@ -212,6 +388,7 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                                   {captured ? ` · ${shot._count.evidence}` : ""}
                                   {shot.latitude !== null ? " · 📍" : ""}
                                 </span>
+                                {shot.notes ? <span className="block text-xs text-muted">{shot.notes}</span> : null}
                               </span>
                             </li>
                           );
@@ -268,11 +445,54 @@ export default async function CaptureJobDetailPage({ params }: { params: Promise
                     />
                   ) : null}
 
+                  <DeliveredDroneWork
+                    captures={droneBySite.get(site.id) ?? []}
+                    token={process.env.NEXT_PUBLIC_MAPBOX_TOKEN || null}
+                    canPrepareDeepZoom={isVendor || can(ctx, "canManageCaptureJobs")}
+                    mapLayers={droneMapLayersFor(
+                      droneCaptures
+                        .filter((c) => c.captureJobSiteId === site.id)
+                        .map((c) => ({
+                          id: c.id,
+                          capturedAt: c.capturedAt,
+                          createdAt: c.createdAt,
+                          outputs: c.datasets.flatMap((d) => d.outputs),
+                        })),
+                    )}
+                  />
+
+                  <DeliveredMatterportScans scans={matterportBySite.get(site.id) ?? []} />
+
+                  <Delivered360Views views={panoramasBySite.get(site.id) ?? []} canSetNorth={isVendor || can(ctx, "canUploadEvidence")} />
+
+                  {isVendor && site.status !== "ACCEPTED" && ["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status) ? (
+                    <>
+                      <VendorSiteImports
+                        jobId={job.id}
+                        siteId={site.id}
+                        deliverables={site.deliverables}
+                        connected={connected}
+                      />
+                      {site.deliverables.includes("CONDITION_SCORES") ? (
+                        <ConditionScoreForm
+                          jobId={job.id}
+                          siteId={site.id}
+                          assets={assetsByProperty.get(site.propertyId) ?? []}
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
+
+
                   <AIPhotoReviewPanel
                     photos={photosBySite.get(site.id) ?? []}
                     assets={assetsByProperty.get(site.propertyId) ?? []}
-                    disabled={site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)}
-                    canOpenIssues={!isVendor}
+                    // The AI findings feed the customer's own issue and condition workflow, so the
+                    // platform team looks at the photos here without acting on the findings.
+                    disabled={
+                      isPlatform || site.status === "ACCEPTED" || !["ISSUED", "SUBMITTED", "REJECTED"].includes(job.status)
+                    }
+                    canOpenIssues={!isVendor && !isPlatform}
                   />
 
                   <CaptureSiteActions

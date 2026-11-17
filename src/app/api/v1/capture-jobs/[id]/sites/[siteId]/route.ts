@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { withApiHandler, ApiError, requirePermission } from "@/lib/api-utils";
 import {
+  addSiteAsset,
   resolveDroneTargetForSite,
   reviewCaptureSite,
   setShotLocations,
   submitCaptureSite,
   submitConditionScores,
 } from "@/lib/capture-job-service";
+import { contextForCaptureJob } from "@/lib/tenant-scope";
 import { z } from "zod";
 
 type RouteParams = { params: Promise<{ id: string; siteId: string }> };
@@ -48,6 +50,15 @@ const bodySchema = z.discriminatedUnion("action", [
       .min(1)
       .max(50),
   }),
+  // An asset to rate, when the site has none listed for the one being scored.
+  z.object({
+    action: z.literal("add-asset"),
+    name: z.string().min(1).max(200),
+    assetType: z.string().min(1).max(100),
+    manufacturer: z.string().max(100).nullish(),
+    model: z.string().max(100).nullish(),
+    serialNumber: z.string().max(100).nullish(),
+  }),
   z.object({
     action: z.literal("review"),
     accept: z.boolean(),
@@ -55,8 +66,10 @@ const bodySchema = z.discriminatedUnion("action", [
   }),
 ]);
 
-export const POST = withApiHandler<NextResponse, RouteParams>(async (ctx, req, { params }) => {
+export const POST = withApiHandler<NextResponse, RouteParams>(async (session, req, { params }) => {
   const { id, siteId } = await params;
+  // The platform team works across customers; this binds it to the job's own.
+  const ctx = await contextForCaptureJob(session, id);
   const body = bodySchema.parse(await req.json());
 
   switch (body.action) {
@@ -67,8 +80,10 @@ export const POST = withApiHandler<NextResponse, RouteParams>(async (ctx, req, {
     case "submit":
       return NextResponse.json(await submitCaptureSite(ctx, id, siteId));
     case "shot-locations":
-      requirePermission(ctx, "canManageProperties");
+      requirePermission(ctx, "canManageCaptureJobs");
       return NextResponse.json(await setShotLocations(ctx, id, siteId, body.locations));
+    case "add-asset":
+      return NextResponse.json(await addSiteAsset(ctx, id, siteId, body), { status: 201 });
     case "review":
       return NextResponse.json(
         await reviewCaptureSite(ctx, id, siteId, { accept: body.accept, reason: body.reason }),

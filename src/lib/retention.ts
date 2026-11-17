@@ -400,7 +400,7 @@ async function collectStorageKeys(propertyIds: string[]) {
   const [evidence, documentVersions, droneImages, droneOutputs] = await Promise.all([
     prisma.evidence.findMany({
       where: { propertyId: { in: propertyIds } },
-      select: { storageKey: true, thumbnailKey: true, previewKey: true },
+      select: { storageKey: true, thumbnailKey: true, previewKey: true, type: true, sizeBytes: true },
     }),
     prisma.documentVersion.findMany({
       where: { document: { propertyId: { in: propertyIds } } },
@@ -421,7 +421,7 @@ async function collectStorageKeys(propertyIds: string[]) {
   // ones that exist are listed, so the deletion record counts real objects,
   // not every size a photo could have had.
   const storage = getStorageProvider();
-  const candidates = [...new Set(evidence.flatMap((e) => allRenditionKeys(e.storageKey)))];
+  const candidates = [...new Set(evidence.flatMap((e) => allRenditionKeys(e.storageKey, e.type === "IMAGE_360" ? e.sizeBytes : null)))];
   const renditions: string[] = [];
   for (const key of candidates) {
     if ((await storage.verifyUpload(key)).exists) renditions.push(key);

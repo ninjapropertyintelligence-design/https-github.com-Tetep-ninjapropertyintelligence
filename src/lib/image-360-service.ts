@@ -3,6 +3,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/api-error";
 import { captureReviewWhere, propertyScopeWhere, type SessionContext } from "@/lib/tenant-scope";
 import { FEATURE_FLAGS, isFeatureEnabled } from "@/lib/feature-flags";
+import { panoramaStripUrls } from "@/lib/media-renditions";
 
 /**
  * 360 panoramas for one property.
@@ -35,7 +36,10 @@ export interface Panorama360 {
    * behind this path streams the bytes from this origin and sets the
    * recorded content type.
    */
-  imageUrl: string;
+  /** Full resolution: the original, or its strips when too big to send whole. */
+  imageUrls: string[];
+  /** Compass direction of the image's centre, recorded by the camera or set by hand. */
+  heading: number | null;
 }
 
 export interface Property360Data {
@@ -55,7 +59,13 @@ export interface Property360Data {
  * generic label is deliberate: a key that does not match the pattern should
  * produce "360 panorama", not a slice of a UUID presented as a name.
  */
-function labelFor(storageKey: string, index: number): string {
+/** A panorama's heading from its metadata, when one was recorded or set. */
+export function headingOf(metadata: unknown): number | null {
+  const value = metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>).heading : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function labelFor(storageKey: string, index: number): string {
   const basename = storageKey.split("/").pop() ?? storageKey;
   const withoutUuid = basename.replace(/^[0-9a-f-]{36}-/i, "");
   const name = withoutUuid === basename ? "" : withoutUuid;
@@ -76,7 +86,7 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
     // the most recent view of the site. Undated rows sort last rather than
     // first, which is what NULL would otherwise do.
     orderBy: [{ captureDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-    select: { id: true, storageKey: true, captureDate: true, latitude: true, longitude: true },
+    select: { id: true, storageKey: true, captureDate: true, latitude: true, longitude: true, sizeBytes: true, metadata: true },
     take: 200,
   });
 
@@ -86,7 +96,8 @@ export async function getProperty360Data(ctx: SessionContext, propertyId: string
     capturedAt: row.captureDate,
     latitude: row.latitude,
     longitude: row.longitude,
-    imageUrl: `/api/v1/evidence/${row.id}/content`,
+    imageUrls: panoramaStripUrls(row.id, row.sizeBytes),
+    heading: headingOf(row.metadata),
   }));
 
   return {
