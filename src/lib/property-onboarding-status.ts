@@ -5,6 +5,7 @@ import { getLatestHealthSnapshot } from "@/lib/scoring";
 import { getAIProvider } from "@/lib/ai/provider-factory";
 import { NullProvider } from "@/lib/ai/providers/null-provider";
 import { FINISHED_ASSESSMENT_STATUSES } from "@/lib/assessment-progress";
+import { calendarDay } from "@/lib/expiry-rules";
 
 export interface OnboardingStep {
   key: string;
@@ -19,11 +20,11 @@ export interface OnboardingStep {
  * interior/exterior capture, populated assets, a completed assessment,
  * documents, tracked issues, a calculable health score, and AI readiness.
  */
-export async function getPropertyOnboardingStatus(ctx: SessionContext, propertyId: string) {
+export async function getPropertyOnboardingStatus(ctx: SessionContext, propertyId: string, now: Date = new Date()) {
   const property = await prisma.property.findFirst({ where: { AND: [{ id: propertyId }, propertyScopeWhere(ctx)] } });
   if (!property) throw new ApiError(404, "Property not found");
 
-  const [matterportLink, droneCapture, assetCount, completedAssessment, documentCount, issueCount, health] = await Promise.all([
+  const [matterportLink, droneCapture, assetCount, completedAssessment, documentCount, issueCount, health, contractorCount, expiryItems] = await Promise.all([
     prisma.matterportPropertyLink.findFirst({ where: { propertyId } }),
     prisma.droneCapture.findFirst({ where: { propertyId, status: "READY" } }),
     prisma.asset.count({ where: { propertyId, status: "ACTIVE" } }),
@@ -31,7 +32,17 @@ export async function getPropertyOnboardingStatus(ctx: SessionContext, propertyI
     prisma.document.count({ where: { propertyId } }),
     prisma.issue.count({ where: { propertyId } }),
     getLatestHealthSnapshot(propertyId),
+    // The contractors a person would call for this store: those that serve every store, and those listed for it.
+    prisma.vendor.count({
+      where: {
+        organizationId: property.organizationId,
+        OR: [{ servesAllProperties: true }, { properties: { some: { propertyId } } }],
+      },
+    }),
+    prisma.expiryItem.findMany({ where: { propertyId, status: "ACTIVE" }, select: { expiresAt: true } }),
   ]);
+  const todayMs = calendarDay(now).getTime();
+  const expiredCount = expiryItems.filter((i) => i.expiresAt.getTime() < todayMs).length;
 
   const aiProvider = getAIProvider();
   const aiConfigured = !(aiProvider instanceof NullProvider);
@@ -41,6 +52,21 @@ export async function getPropertyOnboardingStatus(ctx: SessionContext, propertyI
     { key: "interior", label: "Interior connection", done: !!matterportLink, detail: matterportLink ? "Matterport space linked" : "No interior capture linked yet" },
     { key: "exterior", label: "Exterior capture", done: !!droneCapture, detail: droneCapture ? "Drone capture ready" : "No exterior capture uploaded yet" },
     { key: "assets", label: "Assets", done: assetCount > 0, detail: `${assetCount} active asset(s)` },
+    {
+      key: "contractors",
+      label: "Contractors",
+      done: contractorCount > 0,
+      detail: contractorCount > 0 ? `${contractorCount} contractor(s) to call for this store` : "No contractors recorded for this store yet",
+    },
+    {
+      key: "expirations",
+      label: "Expirations",
+      done: expiryItems.length > 0,
+      detail:
+        expiryItems.length === 0
+          ? "No inspections or certificates are being counted down yet"
+          : `${expiryItems.length} tracked${expiredCount > 0 ? `, ${expiredCount} expired` : ""}`,
+    },
     { key: "assessment", label: "Assessment", done: !!completedAssessment, detail: completedAssessment ? "At least one completed assessment" : "No completed assessment yet" },
     { key: "issues", label: "Issues", done: issueCount > 0, detail: `${issueCount} issue(s) tracked` },
     { key: "documents", label: "Documents", done: documentCount > 0, detail: `${documentCount} document(s) uploaded` },

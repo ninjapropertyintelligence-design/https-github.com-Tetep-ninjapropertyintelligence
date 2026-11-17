@@ -35,7 +35,11 @@ export type ObservabilityEvent =
   | "ai.photo_analysis_job"
   | "document.index_job"
   | "report.generate"
-  | "email.send";
+  | "email.send"
+  /** One store's expiry notice from the daily reminder job. */
+  | "expiry.reminder"
+  /** One attempt to read an expiry date off a photographed tag. */
+  | "ai.expiry_read";
 
 export interface ObservabilityFields {
   organizationId?: string;

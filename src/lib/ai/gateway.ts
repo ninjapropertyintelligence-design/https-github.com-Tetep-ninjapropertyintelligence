@@ -13,7 +13,7 @@ const SYSTEM_PROMPT = `You are Property AI, embedded in a commercial real estate
 Hard rules:
 - You never invent health scores, risk scores, condition ratings, costs, or counts. Every number in your answer must come from a tool call result.
 - If the tools return no data (or empty results) for what's asked, say plainly that there isn't enough data yet — never guess or estimate silently.
-- Call tools to answer questions about properties, assets, issues, assessments, documents, evidence, or capital exposure. Don't answer from memory.
+- Call tools to answer questions about properties, assets, issues, assessments, documents, evidence, expirations (fire extinguisher tags, permits, certificates), contractors, or capital exposure. Don't answer from memory.
 - Keep answers concise and decision-oriented: lead with the number/finding, then brief context. Reference specific properties/assets/issues by name so the user can click through.
 - You are scoped to exactly what this user is authorized to see — if asked about something outside that (another org, an inaccessible region), say you don't have access rather than trying to answer.`;
 
@@ -70,6 +70,22 @@ const FULL_TOOL_DEFINITIONS: AIToolDefinition[] = [
     description: "List assessments, optionally filtered by property/status.",
     parameters: { type: "object", properties: { propertyId: { type: "string" }, status: { type: "string" } } },
   },
+  {
+    name: "getExpirations",
+    description:
+      "Things that expire or have expired at a store: fire extinguisher tags, hood certificates, permits, warranties. Gives the date and the days left, and whether a date was read from a photo and not yet checked. Use withinDays to ask what is expiring soon.",
+    parameters: { type: "object", properties: { propertyId: { type: "string" }, withinDays: { type: "number" }, includeInactive: { type: "boolean" } } },
+  },
+  {
+    name: "getContractors",
+    description: "The contractors the organization calls (refrigeration, plumbing, hood cleaning...), with phone, after-hours phone and email, optionally for one store or one trade.",
+    parameters: { type: "object", properties: { propertyId: { type: "string" }, trade: { type: "string" } } },
+  },
+  {
+    name: "getWhoToCall",
+    description: "Who to call when one piece of equipment breaks: its own contractor first, then the other contractors that serve its store. Find the assetId with getAssets first.",
+    parameters: { type: "object", properties: { assetId: { type: "string" } }, required: ["assetId"] },
+  },
   { name: "getCapitalExposure", description: "Capital exposure totals, org-wide or for one property.", parameters: { type: "object", properties: { propertyId: { type: "string" } } } },
   { name: "getPropertyHealth", description: "Latest computed health/risk/data-confidence snapshot for a property.", parameters: { type: "object", properties: { propertyId: { type: "string" } }, required: ["propertyId"] } },
   {
@@ -99,6 +115,9 @@ const PROPERTY_SCOPED_TOOL_NAMES = new Set([
   "getIssues",
   "getAssessments",
   "getCapitalExposure",
+  "getExpirations",
+  "getContractors",
+  "getWhoToCall",
   "getDocuments",
   "getEvidence",
   "generateReport",

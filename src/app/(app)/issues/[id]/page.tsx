@@ -14,6 +14,7 @@ import { RepairPanel } from "@/components/issue/RepairPanel";
 import { AssignRepairForm } from "@/components/issue/AssignRepairForm";
 import { isRepairer } from "@/lib/repair-service";
 import { Role } from "@/generated/prisma/client";
+import { ContractorContact } from "@/components/contractor/CallLinks";
 
 export default async function IssueDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -24,9 +25,9 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
     where: { AND: [{ id }, issueScopeWhere(ctx)] },
     include: {
       property: { select: { id: true, name: true } },
-      asset: { select: { id: true, name: true, conditionScore: true } },
+      asset: { select: { id: true, name: true, conditionScore: true, serviceVendor: { select: { id: true, name: true, trade: true, contactName: true, contactEmail: true, contactPhone: true, emergencyPhone: true } } } },
       assignee: { select: { name: true } },
-      vendor: { select: { name: true } },
+      vendor: { select: { id: true, name: true, trade: true, contactName: true, contactEmail: true, contactPhone: true, emergencyPhone: true } },
       createdBy: { select: { name: true } },
       repairSubmittedBy: { select: { name: true } },
       verifiedBy: { select: { name: true } },
@@ -37,6 +38,11 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
     },
   });
   if (!issue) notFound();
+
+  // The contractor on the issue, else the one that services the equipment it
+  // is about. Not shown to contractors, whose own page never lists others.
+  const mayCall = ctx.role !== Role.VENDOR && (can(ctx, "canManageVendors") || can(ctx, "canViewPortfolio"));
+  const callable = mayCall ? (issue.vendor ?? issue.asset?.serviceVendor ?? null) : null;
 
   const repairer = isRepairer(ctx, issue);
   // Sending someone to fix it is a management decision, never the repairer's.
@@ -120,6 +126,18 @@ export default async function IssueDetailPage({ params }: { params: Promise<{ id
             <DetailRow label="Asset" value={issue.asset ? <Link href={`/assets/${issue.asset.id}`} className="text-brand">{issue.asset.name}</Link> : "—"} />
             <DetailRow label="Assignee" value={issue.assignee?.name ?? "Unassigned"} />
             <DetailRow label="Vendor" value={issue.vendor?.name ?? "—"} />
+            {callable ? (
+              <div className="rounded-lg border border-border bg-zinc-50 p-3">
+                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">
+                  {issue.vendor ? "Call the assigned contractor" : "Who to call"}
+                </p>
+                <Link href={`/contractors/${callable.id}`} className="text-sm font-medium text-foreground hover:text-brand">
+                  {callable.name}
+                  {callable.trade ? <span className="ml-2 text-xs font-normal text-muted">{callable.trade}</span> : null}
+                </Link>
+                <ContractorContact c={callable} />
+              </div>
+            ) : null}
             <DetailRow label="Estimated Cost" value={issue.estimatedCost ? formatCents(issue.estimatedCost) : "—"} />
             <DetailRow label="Actual Cost" value={issue.actualCost ? formatCents(issue.actualCost) : "—"} />
             <DetailRow label="Due Date" value={formatDate(issue.dueDate)} />

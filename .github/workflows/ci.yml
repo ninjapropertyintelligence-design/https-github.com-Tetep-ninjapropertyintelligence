@@ -159,6 +159,23 @@ jobs:
       - name: Seed demo data
         run: npm run db:seed
 
+      # The runner ships a newer PostgreSQL client than the 16.x service
+      # container. A pg_dump from a newer client writes settings an older
+      # server rejects (17 added `SET transaction_timeout`), so pg_restore
+      # into the 16.x container fails before any check runs. Installing the
+      # client that matches the server fixes the cause. It is put first on
+      # PATH because the backup scripts call `pg_dump` and `pg_restore` by
+      # name. The PostgreSQL apt repository is used rather than the Ubuntu
+      # archive so this holds whichever release `ubuntu-latest` becomes.
+      - name: Install the PostgreSQL 16 client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/16/bin/pg_dump --version
+
       # Spec §55 requires backup/DR to be *tested*, not just documented. This
       # takes a real pg_dump of the seeded database, restores it into a
       # scratch database, and checks row counts, migration history, foreign

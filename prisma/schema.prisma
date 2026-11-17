@@ -217,6 +217,8 @@ enum NotificationType {
   REPAIR_SUBMITTED
   REPAIR_VERIFIED
   REPAIR_SENT_BACK
+  EXPIRY_UPCOMING
+  EXPIRY_OVERDUE
 }
 
 /// Which side of a repair a photo shows. Null for evidence that is not
@@ -576,6 +578,7 @@ model Organization {
   memberships          Membership[]
   portfolios           Portfolio[]
   properties           Property[]
+  expiryItems           ExpiryItem[]
   issues               Issue[]
   assessmentTemplates  AssessmentTemplate[]
   evidence             Evidence[]
@@ -712,6 +715,8 @@ model Property {
   spatialEmbeds   SpatialEmbed[]
   siteAnnotations SiteAnnotation[]
   tagValues       TagValue[]
+  vendors         VendorProperty[]
+  expiryItems     ExpiryItem[]
 
   /**
    * Derived geography for spatial queries (§11). Prisma has no geography
@@ -825,6 +830,9 @@ model Asset {
   replacementCost    Int? // cents
   repairCostLifetime Int  @default(0) // cents
 
+  /// The contractor who services this asset: who to call when it breaks.
+  serviceVendorId String?
+
   status           AssetStatus      @default(ACTIVE)
   validationStatus ValidationStatus @default(AUTO_CALCULATED)
 
@@ -838,6 +846,7 @@ model Asset {
   floor    Floor?          @relation(fields: [floorId], references: [id], onDelete: SetNull)
   area     Area?           @relation(fields: [areaId], references: [id], onDelete: SetNull)
   system   BuildingSystem? @relation(fields: [systemId], references: [id], onDelete: SetNull)
+  serviceVendor Vendor?    @relation("AssetServiceVendor", fields: [serviceVendorId], references: [id], onDelete: SetNull)
 
   conditionHistory     AssetConditionHistory[]
   issues               Issue[]
@@ -849,6 +858,7 @@ model Asset {
   documentChunks       DocumentChunk[]
   aiFindings           AIFinding[]
   analysisJobs         PhotoAnalysisJob[]
+  expiryItems          ExpiryItem[]
 
   @@unique([organizationId, customerAssetId])
   @@index([organizationId])
@@ -856,6 +866,7 @@ model Asset {
   @@index([buildingId])
   @@index([assetType])
   @@index([criticalityScore])
+  @@index([serviceVendorId])
 }
 
 // Append-only condition history. Never overwritten.
@@ -1002,23 +1013,119 @@ model IssueComment {
   @@index([issueId])
 }
 
+/// A contractor or service company the organization calls: the refrigeration
+/// tech, the hood cleaner, the plumber. Also the record a vendor user's
+/// membership points at, and the company a capture job is issued to.
 model Vendor {
   id             String   @id @default(cuid())
   organizationId String
   name           String
   trade          String?
+  /// The person to ask for.
+  contactName    String?
   contactEmail   String?
   contactPhone   String?
+  /// The after-hours or 24/7 line, when it differs from the main number. A
+  /// walk-in that dies on a Saturday night is why this exists.
+  emergencyPhone String?
+  notes          String?
+  /// Serves every property in the organization, so it is offered at each one
+  /// without being added store by store.
+  servesAllProperties Boolean @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  issues      Issue[]
-  memberships Membership[]
-  captureJobs CaptureJob[]
-  invitations Invitation[]
-  connections VendorConnection[]
+  issues        Issue[]
+  memberships   Membership[]
+  captureJobs   CaptureJob[]
+  invitations   Invitation[]
+  connections   VendorConnection[]
+  properties    VendorProperty[]
+  serviceAssets Asset[]          @relation("AssetServiceVendor")
 
   @@index([organizationId])
+}
+
+/// A property a contractor serves, for a contractor that does not serve them all.
+model VendorProperty {
+  vendorId   String
+  propertyId String
+  createdAt  DateTime @default(now())
+
+  vendor   Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@id([vendorId, propertyId])
+  @@index([propertyId])
+}
+
+enum ExpirySource {
+  MANUAL
+  /// Read from a photo of the tag or certificate.
+  AI_PHOTO
+}
+
+enum ExpiryStatus {
+  ACTIVE
+  /// Replaced by a newer record, or renewed in place.
+  RENEWED
+  /// No longer applies (the equipment was removed, the permit was dropped).
+  DISMISSED
+}
+
+/// Something that runs out: a fire extinguisher inspection tag, a hood
+/// suppression certificate, a health permit, a backflow test. Counted down
+/// daily; the people responsible for the store are told as it nears.
+model ExpiryItem {
+  id              String       @id @default(cuid())
+  organizationId  String
+  propertyId      String
+  /// The equipment it is on, when it is on a piece of equipment.
+  assetId         String?
+  /// What kind of thing it is, as a person would say it: "Fire extinguisher
+  /// inspection". Free text, with a catalog of common ones offered.
+  kind            String
+  /// Which one, when there are several: "By the back door".
+  label           String?
+  /// A calendar date, not a moment: it runs out on this day.
+  expiresAt       DateTime     @db.Date
+  lastInspectedAt DateTime?    @db.Date
+  /// The company named on the tag.
+  servicedBy      String?
+  notes           String?
+
+  source      ExpirySource @default(MANUAL)
+  /// The photo it was read from.
+  evidenceId  String?
+  /// 0-1, the model's own confidence in the date it read. Null for typed ones.
+  confidence  Float?
+  /// A date read by a model that nobody has looked at yet. Reminders go out
+  /// regardless; the email says to check it.
+  needsReview Boolean      @default(false)
+  status      ExpiryStatus @default(ACTIVE)
+
+  /// Also email the contractor that services the equipment. Off unless
+  /// someone turns it on: it writes to a third party.
+  notifyContractor Boolean @default(false)
+
+  /// The tightest countdown reminder already sent for this expiry date, in
+  /// days (30 means the 30-day notice has gone). Null when none has. Reset
+  /// when the date changes.
+  lastReminderDays    Int?
+  lastOverdueNoticeAt DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  property     Property     @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  asset        Asset?       @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  evidence     Evidence?    @relation(fields: [evidenceId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, expiresAt])
+  @@index([propertyId])
+  @@index([assetId])
 }
 
 enum VendorConnectionProvider {
@@ -1646,6 +1753,7 @@ model Evidence {
   conditionHistoryRefs AssetConditionHistory[]
   aiFindings           AIFinding[]
   analysisJob          PhotoAnalysisJob?
+  expiryItems        ExpiryItem[]
   exteriorMarkers      ExteriorMarker[]
   collectionItems      CollectionItem[]
   tags                 EvidenceTag[]

@@ -65,7 +65,10 @@ export function notificationEmail(params: {
   /** Where the recipient can turn this kind of email off. */
   settingsUrl?: string | null;
 }): EmailMessage {
-  const lines = [`Hi ${params.name},`, params.title, ...(params.body ? [params.body] : [])];
+  // A body with several lines (a list of expiring items) becomes a paragraph
+  // each: HTML collapses a newline inside one paragraph into a space.
+  const bodyLines = params.body ? params.body.split("\n").filter((l) => l.trim()) : [];
+  const lines = [`Hi ${params.name},`, params.title, ...bodyLines];
   const footerText = params.settingsUrl ? `Choose which emails you get: ${params.settingsUrl}` : null;
   return {
     to: params.to,
@@ -140,6 +143,31 @@ export function removedFromOrganizationEmail(params: {
   return {
     to: params.to,
     subject: `You were removed from ${params.organizationName}`,
+    text: lines.join("\n\n"),
+    html: layout(lines),
+  };
+}
+
+/** Asks a contractor to arrange renewal of things at a store that are expiring or expired. */
+export function contractorExpiryEmail(params: {
+  to: string;
+  contactName: string | null;
+  contractorName: string;
+  organizationName: string;
+  propertyName: string;
+  /** One line per item, already worded: "Fire extinguisher inspection (back door): expires Dec 14". */
+  itemLines: string[];
+  overdue: boolean;
+}): EmailMessage {
+  const greeting = params.contactName ? `Hi ${params.contactName},` : `Hi ${params.contractorName},`;
+  const intro = params.overdue
+    ? `${params.organizationName} uses ${PRODUCT_NAME} to track inspections and certificates. These at ${params.propertyName} have expired and need to be renewed:`
+    : `${params.organizationName} uses ${PRODUCT_NAME} to track inspections and certificates. These at ${params.propertyName} are coming up for renewal:`;
+  const close = "Please get in touch with the store to arrange service. This is an automated reminder.";
+  const lines = [greeting, intro, ...params.itemLines.map((l) => `• ${l}`), close];
+  return {
+    to: params.to,
+    subject: `${params.overdue ? "Expired" : "Renewal due"}: ${params.propertyName}`,
     text: lines.join("\n\n"),
     html: layout(lines),
   };
