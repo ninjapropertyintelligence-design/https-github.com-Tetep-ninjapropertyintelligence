@@ -45,7 +45,7 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
   if (input.version !== existing.version) {
     throw new ApiError(409, "Asset was modified by someone else — reload and retry");
   }
-  await assertAssetRefs(ctx.organizationId, existing.propertyId, input);
+  await assertAssetRefs(existing.propertyId, input);
 
   const updated = await prisma.asset.update({
     where: { id: existing.id },
@@ -66,8 +66,6 @@ export const PATCH = withApiHandler<NextResponse, RouteParams>(async (ctx, req, 
       ...(input.areaId !== undefined ? { areaId: input.areaId } : {}),
       ...(input.systemId !== undefined ? { systemId: input.systemId } : {}),
       ...(input.status !== undefined ? { status: input.status } : {}),
-      ...(input.serviceVendorId !== undefined ? { serviceVendorId: input.serviceVendorId } : {}),
-      ...(input.lastInspectedAt !== undefined ? { lastInspectedAt: input.lastInspectedAt } : {}),
       updatedBy: ctx.userId,
       version: { increment: 1 },
     },

@@ -12,14 +12,10 @@ export interface AssetFormValues {
   manufacturer: string;
   model: string;
   serialNumber: string;
-  serviceVendorId: string;
-  /** yyyy-mm-dd, or empty. */
-  lastInspectedAt: string;
 }
 
 export interface AssetFormOptions {
   areas: Array<{ id: string; label: string }>;
-  vendors: Array<{ id: string; label: string }>;
 }
 
 const EMPTY: AssetFormValues = {
@@ -29,17 +25,16 @@ const EMPTY: AssetFormValues = {
   manufacturer: "",
   model: "",
   serialNumber: "",
-  serviceVendorId: "",
-  lastInspectedAt: "",
 };
 
 const input = "mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand";
 
 /**
- * Adding an asset, or editing one: what it is, where it is, the data plate
- * (make, model, serial), who services it and when it was last inspected.
- * The field crew fills this in on site, so every field but the name and
- * type is optional and can be completed later.
+ * Adding an asset, or editing one: what it is, where it is and its data
+ * plate (make, model, serial). The field crew fills this in on site, so
+ * every field but the name and type is optional and can be completed later.
+ * Who services it and its inspection dates live in their own panels on the
+ * asset page (contractor, expiry dates).
  */
 export function AssetForm({
   propertyId,
@@ -72,8 +67,6 @@ export function AssetForm({
       manufacturer: values.manufacturer.trim() || null,
       model: values.model.trim() || null,
       serialNumber: values.serialNumber.trim() || null,
-      serviceVendorId: values.serviceVendorId || null,
-      lastInspectedAt: values.lastInspectedAt || null,
       ...(asset ? { version: asset.version } : {}),
     };
     const res = asset
@@ -121,21 +114,6 @@ export function AssetForm({
       <label className="block text-xs font-medium text-muted">
         Serial number
         <input value={values.serialNumber} onChange={set("serialNumber")} className={input} />
-      </label>
-      <label className="block text-xs font-medium text-muted">
-        Service contact
-        <select value={values.serviceVendorId} onChange={set("serviceVendorId")} className={input}>
-          <option value="">Not known</option>
-          {options.vendors.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block text-xs font-medium text-muted">
-        Last inspected
-        <input type="date" value={values.lastInspectedAt} onChange={set("lastInspectedAt")} className={input} />
       </label>
       {error ? <p className="text-sm text-[var(--band-critical)] sm:col-span-2">{error}</p> : null}
       <div className="flex gap-2 sm:col-span-2">

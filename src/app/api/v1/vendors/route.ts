@@ -1,29 +1,19 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { requirePermission, withApiHandler } from "@/lib/api-utils";
-import { z } from "zod";
+import { withApiHandler } from "@/lib/api-utils";
+import { createContractor, listContractors } from "@/lib/contractor-service";
 
-export const GET = withApiHandler(async (ctx) => {
-  const vendors = await prisma.vendor.findMany({
-    where: { organizationId: ctx.organizationId },
-    orderBy: { name: "asc" },
+// GET /api/v1/vendors?propertyId=&trade= — the organization's contractors,
+// optionally only those that serve one store or do one trade.
+export const GET = withApiHandler(async (ctx, req) => {
+  const url = new URL(req.url);
+  const items = await listContractors(ctx, {
+    propertyId: url.searchParams.get("propertyId") ?? undefined,
+    trade: url.searchParams.get("trade") ?? undefined,
   });
-  return NextResponse.json({ items: vendors });
+  return NextResponse.json({ items });
 });
 
-const createVendorSchema = z.object({
-  name: z.string().min(1).max(200),
-  trade: z.string().max(100).nullish(),
-  contactEmail: z.string().email().nullish(),
-  contactPhone: z.string().max(50).nullish(),
-});
-
+// POST — add a contractor. The shape and rules are `contractorSchema`.
 export const POST = withApiHandler(async (ctx, req) => {
-  requirePermission(ctx, "canManageVendors");
-  const body = await req.json();
-  const input = createVendorSchema.parse(body);
-  const vendor = await prisma.vendor.create({
-    data: { organizationId: ctx.organizationId, ...input },
-  });
-  return NextResponse.json(vendor, { status: 201 });
+  return NextResponse.json(await createContractor(ctx, await req.json()), { status: 201 });
 });

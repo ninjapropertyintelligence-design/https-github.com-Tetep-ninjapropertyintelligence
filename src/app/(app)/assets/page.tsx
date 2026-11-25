@@ -27,7 +27,7 @@ export default async function AssetsPage({
         : {}),
     },
     orderBy: { healthScore: "asc" },
-    include: { property: { select: { id: true, name: true } } },
+    include: { property: { select: { id: true, name: true } }, area: { select: { name: true } } },
     take: 200,
   });
 
@@ -72,7 +72,7 @@ export default async function AssetsPage({
                       <Link href={`/assets/${a.id}`} className="font-medium text-foreground hover:text-brand">
                         {a.name}
                       </Link>
-                      <p className="text-xs text-muted">{a.assetType}</p>
+                      <p className="text-xs text-muted">{a.assetType}{a.area ? ` · ${a.area.name}` : ""}</p>
                     </td>
                     <td className="px-3 py-3">
                       <Link href={`/properties/${a.property.id}`} className="text-muted hover:text-brand">

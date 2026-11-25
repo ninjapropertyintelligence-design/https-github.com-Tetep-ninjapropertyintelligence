@@ -266,7 +266,8 @@ function SidePanelCard({ title, items }: { title: string; items: Array<{ key: st
   return (
     <Card>
       <CardHeader title={title} />
-      <CardBody className="p-0">
+      {/* A store has dozens of areas and assets; a fixed height keeps what follows (expirations) in view. */}
+      <CardBody className="max-h-72 overflow-y-auto p-0">
         {items.length === 0 ? (
           <p className="p-4 text-xs text-muted">None</p>
         ) : (

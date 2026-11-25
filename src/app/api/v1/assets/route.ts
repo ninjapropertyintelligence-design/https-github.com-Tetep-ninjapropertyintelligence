@@ -60,7 +60,7 @@ export const POST = withApiHandler(async (ctx, req) => {
     where: { AND: [{ id: input.propertyId }, propertyScopeWhere(ctx)] },
   });
   if (!property) throw new ApiError(400, "Invalid propertyId, or you don't have access to it");
-  await assertAssetRefs(ctx.organizationId, input.propertyId, input);
+  await assertAssetRefs(input.propertyId, input);
 
   if (input.customerAssetId) {
     const dup = await prisma.asset.findFirst({
@@ -89,8 +89,6 @@ export const POST = withApiHandler(async (ctx, req) => {
       replacementCost: input.replacementCost ?? null,
       conditionScore: input.conditionScore ?? null,
       healthScore: input.conditionScore ?? null,
-      serviceVendorId: input.serviceVendorId ?? null,
-      lastInspectedAt: input.lastInspectedAt ?? null,
       updatedBy: ctx.userId,
     },
   });

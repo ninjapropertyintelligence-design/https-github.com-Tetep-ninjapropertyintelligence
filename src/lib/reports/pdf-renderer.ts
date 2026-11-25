@@ -5,6 +5,7 @@
 // instead of reading it from disk, so it works correctly when bundled.
 import PDFDocument from "pdfkit/js/pdfkit.standalone.js";
 import { PropertyReportData } from "@/lib/reports/property-report-data";
+import type { ComplianceReportData } from "@/lib/reports/compliance-report-data";
 import type { AssessmentReportModel, ReportQuestion } from "@/lib/reports/assessment-report";
 import { formatCents, formatDate } from "@/lib/format";
 import { withObservability } from "@/lib/observability";
@@ -231,5 +232,101 @@ export async function renderAssessmentReportPdf(
       sectionHeading(doc, "Not started");
       for (const line of model.notStarted) doc.fontSize(10).fillColor("#5b6472").text(`• ${line}`);
     }
+  });
+}
+
+const STATUS_COLOUR: Record<string, string> = { Expired: "#d0342c", "Due soon": "#b7791f", Current: "#1a7f4b" };
+
+/**
+ * Compliance and Inspection Record, PDF. Written to be handed to an insurer
+ * or an auditor: what is tracked, when it expires, who services it, and how
+ * each date came to be on record.
+ */
+export async function renderComplianceReportPdf(data: ComplianceReportData): Promise<Buffer> {
+  return drawDocument((doc) => {
+    const { property, summary } = data;
+    doc.fontSize(20).fillColor("#14181f").text("Compliance and Inspection Record");
+    doc.fontSize(13).fillColor("#14181f").text(property.name);
+    doc.fontSize(10).fillColor("#5b6472").text(`${property.addressLine1}, ${property.city}, ${property.state} ${property.postalCode}`);
+    doc.text(`${data.organizationName}  ·  As of ${data.asOf}  ·  Generated ${formatDate(data.generatedAt)}`);
+
+    sectionHeading(doc, "Summary");
+    keyValueRow(doc, "Items tracked", String(summary.tracked));
+    keyValueRow(doc, "Current", String(summary.current));
+    keyValueRow(doc, "Due within 60 days", String(summary.dueSoon));
+    keyValueRow(doc, "Expired", String(summary.expired));
+    keyValueRow(doc, "Dates not yet confirmed by a person", String(summary.unconfirmed));
+    keyValueRow(doc, "Open critical issues", String(data.openCriticalIssues));
+
+    sectionHeading(doc, "Expiration register (soonest first)");
+    if (data.register.length === 0) doc.fontSize(10).fillColor("#5b6472").text("Nothing is being tracked for this store.");
+    for (const row of data.register) {
+      ensureRoom(doc, 60);
+      doc.fontSize(10).fillColor("#14181f").text(`${row.kind}${row.label ? ` (${row.label})` : ""}${row.equipment ? `  -  ${row.equipment}` : ""}`);
+      const when = row.daysLeft < 0 ? `${-row.daysLeft} day${row.daysLeft === -1 ? "" : "s"} ago` : row.daysLeft === 0 ? "today" : `in ${row.daysLeft} day${row.daysLeft === 1 ? "" : "s"}`;
+      doc
+        .fontSize(9)
+        .fillColor(STATUS_COLOUR[row.status] ?? "#14181f")
+        .text(`${row.status.toUpperCase()}  `, { continued: true })
+        .fillColor("#5b6472")
+        .text(`Expires ${row.expiresOn} (${when})${row.lastInspectedOn ? `  ·  Last inspected ${row.lastInspectedOn}` : ""}${row.servicedBy ? `  ·  Serviced by ${row.servicedBy}` : ""}`);
+      doc.fontSize(9).fillColor("#5b6472").text(`Basis: ${row.basis}`);
+      doc.moveDown(0.4);
+    }
+
+    if (data.history.length > 0) {
+      sectionHeading(doc, "Renewals in the last two years");
+      for (const h of data.history) {
+        ensureRoom(doc, 24);
+        doc.fontSize(9).fillColor("#14181f").text(`${h.kind}${h.label ? ` (${h.label})` : ""}${h.equipment ? `  -  ${h.equipment}` : ""}`, { continued: true });
+        doc.fillColor("#5b6472").text(`   was due ${h.wasDueOn}; renewed ${h.renewedOn}`);
+      }
+    }
+
+    sectionHeading(doc, `Equipment register (${data.equipment.length})`);
+    if (data.equipment.length === 0) doc.fontSize(10).fillColor("#5b6472").text("No equipment recorded.");
+    for (const a of data.equipment) {
+      ensureRoom(doc, 44);
+      doc.fontSize(10).fillColor("#14181f").text(`${a.name}${a.zone ? `  ·  ${a.zone}` : ""}`);
+      const make = [a.manufacturer, a.model].filter(Boolean).join(" ");
+      doc
+        .fontSize(9)
+        .fillColor("#5b6472")
+        .text(
+          `${make || "Make and model not recorded"}${a.serialNumber ? `  ·  Serial ${a.serialNumber}` : ""}${a.installedOn ? `  ·  Installed ${a.installedOn}` : ""}${a.conditionScore !== null ? `  ·  Condition ${a.conditionScore}` : ""}${a.servicedBy ? `  ·  Serviced by ${a.servicedBy.name}${a.servicedBy.phone ? ` ${a.servicedBy.phone}` : ""}` : ""}`,
+        );
+      doc.moveDown(0.3);
+    }
+
+    sectionHeading(doc, `Service contractors for this store (${data.contractors.length})`);
+    if (data.contractors.length === 0) doc.fontSize(10).fillColor("#5b6472").text("No contractors recorded.");
+    for (const c of data.contractors) {
+      ensureRoom(doc, 36);
+      doc.fontSize(10).fillColor("#14181f").text(`${c.name}${c.trade ? `  ·  ${c.trade}` : ""}`);
+      doc
+        .fontSize(9)
+        .fillColor("#5b6472")
+        .text([c.contactName, c.phone, c.afterHoursPhone ? `After hours ${c.afterHoursPhone}` : null, c.email].filter(Boolean).join("  ·  ") || "No contact details recorded");
+      doc.moveDown(0.3);
+    }
+
+    sectionHeading(doc, "Visual records on file");
+    keyValueRow(doc, "3D tour (Matterport)", data.coverage.tour ? `Linked${data.coverage.tour.syncedOn ? `, last synced ${data.coverage.tour.syncedOn}` : ""}` : "Not linked");
+    keyValueRow(doc, "360 photos", String(data.coverage.panoramas));
+    keyValueRow(
+      doc,
+      "Aerial imagery",
+      data.coverage.aerial ? `Flown ${data.coverage.aerial.flownOn ?? "(date not recorded)"}${data.coverage.aerial.fromDroneDeploy ? ", from DroneDeploy" : ""}` : "None",
+    );
+
+    ensureRoom(doc, 70);
+    doc.moveDown(1);
+    doc
+      .fontSize(8)
+      .fillColor("#5b6472")
+      .text(
+        "This record reflects what is held in the platform as of the date above. It is not an inspection, a certification or a statement of compliance with any code. Dates marked as not yet confirmed were read from photographs by software and should be checked against the physical tag or certificate. Expiry dates for tags showing only a month and year are taken as the last day of that month.",
+        { align: "left" },
+      );
   });
 }

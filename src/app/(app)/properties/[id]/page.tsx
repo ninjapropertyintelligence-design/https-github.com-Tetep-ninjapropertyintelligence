@@ -41,8 +41,13 @@ import { getPropertyMedia } from "@/lib/media-gallery";
 import { getVocabulary } from "@/lib/tag-service";
 import { myCollections } from "@/lib/collection-service";
 import { MediaGallery } from "@/components/media/MediaGallery";
+import { AddKitchenEquipmentButton } from "@/components/kitchen/AddKitchenEquipmentButton";
 import { AssetFormToggle } from "@/components/asset/AssetForm";
 import { assetFormOptions } from "@/lib/asset-form-options";
+import { KITCHEN_ZONES, findKitchenEquipment } from "@/lib/restaurant-kitchen";
+import { listExpiries } from "@/lib/expiry-service";
+import { pinUrl } from "@/lib/asset-location-service";
+import { StoreExpirationsPanel } from "@/components/expiry/StoreExpirationsPanel";
 
 async function loadProperty(propertyId: string, ctx: Awaited<ReturnType<typeof getSessionContext>>) {
   if (!ctx) return null;
@@ -119,7 +124,7 @@ async function TabContent({
   const canViewAI = ctx.permissions.includes("canViewAI");
   switch (tab) {
     case "assets":
-      return <AssetsTab propertyId={propertyId} ctx={ctx} />;
+      return <AssetsTab propertyId={propertyId} canManageAssets={can(ctx, "canManageAssets")} />;
     case "issues":
       return <IssuesTab propertyId={propertyId} />;
     case "assessments":
@@ -206,66 +211,96 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
   );
 }
 
-async function AssetsTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
-  const canManage = can(ctx, "canManageAssets");
-  const [assets, options] = await Promise.all([
-    prisma.asset.findMany({ where: { propertyId }, orderBy: { healthScore: "asc" }, include: { area: { select: { name: true } } } }),
-    canManage ? assetFormOptions(ctx.organizationId, propertyId) : null,
+async function AssetsTab({ propertyId, canManageAssets }: { propertyId: string; canManageAssets: boolean }) {
+  const [assets, formOptions] = await Promise.all([
+    prisma.asset.findMany({
+      where: { propertyId },
+      orderBy: { healthScore: "asc" },
+      include: { area: { select: { name: true } } },
+    }),
+    canManageAssets ? assetFormOptions(propertyId) : null,
   ]);
-  const adder = options ? (
-    <Card>
-      <CardBody>
-        <AssetFormToggle propertyId={propertyId} options={options} label="+ Add asset" />
-      </CardBody>
-    </Card>
+  const hasKitchen = assets.some((a) => findKitchenEquipment(a.assetType));
+  // One asset at a time, by hand: anything the kitchen list does not cover,
+  // or a second unit of something it does.
+  const kitchenAction = canManageAssets ? (
+    <div className="flex flex-wrap items-start gap-2">
+      <AddKitchenEquipmentButton propertyId={propertyId} hasKitchen={hasKitchen} />
+      {formOptions ? <AssetFormToggle propertyId={propertyId} options={formOptions} label="+ Add asset" /> : null}
+    </div>
   ) : null;
+
   if (assets.length === 0) {
     return (
-      <div className="space-y-4">
-        {adder}
+      <div className="space-y-3">
         <EmptyState title="No assets recorded yet" description="Add assets to start tracking condition, cost, and history for this property." />
+        {kitchenAction ? (
+          <div className="flex flex-wrap items-center gap-3">
+            {kitchenAction}
+            <span className="text-xs text-muted">For a restaurant: lists every piece of kitchen equipment, zone by zone.</span>
+          </div>
+        ) : null}
       </div>
     );
   }
+
+  // Kitchen zones first, in walk-through order; then any other area; then
+  // assets with no area at all.
+  const zoneOrder = new Map(KITCHEN_ZONES.map((z, i) => [z.name, i]));
+  const groups = new Map<string, typeof assets>();
+  for (const a of assets) {
+    const key = a.area?.name ?? "";
+    groups.set(key, [...(groups.get(key) ?? []), a]);
+  }
+  const groupNames = [...groups.keys()].sort((x, y) => {
+    const rank = (n: string) => (n === "" ? Number.MAX_SAFE_INTEGER : (zoneOrder.get(n) ?? KITCHEN_ZONES.length));
+    return rank(x) - rank(y) || x.localeCompare(y);
+  });
+  const showGroups = groupNames.length > 1 || groupNames[0] !== "";
+
   return (
-    <div className="space-y-4">
-    {adder}
-    <Card>
-      <CardBody className="p-0">
-        <table className="w-full text-sm">
-          <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-            <tr>
-              <th className="px-5 py-2.5 font-medium">Asset</th>
-              <th className="px-3 py-2.5 font-medium">Type</th>
-              <th className="px-3 py-2.5 font-medium">Criticality</th>
-              <th className="px-3 py-2.5 font-medium">Condition</th>
-              <th className="px-3 py-2.5 font-medium">Health</th>
-              <th className="px-5 py-2.5 text-right font-medium">Replacement Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {assets.map((a) => (
-              <tr key={a.id} className="border-b border-border last:border-0 hover:bg-zinc-50">
-                <td className="px-5 py-3">
-                  <Link href={`/assets/${a.id}`} className="font-medium text-foreground hover:text-brand">
-                    {a.name}
-                  </Link>
-                  {a.serialNumber ? <p className="text-xs text-muted">SN: {a.serialNumber}</p> : null}
-                </td>
-                <td className="px-3 py-3 text-muted">
-                  {a.assetType}
-                  {a.area ? <p className="text-xs">{a.area.name}</p> : null}
-                </td>
-                <td className="px-3 py-3 tabular-nums">{a.criticalityScore}</td>
-                <td className="px-3 py-3 tabular-nums">{a.conditionScore ?? "—"}</td>
-                <td className="px-3 py-3 tabular-nums">{a.healthScore ?? "—"}</td>
-                <td className="px-5 py-3 text-right tabular-nums">{a.replacementCost ? formatCents(a.replacementCost) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </CardBody>
-    </Card>
+    <div className="space-y-3">
+      {kitchenAction ? <div className="flex justify-end">{kitchenAction}</div> : null}
+      {groupNames.map((groupName) => (
+        <Card key={groupName || "none"}>
+          {showGroups ? <CardHeader title={groupName || "No area"} subtitle={`${groups.get(groupName)!.length} assets`} /> : null}
+          <CardBody className="p-0">
+            <table className="w-full text-sm">
+              <thead className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+                <tr>
+                  <th className="px-5 py-2.5 font-medium">Asset</th>
+                  <th className="px-3 py-2.5 font-medium">Type</th>
+                  <th className="px-3 py-2.5 font-medium">Criticality</th>
+                  <th className="px-3 py-2.5 font-medium">Condition</th>
+                  <th className="px-3 py-2.5 font-medium">Health</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Replacement Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.get(groupName)!.map((a) => {
+                  const kitchen = findKitchenEquipment(a.assetType);
+                  return (
+                    <tr key={a.id} className="border-b border-border last:border-0 hover:bg-zinc-50">
+                      <td className="px-5 py-3">
+                        <Link href={`/assets/${a.id}`} className="font-medium text-foreground hover:text-brand">
+                          {a.name}
+                        </Link>
+                        {a.serialNumber ? <p className="text-xs text-muted">SN: {a.serialNumber}</p> : null}
+                        {kitchen ? <p className="text-xs text-muted">{kitchen.item.function} · {kitchen.item.checkpoints.length} checkpoints</p> : null}
+                      </td>
+                      <td className="px-3 py-3 text-muted">{a.assetType}</td>
+                      <td className="px-3 py-3 tabular-nums">{a.criticalityScore}</td>
+                      <td className="px-3 py-3 tabular-nums">{a.conditionScore ?? "—"}</td>
+                      <td className="px-3 py-3 tabular-nums">{a.healthScore ?? "—"}</td>
+                      <td className="px-5 py-3 text-right tabular-nums">{a.replacementCost ? formatCents(a.replacementCost) : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -475,13 +510,26 @@ async function SiteMapTab({
 
 async function InteriorTab({ propertyId, ctx }: { propertyId: string; ctx: SessionContext }) {
   const status = await getPropertyInteriorStatus(ctx, propertyId);
+  // Expirations and pins are for people who manage or view the portfolio; a
+  // contractor's login reaches this tab only to deliver capture work.
+  const mayRead = can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio");
+  const expirations = mayRead ? await listExpiries(ctx, { propertyId }) : [];
+  const embedUrl = status.link?.viewerConfig?.embedUrl ?? null;
+  const pins = (status.link?.references ?? [])
+    .filter((r) => r.asset && r.sweepId)
+    .map((r) => ({ id: r.id, label: r.label, asset: r.asset as { id: string; name: string }, url: pinUrl(embedUrl, r.sweepId as string) }));
   return (
-    <InteriorManager
-      propertyId={propertyId}
-      data={status as unknown as InteriorStatusData}
-      canManageIntegrations={can(ctx, "canManageIntegrations")}
-      canPerformCapture={can(ctx, "canPerformCapture")}
-    />
+    <div className="space-y-4">
+      <InteriorManager
+        propertyId={propertyId}
+        data={status as unknown as InteriorStatusData}
+        canManageIntegrations={can(ctx, "canManageIntegrations")}
+        canPerformCapture={can(ctx, "canPerformCapture")}
+      />
+      {mayRead && (status.link || expirations.length > 0) ? (
+        <StoreExpirationsPanel propertyId={propertyId} expirations={expirations} pins={pins} canReport />
+      ) : null}
+    </div>
   );
 }
 
@@ -625,6 +673,12 @@ async function ReportsTab({ propertyId, propertyName }: { propertyId: string; pr
           </a>
           <a href={`/api/v1/reports/property-condition?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Property Condition Report (CSV)
+          </a>
+          <a href={`/api/v1/reports/compliance?propertyId=${propertyId}&format=pdf`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+            Compliance and Insurance Record (PDF)
+          </a>
+          <a href={`/api/v1/reports/compliance?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
+            Expiration Register (CSV)
           </a>
           <a href={`/api/v1/reports/capital-exposure?propertyId=${propertyId}&format=csv`} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-zinc-50">
             Capital Exposure Report (CSV)

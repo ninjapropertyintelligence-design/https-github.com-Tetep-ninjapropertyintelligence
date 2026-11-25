@@ -158,6 +158,17 @@ const PATHS: Partial<Record<NavIconKey, React.ReactNode>> = {
       <path d="M7 7h.01M7 17h.01" strokeLinecap="round" />
     </>
   ),
+  expiry: (
+    <>
+      <rect x="3.5" y="5" width="17" height="15" rx="2" />
+      <path d="M3.5 10h17M8 3v4M16 3v4M12 13v3l2 1" strokeLinecap="round" strokeLinejoin="round" />
+    </>
+  ),
+  contractor: (
+    <>
+      <path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a1 1 0 01-1 1A15 15 0 014 5a1 1 0 011-1z" strokeLinejoin="round" />
+    </>
+  ),
   team: (
     <>
       <circle cx="9" cy="8" r="3.5" />

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getSessionContext, can } from "@/lib/session-context";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { TemplateActiveToggle } from "@/components/assessment/TemplateActiveToggle";
+import { AddKitchenAuditTemplateButton } from "@/components/kitchen/AddKitchenAuditTemplateButton";
 import { listTemplatesForManagers } from "@/lib/template-service";
 import { formatDate } from "@/lib/format";
 
@@ -22,9 +23,12 @@ export default async function TemplatesPage() {
           <h1 className="mt-1 text-xl font-semibold text-foreground">Assessment templates</h1>
           <p className="text-sm text-muted">The surveys inspectors fill in: sections of tasks of questions.</p>
         </div>
-        <Link href="/assessments/templates/new" className="rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-brand-foreground hover:bg-brand/90">
-          New template
-        </Link>
+        <span className="inline-flex flex-wrap items-center gap-2">
+          <AddKitchenAuditTemplateButton />
+          <Link href="/assessments/templates/new" className="rounded-lg bg-brand px-3.5 py-2 text-sm font-medium text-brand-foreground hover:bg-brand/90">
+            New template
+          </Link>
+        </span>
       </div>
 
       {templates.length === 0 ? (

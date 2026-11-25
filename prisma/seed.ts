@@ -5,6 +5,8 @@ import { recalculatePropertyHealth } from "../src/lib/scoring";
 import { DEFAULT_CATEGORY_WEIGHTS } from "../src/lib/scoring-categories";
 import { getStorageProvider } from "../src/lib/storage";
 import { STANDARD_TAG_TYPES } from "../src/lib/tag-service";
+import { installKitchenAuditTemplate, writeKitchenEquipment } from "../src/lib/kitchen-service";
+import type { SessionContext } from "../src/lib/tenant-scope";
 import {
   renderOrthomosaic,
   renderRoofDetail,
@@ -870,6 +872,116 @@ async function main() {
       },
     });
     console.log(`  Created capture job "${job.title}" (1 site, 6 shot positions, issued to ${vendor.name})`);
+  }
+
+  console.log("Seeding a demo restaurant with its kitchen equipment...");
+  {
+    let restaurant = await prisma.property.findFirst({ where: { organizationId: org.id, customerPropertyId: "REST-0054" } });
+    if (!restaurant) {
+      restaurant = await prisma.property.create({
+        data: {
+          organizationId: org.id,
+          portfolioId: portfolio.id,
+          regionId: midwest.id,
+          name: "Demo Grill & Bar",
+          customerPropertyId: "REST-0054",
+          addressLine1: "1200 Main St",
+          city: "Overland Park",
+          state: "KS",
+          postalCode: "66210",
+          latitude: 38.9822,
+          longitude: -94.6708,
+          propertyType: "Restaurant",
+          squareFootage: 7500,
+          isDemoData: true,
+        },
+      });
+    }
+    const { created } = await writeKitchenEquipment(org.id, restaurant.id, owner.id);
+    if (created.length > 0) await recalculatePropertyHealth(restaurant.id);
+    // Contractors to call, each assigned the restaurant's equipment of their
+    // trade. Found by name so a re-run changes nothing.
+    const contractors: Array<{
+      name: string;
+      trade: string;
+      contactName: string;
+      contactPhone: string;
+      emergencyPhone: string;
+      contactEmail: string;
+      services: string[];
+    }> = [
+      {
+        name: "Midwest Refrigeration",
+        trade: "Refrigeration",
+        contactName: "Dana Ruiz",
+        contactPhone: "(913) 555-0142",
+        emergencyPhone: "(913) 555-0199",
+        contactEmail: "dispatch@midwestrefrigeration.example",
+        services: ["Walk-In Cooler & Freezer", "Reach-In Freezer / Low-Boy", "Refrigerated Chef Base", "Undercounter Reach-In Cooler", "Walk-In Keg Room / Draft Cooler"],
+      },
+      {
+        name: "KC Kitchen Equipment Service",
+        trade: "Kitchen equipment",
+        contactName: "Marcus Bell",
+        contactPhone: "(816) 555-0117",
+        emergencyPhone: "(816) 555-0180",
+        contactEmail: "service@kckitchen.example",
+        services: ["Deep Fryer Battery", "Charbroiler & Flat-Top Griddle", "Sauté Range, Convection Oven & Salamander", "Commercial Dish Machine"],
+      },
+      {
+        name: "SafeHood Fire & Grease",
+        trade: "Hood and grease cleaning",
+        contactName: "Priya Nair",
+        contactPhone: "(913) 555-0163",
+        emergencyPhone: "(913) 555-0164",
+        contactEmail: "office@safehood.example",
+        services: ["Exhaust Hood, Baffle Filters & Ansul System", "Portable Fire Extinguishers"],
+      },
+    ];
+    for (const c of contractors) {
+      const { services, ...fields } = c;
+      const vendor =
+        (await prisma.vendor.findFirst({ where: { organizationId: org.id, name: c.name } })) ??
+        (await prisma.vendor.create({ data: { organizationId: org.id, ...fields, servesAllProperties: true } }));
+      await prisma.asset.updateMany({ where: { propertyId: restaurant.id, assetType: { in: services }, serviceVendorId: null }, data: { serviceVendorId: vendor.id } });
+    }
+
+    // Things counting down, dated from today so the demo always shows a
+    // spread: one expired, some close, one far off. Found by kind and label so
+    // a re-run changes nothing.
+    const inDays = (n: number) => new Date(new Date().toISOString().slice(0, 10) + "T00:00:00.000Z").getTime() + n * 86_400_000;
+    const assetByType = async (assetType: string) => prisma.asset.findFirst({ where: { propertyId: restaurant.id, assetType }, select: { id: true } });
+    const hood = await assetByType("Exhaust Hood, Baffle Filters & Ansul System");
+    const extinguishers = await assetByType("Portable Fire Extinguishers");
+    const countdowns: Array<{ kind: string; label: string | null; assetId: string | null; days: number; servicedBy: string | null }> = [
+      { kind: "Hood and exhaust cleaning", label: null, assetId: hood?.id ?? null, days: -5, servicedBy: "SafeHood Fire & Grease" },
+      { kind: "Fire extinguisher inspection", label: "Kitchen, by the fryers", assetId: extinguishers?.id ?? null, days: 9, servicedBy: "SafeHood Fire & Grease" },
+      { kind: "Hood suppression (Ansul) inspection", label: null, assetId: hood?.id ?? null, days: 24, servicedBy: "SafeHood Fire & Grease" },
+      { kind: "Backflow preventer test", label: null, assetId: null, days: 58, servicedBy: null },
+      { kind: "Health permit", label: null, assetId: null, days: 210, servicedBy: null },
+    ];
+    for (const c of countdowns) {
+      const exists = await prisma.expiryItem.findFirst({ where: { propertyId: restaurant.id, kind: c.kind, label: c.label, status: "ACTIVE" } });
+      if (exists) continue;
+      await prisma.expiryItem.create({
+        data: {
+          organizationId: org.id,
+          propertyId: restaurant.id,
+          assetId: c.assetId,
+          kind: c.kind,
+          label: c.label,
+          expiresAt: new Date(inDays(c.days)),
+          servicedBy: c.servicedBy,
+          createdById: owner.id,
+        },
+      });
+    }
+
+    // The template service checks the caller's role, so it runs as the
+    // demo owner; nothing else in the context is read.
+    const ownerCtx = { userId: owner.id, organizationId: org.id, role: "OWNER" } as SessionContext;
+    await installKitchenAuditTemplate(ownerCtx);
+    console.log(`  ${restaurant.name}: ${created.length} kitchen assets added; Restaurant Kitchen Audit template ready`);
   }
 
   console.log("\nSeed complete. Demo login credentials (password: 'password123'):");

@@ -3,9 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { assertAssetRefs } from "@/lib/asset-refs";
 
 /**
- * An asset's section and service contact come from the client. A section in
- * another store, or a vendor from another organization, must be refused, or
- * one customer's asset could name another's contractor.
+ * An asset's building, floor and section come from the client. One from
+ * another store must be refused, or an asset could be filed under a store it
+ * is not in.
  */
 
 const suffix = `ar${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -15,8 +15,6 @@ let property: { id: string };
 let otherProperty: { id: string };
 let area: { id: string };
 let otherArea: { id: string };
-let vendor: { id: string };
-let foreignVendor: { id: string };
 
 async function propertyWithArea(organizationId: string, name: string) {
   const pf = await prisma.portfolio.create({ data: { organizationId, name: `PF ${name}` } });
@@ -38,8 +36,6 @@ beforeAll(async () => {
   area = mine.a;
   otherProperty = second.p;
   otherArea = second.a;
-  vendor = await prisma.vendor.create({ data: { organizationId: org.id, name: "Fryer Co" } });
-  foreignVendor = await prisma.vendor.create({ data: { organizationId: otherOrg.id, name: "Elsewhere Co" } });
 });
 
 afterAll(async () => {
@@ -48,36 +44,18 @@ afterAll(async () => {
 });
 
 describe("assertAssetRefs", () => {
-  it("accepts a section in the same store and one of the organization's vendors", async () => {
-    await expect(assertAssetRefs(org.id, property.id, { areaId: area.id, serviceVendorId: vendor.id })).resolves.toBeUndefined();
-    await expect(assertAssetRefs(org.id, property.id, {})).resolves.toBeUndefined();
+  it("accepts a section in the same store, and no references at all", async () => {
+    await expect(assertAssetRefs(property.id, { areaId: area.id })).resolves.toBeUndefined();
+    await expect(assertAssetRefs(property.id, {})).resolves.toBeUndefined();
   });
 
   it("refuses a section from another store", async () => {
-    await expect(assertAssetRefs(org.id, property.id, { areaId: otherArea.id })).rejects.toThrow(/area is not in this property/);
     expect(otherProperty.id).not.toBe(property.id);
+    await expect(assertAssetRefs(property.id, { areaId: otherArea.id })).rejects.toThrow(/area is not in this property/);
   });
 
-  it("refuses another organization's vendor", async () => {
-    await expect(assertAssetRefs(org.id, property.id, { serviceVendorId: foreignVendor.id })).rejects.toThrow(/not one of your vendors/);
-  });
-
-  it("stores the service contact and last inspection date, and clears the contact if the vendor goes", async () => {
-    const asset = await prisma.asset.create({
-      data: {
-        organizationId: org.id,
-        propertyId: property.id,
-        areaId: area.id,
-        name: "Fryer 2",
-        assetType: "Fryer",
-        serviceVendorId: vendor.id,
-        lastInspectedAt: new Date("2026-10-01"),
-      },
-    });
-    expect(asset.serviceVendorId).toBe(vendor.id);
-    await prisma.vendor.delete({ where: { id: vendor.id } });
-    const after = await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } });
-    expect(after.serviceVendorId).toBeNull();
-    expect(after.lastInspectedAt?.toISOString().slice(0, 10)).toBe("2026-10-01");
+  it("refuses a section from another organization's store", async () => {
+    const foreign = await propertyWithArea(otherOrg.id, `foreign-${suffix}`);
+    await expect(assertAssetRefs(property.id, { areaId: foreign.a.id })).rejects.toThrow(/area is not in this property/);
   });
 });

@@ -40,6 +40,12 @@ export function getNavItems(ctx: SessionContext): NavItem[] {
     items.push({ label: "Projects", href: "/projects", section: "Manage", icon: "project" });
   }
   items.push({ label: "Issues", href: "/issues", section: "Manage", icon: "issue" });
+  if (can(ctx, "canManageAssets") || can(ctx, "canViewPortfolio")) {
+    items.push({ label: "Expirations", href: "/expirations", section: "Manage", icon: "expiry" });
+  }
+  if (can(ctx, "canManageVendors") || can(ctx, "canViewPortfolio")) {
+    items.push({ label: "Contractors", href: "/contractors", section: "Manage", icon: "contractor" });
+  }
   if (can(ctx, "canPerformAssessments")) {
     items.push({ label: "Assessments", href: "/assessments", section: "Manage", icon: "assessment" });
   }
