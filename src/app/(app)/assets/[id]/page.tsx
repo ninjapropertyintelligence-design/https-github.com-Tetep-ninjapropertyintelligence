@@ -19,6 +19,17 @@ import { AssetLocationCard } from "@/components/asset/AssetLocationCard";
 import { CountdownBadge } from "@/components/expiry/CountdownBadge";
 import { ExpiryScanner } from "@/components/expiry/ExpiryScanner";
 import { ExpiryRowActions } from "@/components/expiry/ExpiryRowActions";
+import { AssetFormToggle } from "@/components/asset/AssetForm";
+import { assetFormOptions } from "@/lib/asset-form-options";
+
+function Detail({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <div>
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="text-foreground">{value || "—"}</dd>
+    </div>
+  );
+}
 
 export default async function AssetDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const ctx = await getSessionContext();
@@ -50,6 +61,7 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
     : [null, []];
   // Photographing a tag is for managers and the inspectors out doing it, not for a contractor's login.
   const canRecord = can(ctx, "canManageAssets") || (can(ctx, "canUploadEvidence") && ctx.role !== "VENDOR");
+  const formOptions = can(ctx, "canManageAssets") ? await assetFormOptions(asset.property.id) : null;
 
   return (
     <div className="space-y-6">
@@ -60,6 +72,37 @@ export default async function AssetDetailPage({ params }: { params: Promise<{ id
         <h1 className="mt-1 text-xl font-semibold text-foreground">{asset.name}</h1>
         <p className="text-sm text-muted">{asset.assetType}{asset.manufacturer ? ` · ${asset.manufacturer}` : ""}{asset.model ? ` ${asset.model}` : ""}</p>
       </div>
+
+      <Card>
+        <CardHeader title="Asset details" subtitle="Section and data plate" />
+        <CardBody className="space-y-4">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm md:grid-cols-4">
+            <Detail label="Section" value={asset.area?.name} />
+            <Detail label="Make" value={asset.manufacturer} />
+            <Detail label="Model" value={asset.model} />
+            <Detail label="Serial number" value={asset.serialNumber} />
+          </dl>
+          {formOptions ? (
+            <AssetFormToggle
+              label="Edit details"
+              propertyId={asset.property.id}
+              options={formOptions}
+              asset={{
+                id: asset.id,
+                version: asset.version,
+                values: {
+                  name: asset.name,
+                  assetType: asset.assetType,
+                  areaId: asset.areaId ?? "",
+                  manufacturer: asset.manufacturer ?? "",
+                  model: asset.model ?? "",
+                  serialNumber: asset.serialNumber ?? "",
+                },
+              }}
+            />
+          ) : null}
+        </CardBody>
+      </Card>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatTile label="Condition" value={asset.conditionScore ?? "—"} />

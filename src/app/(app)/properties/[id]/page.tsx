@@ -42,6 +42,8 @@ import { getVocabulary } from "@/lib/tag-service";
 import { myCollections } from "@/lib/collection-service";
 import { MediaGallery } from "@/components/media/MediaGallery";
 import { AddKitchenEquipmentButton } from "@/components/kitchen/AddKitchenEquipmentButton";
+import { AssetFormToggle } from "@/components/asset/AssetForm";
+import { assetFormOptions } from "@/lib/asset-form-options";
 import { KITCHEN_ZONES, findKitchenEquipment } from "@/lib/restaurant-kitchen";
 import { listExpiries } from "@/lib/expiry-service";
 import { pinUrl } from "@/lib/asset-location-service";
@@ -210,13 +212,23 @@ async function OverviewTabLoader({ propertyId, ctx }: { propertyId: string; ctx:
 }
 
 async function AssetsTab({ propertyId, canManageAssets }: { propertyId: string; canManageAssets: boolean }) {
-  const assets = await prisma.asset.findMany({
-    where: { propertyId },
-    orderBy: { healthScore: "asc" },
-    include: { area: { select: { name: true } } },
-  });
+  const [assets, formOptions] = await Promise.all([
+    prisma.asset.findMany({
+      where: { propertyId },
+      orderBy: { healthScore: "asc" },
+      include: { area: { select: { name: true } } },
+    }),
+    canManageAssets ? assetFormOptions(propertyId) : null,
+  ]);
   const hasKitchen = assets.some((a) => findKitchenEquipment(a.assetType));
-  const kitchenAction = canManageAssets ? <AddKitchenEquipmentButton propertyId={propertyId} hasKitchen={hasKitchen} /> : null;
+  // One asset at a time, by hand: anything the kitchen list does not cover,
+  // or a second unit of something it does.
+  const kitchenAction = canManageAssets ? (
+    <div className="flex flex-wrap items-start gap-2">
+      <AddKitchenEquipmentButton propertyId={propertyId} hasKitchen={hasKitchen} />
+      {formOptions ? <AssetFormToggle propertyId={propertyId} options={formOptions} label="+ Add asset" /> : null}
+    </div>
+  ) : null;
 
   if (assets.length === 0) {
     return (
